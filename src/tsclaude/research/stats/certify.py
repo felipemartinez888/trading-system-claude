@@ -1,10 +1,11 @@
 """Certification of a strategy's win rate and expectancy from its net trade outcomes.
 
 Implements ADR-0012 including **Amendment 1** (sample floors, realized-payoff uncertainty,
-fail-closed degenerate samples, policy floors) and **Amendment 2** (dependence always accounted
-for, design p* checked against realized payoffs, trial counts from the registry). Inputs are net
-trade returns ``r_i`` in R (after fees, slippage, funding). A win is ``r_i > 0``; zero outcomes
-count as non-wins (conservative).
+fail-closed degenerate samples, policy floors), **Amendment 2** (dependence always accounted
+for, design p* checked against realized payoffs, trial counts from the registry) and
+**Amendment 3** (effective-sample-size gate, single 300-trade floor, tail-loss reporting).
+Inputs are net trade returns ``r_i`` in R (after fees, slippage, funding). A win is ``r_i > 0``;
+zero outcomes count as non-wins (conservative).
 
 Procedure (every step is conservative where a choice exists):
 
@@ -35,23 +36,37 @@ Procedure (every step is conservative where a choice exists):
 5. **Expectancy.** ``mean(r)`` with a two-sided percentile bootstrap interval at level
    ``1 - alpha_adj`` (block bootstrap with mean block ``L``). Its lower end is
    the one-sided bound at ``alpha_adj / 2``, stricter than the one-sided ``alpha_adj`` bound.
-6. **Sample size** (Amendment 1.1). ``n_required = max(n_min, n_floor)`` where
+6. **Sample size** (Amendment 1.1, Amendment 3). ``n_required = max(n_min, n_floor)`` where
    ``n_min = max(normal-approximation n, exact n)`` for power ``min_power`` at the observed effect
    ``p_alt = p_hat`` against ``p*`` at level ``alpha_adj`` (``power`` module), and ``n_floor`` is
-   ``N_FLOOR_DESIGN = 100`` for a design ``p*`` or ``N_FLOOR_REALIZED = 300`` for a realized one.
-   A caller (preregistration) may raise ``n_floor`` but never lower it. ``n_min`` is undefined
+   ``N_FLOOR = 300`` for both design and realized ``p*`` (gap risk is invisible in small samples:
+   a 1 %-frequency tail event is absent from 300 trades with probability 0.99^300 = 4.9 %).
+   A caller (preregistration) may raise ``n_floor`` but never lower it. The gate compares the
+   **effective** sample size, ``n_eff = n * min(1, (p_hat (1 - p_hat) / n) / Var*(p_hat*))``
+   with ``Var*`` the block-bootstrap variance of the win rate, against ``n_required``: clustered
+   outcomes need proportionally more trades (``n_eff <= n`` always). For independent data the
+   bootstrap ratio is ``1 +- sqrt(2/B)`` (about 1.4 % at ``B = 10 000``), so at ``n`` just above
+   ``n_required`` about half of i.i.d. samples land slightly below it: the effective threshold is a
+   few percent above the nominal one (conservative). ``n_min`` is undefined
    (gate fails) when ``p_hat <= p*``, ``p* >= 1``, or it exceeds ``N_MIN_SEARCH_LIMIT``.
 7. **Degenerate samples** (Amendment 1.3). Fewer than two distinct outcome values, or any
-   bootstrap whose replicates are all equal (up to rounding), fail closed. Since Amendment 2.2 a
-   one-valued sample also has ``W*`` or ``L*`` undefined in every resample, so this gate is a
-   backstop that always coincides with ``margin_not_positive``; it is kept as defence in depth.
+   bootstrap whose replicates are all equal (up to rounding), fail closed. This gate is checked
+   first and alone decides such samples: the margin and expectancy bounds are still reported but
+   their gates are *not evaluated* (flags ``False``), because percentiles of a zero-width or
+   all-undefined bootstrap carry no information. This keeps the gate essential (and testable)
+   rather than a backstop that always coincides with the margin gate.
 8. **Bootstrap resolution.** A percentile at tail ``t`` needs at least ``MIN_TAIL_REPLICATES / t``
    replicates (``20 n_trials / alpha`` for the two-sided expectancy interval). The count is raised
    to that, capped at ``max_resamples``; if the cap binds, certification fails closed.
 
+Reported for display (Amendment 3.2): ``worst_trade_r = min(r)`` and ``share_beyond_minus_1r =``
+the share of trades with ``r < -1`` (net R includes costs, so with a positive round-trip cost an
+ordinary stop-out at ``-(1 + c)`` also counts; reports should read it together with the cost).
+
 ``certified`` is true iff none of the five independent gates fails: ``insufficient_n``,
 ``margin_not_positive``, ``expectancy_not_positive``, ``degenerate``, ``bootstrap_unresolved``.
-(``p_star_undefined`` is reported but is not a separate gate: it forces ``margin_not_positive``.)
+(``p_star_undefined`` is reported but is not a separate gate: it forces ``margin_not_positive``,
+or ``degenerate`` when no resample contains both a win and a non-win.)
 Holdout, drawdown and cost-stress conditions of ADR-0012 are checked by the caller.
 
 All bootstraps share one resample stream and are evaluated from block sums of three columns (win
@@ -89,9 +104,9 @@ from tsclaude.research.stats.power import n_min_exact, n_min_one_sided
 #: Policy floors (ADR-0012 Amendment 1.4).
 MAX_ALPHA = 0.10
 MIN_POWER = 0.80
-#: Hard sample floors (ADR-0012 Amendment 1.1); may be raised by a preregistration, never lowered.
-N_FLOOR_DESIGN = 100
-N_FLOOR_REALIZED = 300
+#: Hard sample floor for design and realized p* (ADR-0012 Amendment 3.2); may be raised by a
+#: preregistration, never lowered.
+N_FLOOR = 300
 #: Minimum expected number of bootstrap replicates beyond each percentile endpoint.
 MIN_TAIL_REPLICATES = 10
 #: Upper limit on bootstrap replicates (bounded run time); exceeding it fails closed.
@@ -127,7 +142,11 @@ class Certification:
     n_min_normal: int | None
     n_min_exact: int | None
     n_floor: int
-    n_required: int | None  # max(n_min, n_floor)
+    n_required: int | None  # max(n_min, n_floor), compared with n_eff
+    n_eff: float  # n * min(1, binomial var / block-bootstrap var of the win rate)
+    variance_ratio: float  # binomial var / block-bootstrap var of the win rate (uncapped)
+    worst_trade_r: float
+    share_beyond_minus_1r: float
     distinct_values: int
     insufficient_n: bool
     margin_not_positive: bool
@@ -194,7 +213,7 @@ def certify(
 
     All decision parameters are required keywords on purpose: in particular ``n_trials`` (every
     configuration evaluated for the hypothesis) must be supplied explicitly, never defaulted.
-    ``n_floor=None`` uses the ADR floor for the ``p*`` source; a value below it is rejected.
+    ``n_floor=None`` uses ``N_FLOOR``; a value below it is rejected.
     """
     a, pw = _validate_policy(alpha, min_power)
     nt = as_int(n_trials, "n_trials")
@@ -217,12 +236,11 @@ def certify(
         ps_given = as_float(p_star, "p_star")
         if ps_given < 0.0:
             raise ValueError(f"p_star must be >= 0, got {ps_given}")
-    floor_min = N_FLOOR_DESIGN if ps_given is not None else N_FLOOR_REALIZED
-    floor = floor_min
+    floor = N_FLOOR
     if n_floor is not None:
         floor = as_int(n_floor, "n_floor")
-        if floor < floor_min:
-            raise ValueError(f"n_floor may only raise the ADR floor {floor_min}, got {floor}")
+        if floor < N_FLOOR:
+            raise ValueError(f"n_floor may only raise the ADR floor {N_FLOOR}, got {floor}")
 
     pay = realized_payoffs(outcomes_r)
     r = np.asarray(outcomes_r, dtype=np.float64)
@@ -269,22 +287,38 @@ def certify(
     p_lcb_boot = percentile_bounds(reps["win_share"], alpha_adj, "lower").lower
     p_lcb = min(p_lcb_exact, p_lcb_boot)
 
+    # 7. degenerate samples / bootstraps (checked first: other bounds are meaningless on them)
+    distinct = int(np.unique(r).size)
+    degenerate_reps = [name for name, rep in reps.items() if replicates_degenerate(rep)]
+    degenerate = distinct < 2 or bool(degenerate_reps)
+    if distinct < 2:
+        reasons.append(f"degenerate sample: {distinct} distinct outcome value(s)")
+    if degenerate_reps:
+        reasons.append("degenerate bootstrap (all replicates equal): " + ", ".join(degenerate_reps))
+
+    if degenerate:
+        reasons.append("margin and expectancy bounds not evaluated on a degenerate bootstrap")
+
     # 4. margin
     margin_cp = None if ps is None else p_lcb - ps
     margin_joint = percentile_bounds(reps["joint_margin"], alpha_adj, "lower").lower
     margin_lcb = None if margin_cp is None else min(margin_cp, margin_joint)
-    margin_not_positive = margin_lcb is None or margin_lcb <= 0.0
+    margin_not_positive = not degenerate and (margin_lcb is None or margin_lcb <= 0.0)
     if margin_lcb is not None and margin_not_positive:
         reasons.append(f"certified margin = {margin_lcb:.6f} <= 0")
 
     # 5. expectancy
     e_ci = percentile_bounds(reps["expectancy"], alpha_adj, "two-sided")
     e_includes_zero = e_ci.lower <= 0.0 <= e_ci.upper
-    e_not_positive = e_ci.lower <= 0.0
+    e_not_positive = not degenerate and e_ci.lower <= 0.0
     if e_not_positive:
         reasons.append(f"expectancy bootstrap lower bound {e_ci.lower:.6f} <= 0")
 
-    # 6. sample size: n >= max(n_min, n_floor)
+    # 6. sample size: n_eff >= max(n_min, n_floor)  (Amendment 3.1)
+    var_binom = p_hat * (1.0 - p_hat) / n
+    var_boot = float(np.var(reps["win_share"]))
+    variance_ratio = var_binom / var_boot if var_boot > 0.0 else 1.0
+    n_eff = n * min(1.0, variance_ratio)
     nm_norm: int | None = None
     nm_exact: int | None = None
     n_min_too_large = False
@@ -296,7 +330,7 @@ def certify(
             n_min_too_large = True  # effect too small to power within the search limit
     n_min = None if nm_norm is None or nm_exact is None else max(nm_norm, nm_exact)
     n_required = None if n_min is None else max(n_min, floor)
-    insufficient_n = n_required is None or n < n_required
+    insufficient_n = n_required is None or n_eff < n_required
     if n_min_too_large:
         reasons.append(f"n_min exceeds {N_MIN_SEARCH_LIMIT}: observed margin too small to power")
     elif n_min is None and ps is None:
@@ -305,19 +339,10 @@ def certify(
         reasons.append(f"n_min undefined: p* = {ps:.6f} >= 1 (geometry cannot be profitable)")
     elif n_min is None:
         reasons.append("n_min undefined: observed win rate does not exceed p*")
-    if n < floor:
-        reasons.append(f"n = {n} < sample floor {floor} ({source or 'realized'} p*)")
-    if n_min is not None and n < n_min:
-        reasons.append(f"n = {n} < n_min = {n_min}")
-
-    # 7. degenerate samples / bootstraps
-    distinct = int(np.unique(r).size)
-    degenerate_reps = [name for name, rep in reps.items() if replicates_degenerate(rep)]
-    degenerate = distinct < 2 or bool(degenerate_reps)
-    if distinct < 2:
-        reasons.append(f"degenerate sample: {distinct} distinct outcome value(s)")
-    if degenerate_reps:
-        reasons.append("degenerate bootstrap (all replicates equal): " + ", ".join(degenerate_reps))
+    if n_eff < floor:
+        reasons.append(f"n_eff = {n_eff:.1f} (n = {n}) < sample floor {floor}")
+    if n_min is not None and n_eff < n_min:
+        reasons.append(f"n_eff = {n_eff:.1f} (n = {n}) < n_min = {n_min}")
 
     # 8. bootstrap resolution
     bootstrap_unresolved = not resolved
@@ -359,6 +384,10 @@ def certify(
         n_min_exact=nm_exact,
         n_floor=floor,
         n_required=n_required,
+        n_eff=n_eff,
+        variance_ratio=variance_ratio,
+        worst_trade_r=float(np.min(r)),
+        share_beyond_minus_1r=float(np.mean(r < -1.0)),
         distinct_values=distinct,
         insufficient_n=insufficient_n,
         margin_not_positive=margin_not_positive,
