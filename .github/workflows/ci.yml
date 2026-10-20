@@ -30,17 +30,27 @@ jobs:
         run: uv python install 3.13
       - name: Lock (only while uv.lock is not committed yet)
         if: hashFiles('uv.lock') == ''
-        run: uv lock
+        shell: bash
+        run: ./scripts/ci/run.sh lock uv lock
       - name: Sync
-        run: uv sync --all-groups
+        shell: bash
+        run: ./scripts/ci/run.sh sync uv sync --all-groups
       - name: Ruff lint
-        run: uv run ruff check src tests scripts
+        shell: bash
+        run: ./scripts/ci/run.sh ruff-lint uv run ruff check src tests scripts
       - name: Ruff format
-        run: uv run ruff format --check src tests scripts
+        shell: bash
+        run: ./scripts/ci/run.sh ruff-format uv run ruff format --check src tests scripts
       - name: Mypy (strict)
-        run: uv run mypy src
+        shell: bash
+        run: ./scripts/ci/run.sh mypy uv run mypy src
       - name: Pytest
-        run: uv run pytest -q
+        shell: bash
+        run: ./scripts/ci/run.sh pytest uv run pytest -q
+      - name: Report failures as annotations
+        if: failure()
+        shell: bash
+        run: ./scripts/ci/annotate.sh
       - name: Upload generated uv.lock
         if: hashFiles('uv.lock') != '' && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
@@ -75,16 +85,25 @@ jobs:
           node-version: 22
       - name: Install
         if: steps.detect.outputs.present == 'true'
-        run: pnpm install
+        shell: bash
+        run: ../scripts/ci/run.sh fe-install pnpm install
       - name: Typecheck
         if: steps.detect.outputs.present == 'true'
-        run: pnpm run --if-present typecheck
+        shell: bash
+        run: ../scripts/ci/run.sh fe-typecheck pnpm run --if-present typecheck
       - name: Test
         if: steps.detect.outputs.present == 'true'
-        run: pnpm test
+        shell: bash
+        run: ../scripts/ci/run.sh fe-test pnpm test
       - name: Build
         if: steps.detect.outputs.present == 'true'
-        run: pnpm build
+        shell: bash
+        run: ../scripts/ci/run.sh fe-build pnpm build
+      - name: Report failures as annotations
+        if: failure()
+        shell: bash
+        working-directory: .
+        run: ./scripts/ci/annotate.sh
       - name: Upload bundle and lockfile
         if: steps.detect.outputs.present == 'true' && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4

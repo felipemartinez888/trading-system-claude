@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from tsclaude import __version__
 from tsclaude.runtime.settings import Settings
@@ -29,7 +30,9 @@ def _cmd_verify_chain(_: argparse.Namespace) -> int:
 
 
 def _cmd_app(args: argparse.Namespace) -> int:
-    from tsclaude.api.server import run  # imported lazily: heavier dependencies
+    # Imported lazily: the API pulls heavier dependencies than the other commands need.
+    server = importlib.import_module("tsclaude.api.server")
+    run: Callable[[Settings], int] = server.run
 
     settings = Settings.from_env()
     if args.no_browser:
