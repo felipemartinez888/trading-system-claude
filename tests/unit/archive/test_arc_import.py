@@ -21,7 +21,7 @@ from arc_helpers import (
 from tsclaude.contracts.market import Market
 from tsclaude.contracts.timeutil import ManualClock
 from tsclaude.marketdata.archive.checksum import ChecksumError
-from tsclaude.marketdata.archive.importer import ArchiveImportError, ImportRequest, Importer
+from tsclaude.marketdata.archive.importer import ArchiveImportError, Importer, ImportRequest
 from tsclaude.marketdata.archive.paths import ArchiveDataType, ArchiveFile, Period
 from tsclaude.marketdata.types import FundingRate, PriceKline
 from tsclaude.store.lake import Lake, LakeKind
