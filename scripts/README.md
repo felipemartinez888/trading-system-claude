@@ -4,6 +4,7 @@
 |---|---|
 | `TradingSystemClaude.cmd` | Windows launcher: double-click to start the app and open the dashboard. |
 | `TradingSystemClaude.ps1` | Same launcher for PowerShell (`powershell -ExecutionPolicy Bypass -File scripts\TradingSystemClaude.ps1`). |
+| `verify_live.ps1` / `verify_live.sh` / `verify_live.py` | M1 gate evidence: timed live run with monitoring auto-started, JSON report in `evidence/live/`. |
 | `ci/` | CI helpers (used by `.github/workflows/ci.yml`). |
 | `spikes/` | One-off verification scripts (e.g. Binance reachability). |
 
@@ -59,6 +60,40 @@ session ended):
 5. End the `python` process in Task Manager → relaunch: the crash notice with the unobserved
    interval.
 
+## M1 live verification run (owner)
+
+Collects the M1 gate evidence (ROADMAP M1): a live Binance run with monitoring auto-started.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify_live.ps1            # 2 hours (default)
+powershell -ExecutionPolicy Bypass -File scripts\verify_live.ps1 -Hours 0.25 # quick check
+```
+
+(`scripts/verify_live.sh --hours 2` on Linux/macOS.) The dashboard opens as usual, so the run can
+be watched. Do not start another instance on the same data folder during the run. While it runs:
+
+1. **Induced disconnect:** disable the network for about one minute, then re-enable it. Expected:
+   streams go DISCONNECTED → RECOVERING → HEALTHY, a notification appears, and the missed minutes
+   are recovered via REST (or listed as an open gap with cause `disconnect`).
+2. **Hard kill (separate run):** end the `python` process in Task Manager, start the launcher
+   again. Expected: the crash notice with the unobserved interval, startup backfill of the
+   missing bars (shown as backfill in the chart legend), and a `downtime` gap if REST cannot
+   return some minutes.
+
+At the end the app quits cleanly and writes `evidence/live/verify-<UTC>.json`:
+
+| Field | Meaning |
+|---|---|
+| `stream_uptime` | per stream: share of monitored time in HEALTHY, transitions |
+| `totals` | reconnects, planned recycles, connection-task crashes, malformed messages |
+| `gaps` | detected / resolved / still open, minutes, by cause |
+| `bars` | per symbol: minutes fully inside monitoring vs stored bars (by source); `missing_unexplained` lists minutes missing *without* an open gap |
+| `clock_offset_ms` | min / max / mean / last of the per-minute samples, skew events |
+| `verdict` | `pass` and the list of failed criteria |
+
+Exit code: `0` pass · `1` monitoring did not start (reason in the report and on screen) · `2` the
+run completed but a criterion failed. Attach the JSON file to the M1 review.
+
 ## Settings (environment variables)
 
 | Variable | Default | Meaning |
@@ -68,6 +103,9 @@ session ended):
 | `TSC_OPEN_BROWSER` | `true` | Open the browser on start. |
 | `TSC_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 | `TSC_HEARTBEAT_INTERVAL_S` | `5` | Heartbeat interval used for crash detection. |
+| `TSC_CONFIG_DIR` | `configs` | Folder with `universe.yaml` and `data_quality.yaml` (read when monitoring starts; an invalid file makes Start fail with the reason). |
+| `TSC_DEMO_DETECTOR` | `on` | `off` disables the demo WATCH detector. |
+| `TSC_DEMO_THRESHOLD` | `0.003` | Demo detector: minimum 1m body |close/open − 1| (0.003 = 0.3 %). |
 
 Only one app instance may use a data directory at a time; a second launch reports that the app is
 already running.
