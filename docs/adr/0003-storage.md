@@ -1,6 +1,6 @@
 # ADR-0003: SQLite event store + Parquet/DuckDB lake
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 Two different workloads: (1) small, frequent, must-not-lose operational writes (events, signals,

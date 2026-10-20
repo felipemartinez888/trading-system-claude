@@ -1,6 +1,6 @@
 # ADR-0011: Hash-chained event log with daily chain-head commits
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 The A/B comparison requires showing that signals were recorded before outcomes were known, and that

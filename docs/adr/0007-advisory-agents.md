@@ -1,6 +1,6 @@
 # ADR-0007: Claude agents are advisory; deterministic gate decides; shadow books measure value
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 The product requires multi-agent AI evaluation, but decisions must be reproducible, risk controls

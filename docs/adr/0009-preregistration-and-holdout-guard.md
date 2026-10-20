@@ -1,6 +1,6 @@
 # ADR-0009: Pre-registration and an enforced holdout guard
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 "Sealed holdout" is only a convention unless the code enforces it; repeated peeking silently turns the

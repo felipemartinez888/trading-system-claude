@@ -1,6 +1,6 @@
 # ADR-0005: One simulator, two clocks
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 Separate backtest and paper engines inevitably diverge in fill logic, fees, rounding and timing, and

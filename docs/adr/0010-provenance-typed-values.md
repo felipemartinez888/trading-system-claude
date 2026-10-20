@@ -1,6 +1,6 @@
 # ADR-0010: Provenance carried in the API, not inferred by the UI
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 The dashboard must distinguish live, recovered, historical, replay, backtest, simulated, estimated,

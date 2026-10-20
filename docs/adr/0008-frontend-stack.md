@@ -1,6 +1,6 @@
 # ADR-0008: FastAPI backend + React/TypeScript static frontend
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 The dashboard needs real-time updates, dense professional tables and charts, and many views; the end

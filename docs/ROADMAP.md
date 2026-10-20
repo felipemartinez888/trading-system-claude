@@ -8,8 +8,8 @@ sizes are relative (S/M/L).
 
 | Milestone | Status | Evidence |
 |---|---|---|
-| P — Planning documents | ✅ Done, **awaiting owner approval** | this `docs/` folder, commit on `main` (local) |
-| M0 — Foundations | ⏳ Not started | — |
+| P — Planning documents | ✅ Done, approved by owner 2026-10-19 | `docs/`, [decision record](DECISIONS_PENDING.md) |
+| M0 — Foundations | 🔄 In progress | — |
 | M1 — Live tape (walking skeleton) | ⏳ | — |
 | M2 — Historical data + backtest core | ⏳ | — |
 | M3 — Paper trading + risk | ⏳ | — |
@@ -18,8 +18,8 @@ sizes are relative (S/M/L).
 | M6 — Performance analytics + evaluation export | ⏳ | — |
 | M7 — Forward trial + hardening | ⏳ | — |
 
-**Current work:** none (waiting for approval). **Blockers:** decisions D-01…D-06 in
-[DECISIONS_PENDING](DECISIONS_PENDING.md).
+**Current work:** M0 Foundations. **Blockers:** none for M0; live Binance verification needs the
+D-01 domain allowlist (owner action) or a run of the verification script on Windows.
 
 ## Dependency graph
 

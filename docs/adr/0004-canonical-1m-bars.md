@@ -1,6 +1,6 @@
 # ADR-0004: Canonical 1-minute bars; higher timeframes derived
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 Strategies use 5m/15m/1h, but SL/TP resolution inside a strategy bar needs a finer path, and storing

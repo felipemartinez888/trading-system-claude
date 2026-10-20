@@ -1,6 +1,6 @@
 # ADR-0002: Single asyncio process with a research worker pool
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 The app must start and stop simply on a personal Windows PC, with no services to install, while

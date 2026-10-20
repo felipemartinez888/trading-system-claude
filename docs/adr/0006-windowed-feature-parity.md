@@ -1,6 +1,6 @@
 # ADR-0006: Features as pure windowed functions with a parity test
 
-- **Status:** Proposed (2026-10-19)
+- **Status:** Accepted (2026-10-19)
 
 ## Context
 Incremental (streaming) indicator implementations differ subtly from vectorized research versions,

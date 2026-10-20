@@ -99,7 +99,7 @@ downtime become `EXPIRED (downtime)`.
 Each run writes `runs/<run_id>/` with `manifest.json` (dataset IDs, strategy ID + version + params hash,
 config hashes, code commit, seed, timezone=UTC, cost model version), `trades.parquet`,
 `equity.parquet`, `metrics.json`. Metrics: number of trades, net expectancy (R and %), profit factor,
-win rate with Wilson CI, payoff ratio, max drawdown and duration, Sharpe/Sortino (annualization
+win rate with exact Clopper–Pearson CI, break-even win rate `p*` and certified margin (ADR-0012), payoff ratio, max drawdown and duration, Sharpe/Sortino (annualization
 stated), turnover, exposure, MAE/MFE, cost share of gross P&L, by-symbol/hour/regime breakdowns,
 stationary block-bootstrap CIs.
 
