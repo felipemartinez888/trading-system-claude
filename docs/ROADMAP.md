@@ -10,15 +10,16 @@ sizes are relative (S/M/L).
 |---|---|---|
 | P — Planning documents | ✅ Done, approved by owner 2026-10-19 | `docs/`, [decision record](DECISIONS_PENDING.md) |
 | M0 — Foundations | 🔄 In progress | — |
-| M1 — Live tape (walking skeleton) | ⏳ | — |
-| M2 — Historical data + backtest core | ⏳ | — |
+| M1 — Live tape (walking skeleton) | 🔄 In progress (M1-T1 ingestion) | — |
+| M2 — Historical data + backtest core | 🔄 In progress (M2-T2 simulator, M2-T3 statistics) | — |
 | M3 — Paper trading + risk | ⏳ | — |
 | M4 — Research protocol + first strategies | ⏳ | — |
 | M5 — Claude signal agents | ⏳ | — |
 | M6 — Performance analytics + evaluation export | ⏳ | — |
 | M7 — Forward trial + hardening | ⏳ | — |
 
-**Current work:** M0 Foundations. **Blockers:** none for M0; live Binance verification needs the
+**Current work:** M0-T4 (API/dashboard), M1-T1 (Binance ingestion), M2-T2 (simulator core),
+M2-T3 (statistics for certified win rates) — in parallel, each in its own branch. **Blockers:** none for M0; live Binance verification needs the
 D-01 domain allowlist (owner action) or a run of the verification script on Windows.
 
 ## Dependency graph
