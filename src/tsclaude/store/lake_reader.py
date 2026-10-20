@@ -11,19 +11,22 @@ broken by the lexicographically smaller part content hash (deterministic), and e
 reported in the result. `dataset_ids=` pins the read to specific datasets, which is how a backtest
 manifest makes a run reproducible.
 
-`daily_quote_volumes` serves *volume only* (no prices) for the universe rule and is not guarded.
+Parts of the sealed holdout (decision L-07 b) are opened only with the guard's approval.
+`daily_quote_volumes` / `first_daily_open` serve volume-only facts for the research universe rule
+and are guarded by the same holdout rule (L-08).
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from tsclaude.contracts.market import Bar, BarSource, Interval, Market
 from tsclaude.contracts.timeutil import MS_PER_MINUTE
-from tsclaude.store.holdout import HoldoutGuard, Purpose
-from tsclaude.store.lake import TIME_KEY, IndexedPart, Lake, LakeKind, Row
+from tsclaude.store.holdout import HoldoutApproval, HoldoutGuard, Purpose
+from tsclaude.store.lake import TIME_KEY, IndexedPart, Lake, LakeKind, PartCodec, Row
 
 _SOURCE_RANK = {
     str(BarSource.ARCHIVE): 0,
@@ -60,6 +63,15 @@ class LakeReader:
         self._lake = lake
         self._guard = guard
 
+    @classmethod
+    def open(
+        cls, data_dir: Path | str, guard: HoldoutGuard, codec: PartCodec | None = None
+    ) -> LakeReader:
+        return cls(Lake(data_dir, codec), guard)
+
+    def refresh(self) -> None:
+        self._lake.refresh()
+
     # ------------------------------------------------------------------ guarded research reads
     def read_bars(
         self,
@@ -73,11 +85,11 @@ class LakeReader:
         strategy_hash: str | None = None,
         dataset_ids: Collection[str] | None = None,
     ) -> ReadResult[Bar]:
-        self._guard.check(
+        approval = self._guard.check(
             start_ms, end_ms, purpose=purpose, prereg_id=prereg_id, strategy_hash=strategy_hash
         )
         rows, used, conflicts = self._read(
-            market, LakeKind.BARS_1M, symbol, start_ms, end_ms, dataset_ids
+            market, LakeKind.BARS_1M, symbol, start_ms, end_ms, dataset_ids, approval
         )
         bars = [_bar(market, symbol, r) for r in rows]
         return ReadResult(bars, used, conflicts, _missing(rows, start_ms, end_ms))
@@ -93,11 +105,11 @@ class LakeReader:
         strategy_hash: str | None = None,
         dataset_ids: Collection[str] | None = None,
     ) -> ReadResult[Row]:
-        self._guard.check(
+        approval = self._guard.check(
             start_ms, end_ms, purpose=purpose, prereg_id=prereg_id, strategy_hash=strategy_hash
         )
         rows, used, conflicts = self._read(
-            Market.USDM, LakeKind.MARK_PRICE_1M, symbol, start_ms, end_ms, dataset_ids
+            Market.USDM, LakeKind.MARK_PRICE_1M, symbol, start_ms, end_ms, dataset_ids, approval
         )
         return ReadResult(rows, used, conflicts, _missing(rows, start_ms, end_ms))
 
@@ -112,11 +124,11 @@ class LakeReader:
         strategy_hash: str | None = None,
         dataset_ids: Collection[str] | None = None,
     ) -> ReadResult[Row]:
-        self._guard.check(
+        approval = self._guard.check(
             start_ms, end_ms, purpose=purpose, prereg_id=prereg_id, strategy_hash=strategy_hash
         )
         rows, used, conflicts = self._read(
-            Market.USDM, LakeKind.FUNDING, symbol, start_ms, end_ms, dataset_ids
+            Market.USDM, LakeKind.FUNDING, symbol, start_ms, end_ms, dataset_ids, approval
         )
         return ReadResult(rows, used, conflicts)
 
@@ -124,14 +136,23 @@ class LakeReader:
     def daily_quote_volumes(
         self, market: Market, symbol: str, start_ms: int, end_ms: int
     ) -> dict[int, float]:
-        """UTC day open time -> quote volume, from native daily klines. No prices are returned."""
-        rows, _, _ = self._read(market, LakeKind.KLINES_1D, symbol, start_ms, end_ms, None)
+        """UTC day open time -> quote volume (native daily klines). No prices are returned.
+
+        Guarded like research reads (L-08): a range touching the holdout is refused.
+        """
+        approval = self._guard.check(start_ms, end_ms, purpose=Purpose.RESEARCH)
+        rows, _, _ = self._read(
+            market, LakeKind.KLINES_1D, symbol, start_ms, end_ms, None, approval
+        )
         return {int(r["open_time_ms"]): float(r["quote_volume"]) for r in rows}
 
     def first_daily_open(
         self, market: Market, symbol: str, start_ms: int, end_ms: int
     ) -> int | None:
-        rows, _, _ = self._read(market, LakeKind.KLINES_1D, symbol, start_ms, end_ms, None)
+        approval = self._guard.check(start_ms, end_ms, purpose=Purpose.RESEARCH)
+        rows, _, _ = self._read(
+            market, LakeKind.KLINES_1D, symbol, start_ms, end_ms, None, approval
+        )
         return int(rows[0]["open_time_ms"]) if rows else None
 
     # ------------------------------------------------------------------ internals
@@ -165,6 +186,7 @@ class LakeReader:
         start_ms: int,
         end_ms: int,
         dataset_ids: Collection[str] | None,
+        approval: HoldoutApproval,
     ) -> tuple[list[Row], tuple[str, ...], list[dict[str, Any]]]:
         key = TIME_KEY[kind]
         chosen: dict[int, tuple[tuple[int, str], Row]] = {}
@@ -177,7 +199,12 @@ class LakeReader:
                 continue
             seen_parts.add(ip.part.content_hash)
             used.add(ip.dataset_id)
-            for row in self._lake.read_part(ip.part):
+            rows_of_part = (
+                self._lake.read_sealed_part(ip.part, approval)
+                if ip.part.sealed
+                else self._lake.read_part(ip.part)
+            )
+            for row in rows_of_part:
                 t = int(row[key])
                 if not start_ms <= t < end_ms:
                     continue

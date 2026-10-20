@@ -2,8 +2,8 @@
 
 Columns (binance-public-data README, identical for spot and USD-M): open time, open, high, low,
 close, volume, close time, quote asset volume, number of trades, taker buy base volume, taker buy
-quote volume, ignore. Some files start with a header row; it is skipped (only a first row whose
-first cell is not an integer is treated as a header).
+quote volume, ignore. Some files start with a header row; it is skipped only if it is exactly
+the known header text (`KNOWN_HEADERS`); any other non-numeric row counts as malformed.
 
 Timestamp unit (M0 spike): spot files are in **microseconds from 2025-01-01**, milliseconds before.
 The unit is detected *per file* from the magnitude of the first row and then enforced for every
@@ -33,6 +33,14 @@ _INT = re.compile(r"-?[0-9]{1,19}")
 _MS_RANGE = (10**11, 10**14)  # 1973 .. 5138 in ms
 _US_RANGE = (10**14, 10**17)
 SPOT_MICROS_FROM_MS = 1_735_689_600_000  # 2025-01-01T00:00:00Z
+# Header row used by Binance's kline CSVs (USD-M files, newer spot files). Only this exact text
+# is skipped as a header; any other non-numeric row is a malformed data row.
+KNOWN_HEADERS = frozenset(
+    {
+        "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,"
+        "taker_buy_quote_volume,ignore",
+    }
+)
 MAX_MALFORMED_FRACTION = 0.01
 MAX_MALFORMED_ABSOLUTE = 5
 
@@ -116,7 +124,11 @@ def _data_rows(text: str, issues: ParseIssues) -> list[tuple[int, list[str]]]:
     for line_no, row in enumerate(csv.reader(io.StringIO(text)), start=1):
         if not row or all(not c.strip() for c in row):
             continue
-        if not rows and not issues.header_skipped and _INT.fullmatch(row[0].strip()) is None:
+        if (
+            not rows
+            and not issues.header_skipped
+            and ",".join(c.strip().lower() for c in row) in KNOWN_HEADERS
+        ):
             issues.header_skipped = True
             continue
         rows.append((line_no, [c.strip() for c in row]))

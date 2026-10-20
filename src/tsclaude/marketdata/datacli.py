@@ -2,7 +2,7 @@
 
     tsclaude data import   --market spot|usdm (--symbols A,B | --symbols-from FILE)
                            --from YYYY-MM-DD --to YYYY-MM-DD [--kinds bars_1m,...]
-    tsclaude data universe --snapshot YYYY-MM-DD [--rule configs/universe_rule.yaml]
+    tsclaude data universe [--snapshot 2025-01-01] [--live] [--rule configs/universe_rule.yaml]
     tsclaude data verify   <dataset_id> | --all
     tsclaude data catalog  (rebuild catalog.duckdb)
 
@@ -35,9 +35,13 @@ from tsclaude.marketdata.archive.importer import (
 from tsclaude.marketdata.archive.paths import day_ms, ms_to_date
 from tsclaude.marketdata.config import EndpointsConfig
 from tsclaude.marketdata.universe import (
+    RESEARCH_SNAPSHOT,
+    Mode,
     SymbolData,
     UniverseRule,
+    check_research_snapshot,
     lake_facts,
+    live_facts,
     load_rule,
     raw_sha256,
     select_universe,
@@ -47,9 +51,10 @@ from tsclaude.marketdata.universe import (
     windows,
     write_snapshot,
 )
+from tsclaude.store import lake_admin
 from tsclaude.store.holdout import HoldoutGuard, SealedUnlocks
-from tsclaude.store.lake import Lake, LakeKind, PartCodec
 from tsclaude.store.lake_reader import LakeReader
+from tsclaude.store.lake_writer import LakeKind, LakeWriter, PartCodec
 
 if TYPE_CHECKING:
     import httpx
@@ -65,8 +70,9 @@ class DataEnv:
     """Everything an import needs; built by `open_env`, closed by `close`."""
 
     data_dir: Path
-    lake: Lake
+    lake: LakeWriter
     downloader: ArchiveDownloader
+    codec: PartCodec | None
     rest: dict[Market, BinanceRest]
     clock: WallClock
 
@@ -92,7 +98,7 @@ async def open_env(
 
     clock = clock or SystemClock()
     ep = endpoints or EndpointsConfig()
-    lake = Lake(data_dir, codec)
+    lake = LakeWriter(data_dir, codec)
     downloader = ArchiveDownloader(
         data_dir / "archive_cache",
         base_url=archive_base_url or ARCHIVE_BASE_URL,
@@ -103,7 +109,7 @@ async def open_env(
         Market.SPOT: BinanceRest(Market.SPOT, ep.spot_rest, clock, transport=http_transport),
         Market.USDM: BinanceRest(Market.USDM, ep.usdm_rest, clock, transport=http_transport),
     }
-    return DataEnv(data_dir, lake, downloader, rest, clock)
+    return DataEnv(data_dir, lake, downloader, codec, rest, clock)
 
 
 def _importer(env: DataEnv, **kw: Any) -> Importer:
@@ -143,31 +149,37 @@ async def run_import(
                 )
                 continue
             results.append(res.summary())
-    catalog = _try_catalog(env.lake)
-    return {"ok": not failures, "imports": results, "failures": failures, "catalog": catalog}
-
-
-def _try_catalog(lake: Lake) -> str | None:
-    try:
-        return str(lake.build_catalog())
-    except ModuleNotFoundError:
+    catalog = lake_admin.build_catalog(env.data_dir, env.codec)
+    if catalog is None:
         log.warning("duckdb not installed; catalog.duckdb not built")
-        return None
+    return {"ok": not failures, "imports": results, "failures": failures, "catalog": catalog}
 
 
 async def run_universe(
     env: DataEnv,
-    snapshot: date,
+    snapshot: date | None,
     rule: UniverseRule,
     configs_dir: Path,
     *,
+    mode: Mode = "research",
     exchange_info: dict[Market, Any] | None = None,
     symbol_concurrency: int = 4,
 ) -> dict[str, Any]:
-    """Compute and write `configs/universe_snapshot_<date>.yaml`."""
+    """Compute and write the universe snapshot.
+
+    research (default, L-08): S defaults to 2025-01-01 and may not be after the holdout start;
+    facts come from the lake through the holdout guard; today's status is not used.
+    live: S defaults to today; status TRADING required; facts come from REST; the file is
+    `universe_live_<date>.yaml` and labelled live_forward.
+    """
     from tsclaude.marketdata.binance.parse import parse_exchange_info
 
-    snapshot_date_ok(snapshot, ms_to_date(env.clock.now_ms()))
+    today = ms_to_date(env.clock.now_ms())
+    if snapshot is None:
+        snapshot = RESEARCH_SNAPSHOT if mode == "research" else today
+    snapshot_date_ok(snapshot, today)
+    if mode == "research":
+        check_research_snapshot(snapshot)
     raw: dict[Market, Any] = {}
     for market in (Market.SPOT, Market.USDM):
         if exchange_info and market in exchange_info:
@@ -177,9 +189,9 @@ async def run_universe(
         else:
             raw[market], _ = await env.rest[market].load_exchange_info_raw(None)
     infos = {m: parse_exchange_info(m, raw[m]) for m in raw}
-    evidence_dir = env.data_dir / "imports" / "exchange_info" / snapshot.isoformat()
+    evidence_dir = env.data_dir / "imports" / "exchange_info" / f"{mode}-{snapshot.isoformat()}"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    inputs: dict[str, Any] = {"exchange_info": {}, "dataset_ids": []}
+    inputs: dict[str, Any] = {"exchange_info": {}, "dataset_ids": [], "rest_daily_klines": None}
     for m, payload in raw.items():
         digest = raw_sha256(payload)
         path = evidence_dir / f"{m}-{digest[:12]}.json"
@@ -187,43 +199,65 @@ async def run_universe(
         inputs["exchange_info"][str(m)] = {"sha256": digest, "path": path.as_posix()}
 
     w = windows(snapshot, rule)
-    candidates, excluded = static_candidates(infos[Market.SPOT], infos[Market.USDM], rule, w)
-    importer = _importer(env, cross_check_months=0)
+    candidates, excluded = static_candidates(
+        infos[Market.SPOT], infos[Market.USDM], rule, w, status_filter=(mode == "live")
+    )
     sem = asyncio.Semaphore(symbol_concurrency)
-    dataset_ids: set[str] = set()
     failures: list[dict[str, str]] = []
+    data: dict[str, SymbolData] = {}
 
-    async def ensure(symbol: str) -> None:
-        async with sem:
-            reqs = [
-                ImportRequest(Market.SPOT, LakeKind.KLINES_1D, symbol, *w.listing_probe),
-                ImportRequest(Market.SPOT, LakeKind.KLINES_1D, symbol, *w.volume),
-                ImportRequest(Market.USDM, LakeKind.KLINES_1D, symbol, *w.volume),
-            ]
-            for req in reqs:
+    if mode == "live":
+
+        async def fetch_live(symbol: str) -> None:
+            async with sem:
                 try:
-                    res: ImportResult = await importer.run(req)
+                    data[symbol] = await live_facts(env.rest, symbol, w)
                 except Exception as exc:
                     failures.append({"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
-                    return
-                if res.dataset_id:
-                    dataset_ids.add(res.dataset_id)
 
-    await asyncio.gather(*(ensure(s) for s in candidates))
+        await asyncio.gather(*(fetch_live(s) for s in candidates))
+        inputs["rest_daily_klines"] = {
+            "endpoints": ["/api/v3/klines", "/fapi/v1/klines"],
+            "interval": "1d",
+            "symbols": len(candidates),
+        }
+    else:
+        importer = _importer(env, cross_check_months=0)
+        dataset_ids: set[str] = set()
+
+        async def ensure(symbol: str) -> None:
+            async with sem:
+                reqs = [
+                    ImportRequest(Market.SPOT, LakeKind.KLINES_1D, symbol, *w.listing_probe),
+                    ImportRequest(Market.SPOT, LakeKind.KLINES_1D, symbol, *w.volume),
+                    ImportRequest(Market.USDM, LakeKind.KLINES_1D, symbol, *w.volume),
+                ]
+                for req in reqs:
+                    try:
+                        res: ImportResult = await importer.run(req)
+                    except Exception as exc:
+                        failures.append({"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
+                        return
+                    if res.dataset_id:
+                        dataset_ids.add(res.dataset_id)
+
+        await asyncio.gather(*(ensure(s) for s in candidates))
+        if not failures:
+            reader = LakeReader.open(env.data_dir, HoldoutGuard(SealedUnlocks()), env.codec)
+            data = {s: lake_facts(reader, s, w) for s in candidates}
+        inputs["dataset_ids"] = sorted(dataset_ids)
     if failures:
         # Excluding a candidate because its data could not be fetched would bias the universe.
-        return {"ok": False, "failures": failures, "candidates": len(candidates)}
-    reader = LakeReader(env.lake, HoldoutGuard(SealedUnlocks()))
-    env.lake.refresh()
-    data: dict[str, SymbolData] = {s: lake_facts(reader, s, w) for s in candidates}
+        return {"ok": False, "mode": mode, "failures": failures, "candidates": len(candidates)}
     ranked, excluded_late = select_universe(candidates, data, rule, w)
-    inputs["dataset_ids"] = sorted(dataset_ids)
     doc = snapshot_document(
-        snapshot, rule, w, ranked, excluded + excluded_late, inputs, env.clock.now_ms()
+        snapshot, rule, w, ranked, excluded + excluded_late, inputs, env.clock.now_ms(), mode
     )
     path = write_snapshot(doc, configs_dir)
     return {
         "ok": True,
+        "mode": mode,
+        "purpose": doc["purpose"],
         "snapshot": path.as_posix(),
         "symbols": doc["symbols"],
         "candidates": len(candidates),
@@ -303,6 +337,7 @@ def _cmd_universe(args: argparse.Namespace) -> int:
                 args.snapshot,
                 rule,
                 Path(args.configs_dir),
+                mode="live" if args.live else "research",
                 exchange_info=exchange_info or None,
             )
         finally:
@@ -314,21 +349,18 @@ def _cmd_universe(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
-    data_dir = _data_dir(args)
-    lake = Lake(data_dir)
     if args.all == bool(args.dataset_id):
         raise SystemExit("give a dataset_id or --all")
-    ids = lake.dataset_ids() if args.all else [args.dataset_id]
-    reports = [lake.verify(d, raw_cache_dir=data_dir / "archive_cache") for d in ids]
-    result = {"ok": all(r["ok"] for r in reports), "verified": len(reports), "reports": reports}
+    result = lake_admin.verify(_data_dir(args), None if args.all else [args.dataset_id])
     _emit(result, args.summary)
     return 0 if result["ok"] else 2
 
 
 def _cmd_catalog(args: argparse.Namespace) -> int:
-    lake = Lake(_data_dir(args))
-    _emit({"catalog": str(lake.build_catalog()), "datasets": len(lake.dataset_ids())}, args.summary)
-    return 0
+    data_dir = _data_dir(args)
+    catalog = lake_admin.build_catalog(data_dir)
+    _emit({"catalog": catalog, "datasets": len(lake_admin.dataset_ids(data_dir))}, args.summary)
+    return 0 if catalog else 1
 
 
 def register(sub: Any) -> None:
@@ -353,7 +385,18 @@ def register(sub: Any) -> None:
 
     uni = data_sub.add_parser("universe", help="compute the rule-based universe snapshot")
     common(uni)
-    uni.add_argument("--snapshot", type=_date, required=True)
+    uni.add_argument(
+        "--snapshot",
+        type=_date,
+        default=None,
+        help="research default 2025-01-01 (L-08; must not be after the holdout start); "
+        "live default: today",
+    )
+    uni.add_argument(
+        "--live",
+        action="store_true",
+        help="forward/live universe from today's status and REST volumes (never for research)",
+    )
     uni.add_argument("--rule", default="configs/universe_rule.yaml")
     uni.add_argument("--configs-dir", default="configs")
     uni.add_argument("--spot-exchange-info", default=None, help="use a saved payload")

@@ -44,7 +44,7 @@ from tsclaude.marketdata.archive.qa import (
     zero_volume_runs,
 )
 from tsclaude.marketdata.types import FundingRate, PriceKline, RestKline
-from tsclaude.store.lake import Lake, LakeKind, PartInfo, Row
+from tsclaude.store.lake_writer import LakeKind, LakeWriter, PartInfo, Row, Staging, month_is_sealed
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class _Chunk:
 class Importer:
     def __init__(
         self,
-        lake: Lake,
+        lake: LakeWriter,
         fetcher: Fetcher,
         rest: dict[Market, RestSource] | None,
         clock: WallClock,
@@ -166,20 +166,15 @@ class Importer:
 
     # ------------------------------------------------------------------ entry point
     async def run(self, req: ImportRequest) -> ImportResult:
-        created_files: list[PartInfo] = []
+        """Import one request. Parts are staged; nothing is visible unless the whole request
+        succeeds (the staging directory of a failed request is removed)."""
+        staging = self._lake.begin()
         try:
             if req.kind is LakeKind.FUNDING:
-                return await self._run_funding(req, created_files)
-            return await self._run_klines(req, created_files)
-        except BaseException:
-            self._discard(created_files)
-            raise
-
-    def _discard(self, parts: Sequence[PartInfo]) -> None:
-        referenced = {ip.part.path for ip in self._lake.index()}
-        for p in parts:
-            if p.path not in referenced:
-                (self._lake.data_dir / p.path).unlink(missing_ok=True)
+                return await self._run_funding(req, staging)
+            return await self._run_klines(req, staging)
+        finally:
+            staging.abort()  # no-op after a successful commit
 
     # ------------------------------------------------------------------ kline kinds
     def _plan(self, req: ImportRequest) -> list[PlanItem]:
@@ -198,7 +193,7 @@ class Importer:
                 items.append(PlanItem(PlanKind.REST, lo, hi, "rest"))
         return items
 
-    async def _run_klines(self, req: ImportRequest, created: list[PartInfo]) -> ImportResult:
+    async def _run_klines(self, req: ImportRequest, staging: Staging) -> ImportResult:
         data_type, interval, step = _KIND_SPEC[req.kind]
         if data_type is None:  # pragma: no cover - funding handled separately
             raise ValueError(req.kind)
@@ -236,9 +231,7 @@ class Importer:
                 zero_runs.extend(zero_volume_runs(bars, min_run=1))
                 if label in sample:
                     bars_by_month[label] = bars
-            new_parts = self._lake.write_parts(req.market, req.kind, req.symbol, valid)
-            created.extend(new_parts)
-            parts.extend(new_parts)
+            parts.extend(staging.write_parts(req.market, req.kind, req.symbol, valid))
         checks: list[dict[str, Any]] = []
         for label in sorted(bars_by_month):
             checks.extend(await self._cross_checks(req, label, bars_by_month[label], sources))
@@ -252,7 +245,7 @@ class Importer:
             zero_runs=runs if req.kind is LakeKind.BARS_1M else (),
             cross_checks=checks,
         )
-        return self._commit(req, interval, parts, sources, qa)
+        return self._commit(req, interval, staging, parts, sources, qa)
 
     def _effective_end(self, req: ImportRequest, step: int) -> int:
         """Requests are clipped to closed periods: nothing after the last closed bar is expected."""
@@ -383,7 +376,7 @@ class Importer:
                     collector.duplicate_conflicts.append(
                         {
                             "open_time_ms": t,
-                            "open": to_iso(t),
+                            "time": to_iso(t),
                             "kept": _asdict(current[0]),
                             "dropped": _asdict(row),
                         }
@@ -411,7 +404,7 @@ class Importer:
                 collector.rejected.append(
                     {
                         "open_time_ms": row.open_time_ms,
-                        "open": to_iso(row.open_time_ms),
+                        "time": to_iso(row.open_time_ms),
                         "reason": _reason(exc),
                         "row": _asdict(row),
                     }
@@ -428,7 +421,8 @@ class Importer:
         m = paths.month_start(paths.ms_to_date(req.start_ms))
         while paths.day_ms(m) < req.end_ms:
             lo, hi = paths.day_ms(m), paths.day_ms(paths.next_month(m))
-            if lo >= req.start_ms and hi <= req.end_ms and hi <= current:
+            sealed = month_is_sealed(m.year, m.month)
+            if lo >= req.start_ms and hi <= req.end_ms and hi <= current and not sealed:
                 labels.append(m.strftime("%Y-%m"))
             m = paths.next_month(m)
         if len(labels) <= self._cross_check_months:
@@ -478,7 +472,7 @@ class Importer:
         return out
 
     # ------------------------------------------------------------------ funding
-    async def _run_funding(self, req: ImportRequest, created: list[PartInfo]) -> ImportResult:
+    async def _run_funding(self, req: ImportRequest, staging: Staging) -> ImportResult:
         rest = self._rest.get(Market.USDM)
         if rest is None:
             raise ArchiveImportError("funding history needs the USD-M REST client")
@@ -522,8 +516,7 @@ class Importer:
                     "ingested_at_ms": ingested,
                 }
             )
-        parts = self._lake.write_parts(req.market, req.kind, req.symbol, rows) if rows else []
-        created.extend(parts)
+        parts = staging.write_parts(req.market, req.kind, req.symbol, rows) if rows else []
         times = [int(r["funding_time_ms"]) for r in rows]
         intervals = sorted({(b - a) // MS_PER_HOUR for a, b in pairwise(times)})
         sources = [
@@ -553,13 +546,14 @@ class Importer:
             },
         )
         qa["summary"]["rows"] = len(rows)
-        return self._commit(req, "", parts, sources, qa)
+        return self._commit(req, "", staging, parts, sources, qa)
 
     # ------------------------------------------------------------------ commit
     def _commit(
         self,
         req: ImportRequest,
         interval: str,
+        staging: Staging,
         parts: list[PartInfo],
         sources: list[dict[str, Any]],
         qa: dict[str, Any],
@@ -589,7 +583,10 @@ class Importer:
             "sources": sources,
             "gaps": qa.get("gaps", []),
         }
-        dsid, created = self._lake.commit_dataset(parts, meta, qa)
+        committed = staging.commit(meta, qa)
+        if committed is None:  # pragma: no cover - parts were staged above
+            return ImportResult(req, None, False, 0, qa, sources)
+        dsid, created = committed
         return ImportResult(req, dsid, created, rows, qa, sources, parts)
 
 

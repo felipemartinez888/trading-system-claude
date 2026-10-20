@@ -2,9 +2,11 @@
 # data.binance.vision, api.binance.com and fapi.binance.com).
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\import_history.ps1 [-From 2022-01-01] [-SkipUniverse]
 #
-# 1. computes the rule-based universe snapshot for today (configs\universe_snapshot_<date>.yaml);
+# 1. computes the research universe frozen at 2025-01-01 (decision L-08;
+#    configs\universe_snapshot_2025-01-01.yaml) and the live/forward universe for today
+#    (configs\universe_live_<date>.yaml, never used for research);
 # 2. imports spot and USD-M history from -From to the last complete month for the default universe
-#    (configs\universe.yaml) and for the snapshot's symbols;
+#    (configs\universe.yaml) and for the research universe's symbols;
 # 3. verifies every dataset in the lake;
 # 4. writes all JSON summaries to evidence\data\<timestamp>\ (commit that folder as evidence).
 # Re-running is safe: downloads are cached and checksum-verified, imports are idempotent.
@@ -41,9 +43,10 @@ function Invoke-Step([string]$Name, [string[]]$CliArgs) {
 
 $sources = @('configs\universe.yaml')
 if (-not $SkipUniverse) {
-    $code = Invoke-Step 'universe' @('data', 'universe', '--snapshot', $today, '--summary', "$out\universe.json")
-    $snap = "configs\universe_snapshot_$today.yaml"
+    $code = Invoke-Step 'universe-research' @('data', 'universe', '--summary', "$out\universe-research.json")
+    $snap = 'configs\universe_snapshot_2025-01-01.yaml'
     if ($code -eq 0 -and (Test-Path -LiteralPath $snap)) { $sources += $snap }
+    Invoke-Step 'universe-live' @('data', 'universe', '--live', '--snapshot', $today, '--summary', "$out\universe-live.json") | Out-Null
 }
 
 foreach ($src in $sources) {

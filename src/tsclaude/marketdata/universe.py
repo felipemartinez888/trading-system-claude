@@ -1,26 +1,35 @@
-"""Rule-based trading universe (decision D-04, DATA_ARCHITECTURE §6).
+"""Rule-based trading universe (decision D-04 as refined by L-08, DATA_ARCHITECTURE §6).
 
-Rule (parameters in `configs/universe_rule.yaml`), evaluated at a snapshot date S (00:00 UTC):
+Two modes:
 
-1. the symbol is listed on Binance Spot **and** as a USD-M perpetual with the same symbol name
-   (contract multiplier symbols such as `1000PEPEUSDT` therefore do not match -- conservative);
-2. quote asset USDT on both; status `TRADING` on both;
+- **research** (L-08): the universe for backtests and research is frozen at S = 2025-01-01, the
+  validation start. Snapshots with S after the holdout start are rejected in code, and every lake
+  read goes through the holdout guard. Today's exchange *status* is not used (a delisting inside a
+  segment is an event, not an exclusion); instead the symbol must have data through S on both
+  markets.
+- **live** (`--live`): the current snapshot for the live/forward universe only. It uses today's
+  `TRADING` status and fetches its volumes over REST, without reading the lake.
+
+Rule (parameters in `configs/universe_rule.yaml`), evaluated at snapshot date S (00:00 UTC):
+
+1. listed on Binance Spot **and** as a USD-M perpetual with the same symbol name (contract
+   multiplier symbols such as `1000PEPEUSDT` do not match -- conservative);
+2. quote asset USDT on both; (live mode only) status `TRADING` on both;
 3. base asset is not a stablecoin (list in the rule file) and not a leveraged token (base ending in
    UP/DOWN/BULL/BEAR whose remainder is itself a listed base asset, e.g. BTCUP);
 4. listed for >= 24 months before S on both: USD-M by `onboardDate` <= S - 24 months; spot by the
-   existence of native daily klines in the 7 days before S - 24 months (spot exchangeInfo has no
-   listing date);
-5. ranked by the 90-day median daily quote volume over [S - 90 d, S), from native daily klines in
-   the lake; `rank_by` decides how the two markets combine (default `min`: liquid on both); a
-   symbol needs >= `min_volume_days` days with data, otherwise it is excluded (missing days are
-   never counted as zero volume);
-6. top N (default 10).
+   existence of native daily klines in the 7 days before S - 24 months;
+5. data through S: a daily kline for the day before S on both markets;
+6. ranked by the 90-day median daily quote volume over [S - 90 d, S); `rank_by` decides how the
+   two markets combine (default `min`: liquid on both); a symbol needs >= `min_volume_days` days
+   with data (missing days are never counted as zero volume);
+7. top N (default 10).
 
 Inputs are stored as evidence: the raw exchangeInfo payloads (with SHA-256) and the dataset ids of
-every lake dataset read. `select_universe` is pure; `compute_snapshot` does the I/O.
+every lake dataset read. `select_universe` is pure.
 
-Known limitations: survivorship (only symbols trading today are candidates); if S lies inside or
-right after the sealed holdout, the volume window overlaps it -- only volumes (no prices) are read.
+Known limitation: candidates come from today's exchangeInfo, so symbols Binance has removed from it
+entirely cannot be candidates (survivorship).
 """
 
 from __future__ import annotations
@@ -38,8 +47,25 @@ from tsclaude.contracts.market import Market
 from tsclaude.contracts.timeutil import MS_PER_DAY, to_iso
 from tsclaude.marketdata.archive.paths import day_ms
 from tsclaude.marketdata.types import ExchangeInfo
+from tsclaude.store.holdout import HOLDOUT_START_MS
 
 type RankBy = Literal["spot", "usdm", "min", "sum"]
+type Mode = Literal["research", "live"]
+
+RESEARCH_SNAPSHOT = date(2025, 1, 1)  # decision L-08
+
+
+class UniverseError(ValueError):
+    pass
+
+
+def check_research_snapshot(snapshot: date) -> None:
+    """L-08: research snapshots after the holdout start would rank on holdout information."""
+    if day_ms(snapshot) > HOLDOUT_START_MS:
+        raise UniverseError(
+            f"research universe snapshot {snapshot} is after the holdout start; "
+            f"use {RESEARCH_SNAPSHOT} (L-08) or --live for the forward universe"
+        )
 
 
 @dataclass(frozen=True)
@@ -144,9 +170,17 @@ def _is_leveraged(base: str, all_bases: set[str], suffixes: Sequence[str]) -> bo
 
 
 def static_candidates(
-    spot: ExchangeInfo, usdm: ExchangeInfo, rule: UniverseRule, w: Windows
+    spot: ExchangeInfo,
+    usdm: ExchangeInfo,
+    rule: UniverseRule,
+    w: Windows,
+    *,
+    status_filter: bool,
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """Apply the exchangeInfo-only parts of the rule. Returns (candidates, exclusions)."""
+    """Apply the exchangeInfo-only parts of the rule. Returns (candidates, exclusions).
+
+    `status_filter` (live mode only) requires `TRADING` today on both markets.
+    """
     excluded: list[dict[str, str]] = []
     candidates: list[str] = []
     bases = {s.base_asset for s in spot.symbols.values()}
@@ -162,7 +196,7 @@ def static_candidates(
             reason = f"USD-M contract type {f.contract_type}"
         elif f.quote_asset != rule.quote_asset:
             reason = f"USD-M quote asset {f.quote_asset}"
-        elif s.status != "TRADING" or f.status != "TRADING":
+        elif status_filter and (s.status != "TRADING" or f.status != "TRADING"):
             reason = f"status spot={s.status} usdm={f.status}"
         elif s.base_asset.upper() in rule.stablecoin_bases:
             reason = "stablecoin base"
@@ -200,6 +234,14 @@ def select_universe(
             continue
         if not d.spot_listed_by_cutoff:
             excluded.append({"symbol": symbol, "reason": "spot not listed 24 months before"})
+            continue
+        last_day = w.snapshot_ms - MS_PER_DAY
+        spot_last = max(d.spot_daily_quote_volume, default=None)
+        usdm_last = max(d.usdm_daily_quote_volume, default=None)
+        if spot_last is None or usdm_last is None or min(spot_last, usdm_last) < last_day:
+            excluded.append(
+                {"symbol": symbol, "reason": "no data through the snapshot on both markets"}
+            )
             continue
         spot_med, spot_days = _median(d.spot_daily_quote_volume, w.volume)
         usdm_med, usdm_days = _median(d.usdm_daily_quote_volume, w.volume)
@@ -249,10 +291,12 @@ def snapshot_document(
     excluded: Sequence[dict[str, str]],
     inputs: Mapping[str, Any],
     generated_at_ms: int,
+    mode: Mode = "research",
 ) -> dict[str, Any]:
     top = list(ranked[: rule.top_n])
     return {
-        "version": 1,
+        "version": 2,
+        "purpose": "research" if mode == "research" else "live_forward",
         "snapshot_date": snapshot.isoformat(),
         "generated_at": to_iso(generated_at_ms),
         "rule": rule.to_dict(),
@@ -269,17 +313,22 @@ def snapshot_document(
         "excluded": list(excluded),
         "inputs": dict(inputs),
         "limitations": [
-            "survivorship: candidates are symbols trading at the snapshot",
+            "survivorship: candidates come from today's exchangeInfo",
             "contract-multiplier USD-M symbols (e.g. 1000PEPEUSDT) do not match spot symbols",
-            "the volume window may overlap the sealed holdout; only volumes are read",
-        ],
+        ]
+        + (
+            ["live/forward universe only: never use it for research or backtests"]
+            if mode == "live"
+            else ["research universe frozen at S (L-08); today's status is not used"]
+        ),
     }
 
 
 def write_snapshot(doc: Mapping[str, Any], configs_dir: Path) -> Path:
     import yaml
 
-    path = configs_dir / f"universe_snapshot_{doc['snapshot_date']}.yaml"
+    stem = "universe_snapshot" if doc.get("purpose") == "research" else "universe_live"
+    path = configs_dir / f"{stem}_{doc['snapshot_date']}.yaml"
     header = (
         "# Generated by `tsclaude data universe`. Do not edit by hand: re-run the command.\n"
         "# Rule: decision D-04 / DATA_ARCHITECTURE §6; inputs and their hashes are listed below.\n"
@@ -292,7 +341,7 @@ def write_snapshot(doc: Mapping[str, Any], configs_dir: Path) -> Path:
 
 
 def lake_facts(reader: Any, symbol: str, w: Windows) -> SymbolData:
-    """Read the lake facts the rule needs (volume only; via LakeReader's unguarded methods)."""
+    """Research mode: lake facts via LakeReader's holdout-guarded volume-only reads."""
     probe = reader.first_daily_open(Market.SPOT, symbol, *w.listing_probe)
     return SymbolData(
         spot_listed_by_cutoff=probe is not None,
@@ -306,3 +355,15 @@ def snapshot_date_ok(snapshot: date, today: date) -> None:
         raise ValueError("snapshot date is in the future")
     if snapshot < today - timedelta(days=3650):
         raise ValueError("snapshot date implausibly old")
+
+
+async def live_facts(rest: Mapping[Market, Any], symbol: str, w: Windows) -> SymbolData:
+    """Live mode: the same facts from REST daily klines (the lake is not read)."""
+    probe = await rest[Market.SPOT].klines(symbol, *w.listing_probe, "1d")
+    spot = await rest[Market.SPOT].klines(symbol, *w.volume, "1d")
+    usdm = await rest[Market.USDM].klines(symbol, *w.volume, "1d")
+    return SymbolData(
+        spot_listed_by_cutoff=bool(probe),
+        spot_daily_quote_volume={k.open_time_ms: k.quote_volume for k in spot},
+        usdm_daily_quote_volume={k.open_time_ms: k.quote_volume for k in usdm},
+    )

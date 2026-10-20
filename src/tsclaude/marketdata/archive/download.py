@@ -6,8 +6,8 @@
   use; a cached zip that no longer matches is deleted and downloaded again once.
 - Writes are atomic (temp file + rename), so an interrupted run resumes cleanly.
 - Bounded concurrency (semaphore); retries with exponential back-off + full jitter on transport
-  errors, HTTP 5xx and 429 (honouring `Retry-After`). HTTP 404 means "this file does not exist"
-  (`ArchiveNotFound`), any other status is a `DownloadError`.
+  errors, HTTP 5xx and 429 (honouring `Retry-After`, capped at 120 s). HTTP 404 means "this file
+  does not exist" (`ArchiveNotFound`), any other status is a `DownloadError`.
 
 httpx is imported lazily so the rest of the archive package stays importable without it.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -51,10 +52,17 @@ class VerifiedFile:
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
+    """Write via a per-writer temp file (unique name) and rename; the temp never survives."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.part")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.part")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+MAX_RETRY_AFTER_S = 120.0
 
 
 class ArchiveDownloader:
@@ -178,6 +186,9 @@ def _retry_after_s(raw: str | None) -> float | None:
     if raw is None:
         return None
     try:
-        return max(0.0, float(raw))
+        value = float(raw)
     except ValueError:
         return None
+    if value != value:  # NaN
+        return None
+    return min(MAX_RETRY_AFTER_S, max(0.0, value))

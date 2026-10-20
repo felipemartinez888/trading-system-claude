@@ -1,4 +1,4 @@
-"""Command-line entry point: `tsclaude app | data | verify-chain | version`."""
+"""Command-line entry point: `tsclaude app | data | research | verify-chain | version`."""
 
 from __future__ import annotations
 
@@ -53,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Historical data commands (M2-T1); their module imports nothing heavy at load time.
     importlib.import_module("tsclaude.marketdata.datacli").register(sub)
+    # Owner-only research protocol commands (holdout unlock, L-07 a).
+    importlib.import_module("tsclaude.store.holdout_cli").register(sub)
 
     verify = sub.add_parser("verify-chain", help="verify the hash chain of the event store")
     verify.set_defaults(func=_cmd_verify_chain)

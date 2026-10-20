@@ -1,8 +1,15 @@
 """Immutable, content-addressed Parquet lake (DATA_ARCHITECTURE §5).
 
     <data>/lake/market=<m>/kind=<k>/symbol=<S>/year=<YYYY>/month=<MM>/part-<hash32>.parquet
+    <data>/lake_sealed/...    same layout, months overlapping the sealed holdout (L-07 b)
     <data>/imports/<dataset_id>/manifest.json      (+ qa_report.json)
-    <data>/catalog.duckdb                          (derived; rebuilt from the manifests)
+    <data>/catalog.duckdb                          (derived; never includes lake_sealed)
+
+- **Sealed holdout** (decision L-07 b): parts of months overlapping 2026-01-01 → 2026-09-30 are
+  stored under `lake_sealed/`. `Lake.read_part` refuses them; only `LakeReader` reads them, with
+  an approval issued by the holdout guard. The DuckDB catalog never references them.
+- **Staging**: an import writes its parts under `.staging/<uuid>/` and publishes them (atomic
+  rename) together with the manifest; a failed import only deletes its own staging directory.
 
 - A **part** holds the rows of one (market, kind, symbol, month) produced by one import. Its name
   carries the first 32 hex chars of its **content hash**: SHA-256 over a canonical text form of the
@@ -23,9 +30,12 @@ lake logic can be tested without pyarrow.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import shutil
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -34,6 +44,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from tsclaude.contracts.market import Market
+from tsclaude.store.holdout import HOLDOUT_END_MS, HOLDOUT_START_MS, HoldoutApproval
 
 type ColumnType = Literal["int", "float", "float?", "str"]
 type Row = dict[str, Any]
@@ -123,6 +134,10 @@ class PartInfo:
     first_time_ms: int
     last_time_ms: int
 
+    @property
+    def sealed(self) -> bool:
+        return self.path.startswith("lake_sealed/")
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -179,17 +194,127 @@ def _year_month(ms: int) -> tuple[int, int]:
     return dt.year, dt.month
 
 
+def _tmp_name(path: Path) -> Path:
+    """Per-writer temp name next to `path` (unique across processes and imports)."""
+    return path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+
 def _write_json_atomic(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = _tmp_name(path)
+    try:
+        tmp.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def month_is_sealed(year: int, month: int) -> bool:
+    """True if the UTC month overlaps the sealed holdout (decision L-07 b)."""
+    start = int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
+    nxt = datetime(year + month // 12, month % 12 + 1, 1, tzinfo=UTC)
+    end = int(nxt.timestamp() * 1000)
+    return start < HOLDOUT_END_MS and end > HOLDOUT_START_MS
+
+
+class SealedPartError(LakeError):
+    """A holdout-period part was requested outside the guarded reader."""
+
+
+class Staging:
+    """The parts of one import, written under `<data>/.staging/<uuid>/` and published on commit.
+
+    Nothing reaches the lake before `commit()`: an aborted or failed import only removes its own
+    staging directory, so concurrent imports can never delete each other's files. Publishing moves
+    each part into place with an atomic rename; a part whose content already exists (identical
+    content hash) keeps the existing file.
+    """
+
+    def __init__(self, lake: Lake) -> None:
+        self._lake = lake
+        self.dir = lake.data_dir / ".staging" / uuid.uuid4().hex
+        self._staged: list[tuple[PartInfo, Path]] = []
+        self._closed = False
+
+    @property
+    def parts(self) -> list[PartInfo]:
+        return [p for p, _ in self._staged]
+
+    def write_parts(
+        self, market: Market | str, kind: LakeKind, symbol: str, rows: Sequence[Row]
+    ) -> list[PartInfo]:
+        """Split rows by UTC month and stage one part per month."""
+        if self._closed:
+            raise LakeError("staging already closed")
+        key = TIME_KEY[kind]
+        by_month: dict[tuple[int, int], list[Row]] = {}
+        for row in rows:
+            by_month.setdefault(_year_month(int(row[key])), []).append(row)
+        out: list[PartInfo] = []
+        for (year, month), month_rows in sorted(by_month.items()):
+            part, staged = self._lake._stage_part(
+                self.dir, str(market), kind, symbol, year, month, month_rows
+            )
+            self._staged.append((part, staged))
+            out.append(part)
+        return out
+
+    def publish(self) -> list[PartInfo]:
+        """Move the staged parts into the lake (no manifest). Returns parts with final hashes."""
+        if self._closed:
+            raise LakeError("staging already closed")
+        published: list[PartInfo] = []
+        try:
+            for part, staged in self._staged:
+                final = self._lake.data_dir / part.path
+                final.parent.mkdir(parents=True, exist_ok=True)
+                if final.exists():
+                    staged.unlink(missing_ok=True)
+                else:
+                    os.replace(staged, final)
+                published.append(_with_file_hash(part, _file_sha256(final)))
+        finally:
+            self.abort()
+        return published
+
+    def commit(
+        self, meta: Mapping[str, Any], qa: Mapping[str, Any] | None
+    ) -> tuple[str, bool] | None:
+        """Publish the parts and write the manifest. None if nothing was staged."""
+        if not self._staged:
+            self.abort()
+            return None
+        return self._lake.commit_dataset(self.publish(), meta, qa)
+
+    def abort(self) -> None:
+        self._closed = True
+        shutil.rmtree(self.dir, ignore_errors=True)
+        parent = self.dir.parent
+        with contextlib.suppress(OSError):
+            parent.rmdir()  # only if empty (other imports may be staging)
+
+    def __enter__(self) -> Staging:
+        return self
+
+    def __exit__(self, exc_type: object, *exc: object) -> None:
+        if not self._closed:
+            self.abort()
+
+
+def _with_file_hash(part: PartInfo, file_sha: str) -> PartInfo:
+    d = part.to_dict()
+    d["file_sha256"] = file_sha
+    return PartInfo.from_dict(d)
 
 
 class Lake:
+    """Internal lake API. Research code reads only through `store.lake_reader.LakeReader`;
+    writers use `store.lake_writer`; integrity/catalog tools use `store.lake_admin`."""
+
     def __init__(self, data_dir: Path | str, codec: PartCodec | None = None) -> None:
         self.data_dir = Path(data_dir)
         self.lake_dir = self.data_dir / "lake"
+        self.sealed_dir = self.data_dir / "lake_sealed"
         self.imports_dir = self.data_dir / "imports"
         if codec is None:
             from tsclaude.store.parquet_codec import ParquetCodec  # needs pyarrow
@@ -199,22 +324,27 @@ class Lake:
         self._index: list[IndexedPart] | None = None
 
     # ------------------------------------------------------------------ writing
+    def begin(self) -> Staging:
+        return Staging(self)
+
     def write_parts(
         self, market: Market | str, kind: LakeKind, symbol: str, rows: Sequence[Row]
     ) -> list[PartInfo]:
-        """Split rows by UTC month and write one immutable part per month."""
-        key = TIME_KEY[kind]
-        by_month: dict[tuple[int, int], list[Row]] = {}
-        for row in rows:
-            by_month.setdefault(_year_month(int(row[key])), []).append(row)
-        parts: list[PartInfo] = []
-        for (year, month), month_rows in sorted(by_month.items()):
-            parts.append(self._write_part(str(market), kind, symbol, year, month, month_rows))
-        return parts
+        """Stage and immediately publish parts (no manifest yet; see `commit_dataset`)."""
+        staging = self.begin()
+        staging.write_parts(market, kind, symbol, rows)
+        return staging.publish()
 
-    def _write_part(
-        self, market: str, kind: LakeKind, symbol: str, year: int, month: int, rows: list[Row]
-    ) -> PartInfo:
+    def _stage_part(
+        self,
+        staging_dir: Path,
+        market: str,
+        kind: LakeKind,
+        symbol: str,
+        year: int,
+        month: int,
+        rows: list[Row],
+    ) -> tuple[PartInfo, Path]:
         key = TIME_KEY[kind]
         rows = sorted(rows, key=lambda r: int(r[key]))
         times = [int(r[key]) for r in rows]
@@ -225,17 +355,20 @@ class Lake:
             if missing:
                 raise LakeError(f"row lacks columns {missing}")
         chash = content_hash(market, kind, symbol, rows)
+        root = "lake_sealed" if month_is_sealed(year, month) else "lake"
         rel = (
-            f"lake/market={market}/kind={kind}/symbol={symbol}/year={year:04d}/month={month:02d}/"
-            f"part-{chash[:32]}.{self.codec.extension}"
+            f"{root}/market={market}/kind={kind}/symbol={symbol}/year={year:04d}/"
+            f"month={month:02d}/part-{chash[:32]}.{self.codec.extension}"
         )
-        path = self.data_dir / rel
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        staged = staging_dir / rel
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _tmp_name(staged)
+        try:
             self.codec.write(tmp, SCHEMAS[kind], rows)
-            os.replace(tmp, path)
-        return PartInfo(
+            os.replace(tmp, staged)
+        finally:
+            tmp.unlink(missing_ok=True)
+        part = PartInfo(
             market=market,
             kind=str(kind),
             symbol=symbol,
@@ -243,18 +376,22 @@ class Lake:
             month=month,
             path=rel,
             content_hash=chash,
-            file_sha256=_file_sha256(path),
+            file_sha256=_file_sha256(staged),
             rows=len(rows),
             first_time_ms=times[0],
             last_time_ms=times[-1],
         )
+        return part, staged
 
     def commit_dataset(
         self, parts: Sequence[PartInfo], meta: Mapping[str, Any], qa: Mapping[str, Any] | None
     ) -> tuple[str, bool]:
-        """Write the manifest (and QA report). Returns (dataset_id, created)."""
+        """Write the manifest (and QA report) for published parts. Returns (dataset_id, created)."""
         if not parts:
             raise LakeError("a dataset needs at least one part")
+        for p in parts:
+            if not (self.data_dir / p.path).exists():
+                raise LakeError(f"part {p.path} is not published")
         dsid = dataset_id_of(p.content_hash for p in parts)
         manifest_path = self.imports_dir / dsid / "manifest.json"
         if manifest_path.exists():
@@ -264,6 +401,7 @@ class Lake:
             "dataset_id": dsid,
             "lake_format_version": LAKE_FORMAT_VERSION,
             "parts": [p.to_dict() for p in sorted(parts, key=lambda p: p.path)],
+            "sealed_parts": sum(1 for p in parts if p.sealed),
             "row_count": sum(p.rows for p in parts),
             "time_range": {
                 "from_ms": min(p.first_time_ms for p in parts),
@@ -307,11 +445,31 @@ class Lake:
         self._index = None
 
     def read_part(self, part: PartInfo) -> list[Row]:
+        """Rows of a non-sealed part. Sealed (holdout) parts are refused here."""
+        if part.sealed:
+            raise SealedPartError(
+                f"{part.path} lies in the sealed holdout; read it through LakeReader with a "
+                "recorded unlock"
+            )
+        return self._read_rows(part)
+
+    def read_sealed_part(self, part: PartInfo, approval: HoldoutApproval) -> list[Row]:
+        """Rows of a sealed part, only with an approval issued by the holdout guard."""
+        if not isinstance(approval, HoldoutApproval) or not approval.holdout_access:
+            raise SealedPartError(f"{part.path}: no holdout approval")
+        if not (part.first_time_ms < approval.end_ms and part.last_time_ms >= approval.start_ms):
+            raise SealedPartError(f"{part.path} is outside the approved range")
+        return self._read_rows(part)
+
+    def _read_rows(self, part: PartInfo) -> list[Row]:
         return self.codec.read(self.data_dir / part.path, SCHEMAS[LakeKind(part.kind)])
 
     # ------------------------------------------------------------------ integrity
     def verify(self, dataset_id: str, raw_cache_dir: Path | None = None) -> dict[str, Any]:
-        """Recompute file hashes, content hashes, row counts and the dataset id."""
+        """Recompute file hashes, content hashes, row counts and the dataset id.
+
+        Sealed parts are read for their hashes only; no row leaves this method.
+        """
         errors: list[str] = []
         manifest = self.manifest(dataset_id)
         parts = [PartInfo.from_dict(d) for d in manifest["parts"]]
@@ -322,17 +480,21 @@ class Lake:
             if not path.exists():
                 errors.append(f"missing part file {p.path}")
                 continue
+            expected_root = "lake_sealed/" if month_is_sealed(p.year, p.month) else "lake/"
+            if not p.path.startswith(expected_root):
+                errors.append(f"part {p.path} is not under {expected_root}")
             if _file_sha256(path) != p.file_sha256:
                 errors.append(f"file hash mismatch for {p.path}")
             try:
-                rows = self.read_part(p)
+                rows = self._read_rows(p)
             except Exception as exc:
-                errors.append(f"unreadable part {p.path}: {exc!r}")
+                errors.append(f"unreadable part {p.path}: {type(exc).__name__}")
                 continue
             if len(rows) != p.rows:
                 errors.append(f"row count mismatch for {p.path}")
             if content_hash(p.market, LakeKind(p.kind), p.symbol, rows) != p.content_hash:
                 errors.append(f"content hash mismatch for {p.path}")
+            del rows
         sources_checked = 0
         if raw_cache_dir is not None:
             from tsclaude.marketdata.archive.checksum import sha256_file
@@ -351,6 +513,7 @@ class Lake:
             "dataset_id": dataset_id,
             "ok": not errors,
             "parts_checked": len(parts),
+            "sealed_parts": sum(1 for p in parts if p.sealed),
             "rows": sum(p.rows for p in parts),
             "sources_checked": sources_checked,
             "errors": errors,
@@ -362,9 +525,7 @@ class Lake:
         import duckdb
 
         path = self.data_dir / "catalog.duckdb"
-        tmp = self.data_dir / f".catalog.{os.getpid()}.duckdb"
-        if tmp.exists():
-            tmp.unlink()
+        tmp = _tmp_name(path)
         con = duckdb.connect(str(tmp))
         try:
             con.execute(
@@ -394,6 +555,8 @@ class Lake:
                     ],
                 )
                 for d in m["parts"]:
+                    if PartInfo.from_dict(d).sealed:
+                        continue  # the catalog never references the sealed holdout (L-07 b)
                     con.execute(
                         "INSERT INTO parts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                         [
@@ -418,7 +581,7 @@ class Lake:
                     {
                         (self.data_dir / ip.part.path).as_posix()
                         for ip in self.index()
-                        if ip.part.kind == kind
+                        if ip.part.kind == kind and not ip.part.sealed
                     }
                 )
                 if not files:
@@ -431,7 +594,12 @@ class Lake:
                     " hive_partitioning = true, filename = true,"
                     " hive_types = {'year': INTEGER, 'month': INTEGER})"
                 )
-        finally:
             con.close()
-        os.replace(tmp, path)
+            os.replace(tmp, path)
+        except BaseException:
+            con.close()
+            raise
+        finally:
+            tmp.unlink(missing_ok=True)
+            tmp.with_name(tmp.name + ".wal").unlink(missing_ok=True)
         return path

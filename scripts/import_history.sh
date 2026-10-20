@@ -36,10 +36,12 @@ step() {
 
 SOURCES=(configs/universe.yaml)
 if [[ $SKIP_UNIVERSE -eq 0 ]]; then
-  if step universe data universe --snapshot "$TODAY" --summary "$OUT/universe.json" \
-      && [[ -f "configs/universe_snapshot_$TODAY.yaml" ]]; then
-    SOURCES+=("configs/universe_snapshot_$TODAY.yaml")
+  # research universe frozen at 2025-01-01 (L-08); live/forward universe for today (never research)
+  if step universe-research data universe --summary "$OUT/universe-research.json" \
+      && [[ -f "configs/universe_snapshot_2025-01-01.yaml" ]]; then
+    SOURCES+=("configs/universe_snapshot_2025-01-01.yaml")
   fi
+  step universe-live data universe --live --snapshot "$TODAY" --summary "$OUT/universe-live.json"
 fi
 
 for src in "${SOURCES[@]}"; do

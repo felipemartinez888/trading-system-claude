@@ -25,6 +25,7 @@ from tsclaude.marketdata.archive.importer import ArchiveImportError, Importer, I
 from tsclaude.marketdata.archive.paths import ArchiveDataType, ArchiveFile, Period
 from tsclaude.marketdata.types import FundingRate, PriceKline
 from tsclaude.store.lake import Lake, LakeKind
+from tsclaude.store.lake_writer import LakeWriter
 
 NOW = ms(2026, 10, 20, 12, 30)
 SYM = "BTCUSDT"
@@ -45,11 +46,13 @@ def _importer(
     lake: Lake, archive: FakeArchive, rest: FakeRest | None = None, **kw: object
 ) -> Importer:
     rests = {Market.SPOT: rest, Market.USDM: rest} if rest else None
-    return Importer(lake, archive, rests, ManualClock(NOW), **kw)  # type: ignore[arg-type]
+    writer = LakeWriter(lake.data_dir, lake.codec)
+    return Importer(writer, archive, rests, ManualClock(NOW), **kw)  # type: ignore[arg-type]
 
 
 def _run(importer: Importer, req: ImportRequest):  # type: ignore[no-untyped-def]
-    return asyncio.run(importer.run(req))
+    res = asyncio.run(importer.run(req))
+    return res
 
 
 def _req(
@@ -82,6 +85,7 @@ def test_ms_and_us_months_give_contiguous_bars_and_manifest(
     assert srcs[0]["url"].endswith("/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-12.zip")
     assert manifest["request"]["from"] == "2024-12-01T00:00:00.000Z"
     assert (lake.imports_dir / res.dataset_id / "qa_report.json").exists()
+    lake.refresh()
     rows = lake.read_part(next(ip.part for ip in lake.index() if ip.part.month == 1))
     assert rows[0]["open_time_ms"] == ms(2025, 1)
     assert rows[0]["source"] == "archive"
@@ -93,7 +97,13 @@ def test_reimport_is_idempotent(lake: Lake, archive: FakeArchive, tmp_path: Path
     first = _run(_importer(lake, archive, cross_check_months=0), req)
     files_before = sorted(p.name for p in lake.lake_dir.rglob("part-*"))
     manifest_before = (lake.imports_dir / str(first.dataset_id) / "manifest.json").read_text()
-    clock_later = Importer(lake, archive, None, ManualClock(NOW + 5 * DAY), cross_check_months=0)
+    clock_later = Importer(
+        LakeWriter(lake.data_dir, lake.codec),
+        archive,
+        None,
+        ManualClock(NOW + 5 * DAY),
+        cross_check_months=0,
+    )
     second = asyncio.run(clock_later.run(req))
     assert second.dataset_id == first.dataset_id
     assert not second.created
@@ -115,7 +125,8 @@ def test_checksum_mismatch_is_hard_error_and_nothing_is_written(
     with pytest.raises(ChecksumError):
         _run(_importer(lake, archive, cross_check_months=0), _req(ms(2024, 11), ms(2025, 1)))
     assert lake.dataset_ids() == []
-    assert list(lake.lake_dir.rglob("part-*")) == []
+    assert list(lake.data_dir.rglob("part-*")) == []
+    assert not (lake.data_dir / ".staging").exists()  # the failed import's staging is gone
 
 
 def test_kline_format_error_aborts(lake: Lake, archive: FakeArchive) -> None:
@@ -258,6 +269,7 @@ def test_current_month_daily_files_and_rest_tail(
     assert res.rows == 19 * 1440 + 12 * 60 + 30
     assert res.qa["summary"]["missing_interior"] == 0
     assert res.qa["summary"]["uncovered_tail"] == 0
+    lake.refresh()
     stored = [r for ip in lake.index() for r in lake.read_part(ip.part)]
     assert {r["source"] for r in stored} == {"archive", "rest_backfill"}
 
@@ -317,8 +329,12 @@ def test_funding_history_paginates_over_rest(
     assert res.rows == 2500
     assert len([c for c in rest.calls if c[0] == "funding"]) == 3
     assert res.qa["funding"]["interval_hours_seen"] == [8]
-    rows = [r for ip in lake.index() for r in lake.read_part(ip.part)]
-    assert len(rows) == 2500
+    lake.refresh()
+    open_parts = [ip.part for ip in lake.index() if not ip.part.sealed]
+    sealed_parts = [ip.part for ip in lake.index() if ip.part.sealed]
+    rows = [r for p in open_parts for r in lake.read_part(p)]
+    assert len(rows) + sum(p.rows for p in sealed_parts) == 2500
+    assert sealed_parts  # 2026 funding lands under the sealed root
     assert rows[0]["mark_price"] == 100.0
 
 
@@ -344,3 +360,43 @@ def test_verify_detects_tampering(lake: Lake, archive: FakeArchive) -> None:
     assert not report["ok"]
     assert any("file hash mismatch" in e for e in report["errors"])
     assert any("content hash mismatch" in e for e in report["errors"])
+
+
+def test_holdout_month_goes_to_sealed_root_and_qa_has_no_prices(
+    lake: Lake, archive: FakeArchive
+) -> None:
+    from arc_helpers import kline_lines
+
+    f = _file("2026-02")
+    start = f.start_ms
+    bad = kline_values(start + 7 * MIN, MIN)
+    bad[2] = bad[4] - 1.0  # violation inside the holdout
+    lines = kline_lines(f.start_ms, f.end_ms, unit="us", override={start + 7 * MIN: bad})
+    conflict = lines[20].split(",")
+    conflict[4] = f"{float(conflict[4]) + 0.25:.8f}"
+    conflict[2] = f"{max(float(conflict[2]), float(conflict[4])):.8f}"
+    lines.insert(21, ",".join(conflict))
+    archive.add(f, lines)
+    res = _run(_importer(lake, archive), _req(f.start_ms, f.end_ms))
+    assert all(p.path.startswith("lake_sealed/") for p in res.parts)
+    (rejected,) = res.qa["rejected_rows"]
+    assert "row" not in rejected
+    assert rejected["redacted"]
+    assert rejected["open_time_ms"] == start + 7 * MIN
+    (dup,) = res.qa["duplicate_conflicts"]
+    assert "kept" not in dup
+    assert "dropped" not in dup
+    assert res.qa["cross_checks"] == []  # no holdout month is used for the price cross-check
+    report = (lake.imports_dir / str(res.dataset_id) / "qa_report.json").read_text()
+    assert str(bad[4]) not in report
+
+
+def test_unknown_first_row_is_malformed_not_header(lake: Lake, archive: FakeArchive) -> None:
+    from arc_helpers import kline_lines
+
+    f = _file("2024-12")
+    archive.add(f, ["time,o,h,l,c", *kline_lines(f.start_ms, f.end_ms)])
+    res = _run(_importer(lake, archive, cross_check_months=0), _req(f.start_ms, f.end_ms))
+    assert res.qa["summary"]["malformed_rows"] == 1
+    data = [s for s in res.sources if s["role"] == "data"]
+    assert data[0]["header_row"] is False

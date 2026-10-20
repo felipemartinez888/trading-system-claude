@@ -88,7 +88,7 @@ def test_static_candidates_apply_exchange_info_rules() -> None:
     w = windows(SNAP, RULE)
     assert w.listing_cutoff_ms == ms(2024, 10, 19)
     assert w.volume == (ms(2026, 10, 19) - 90 * DAY, ms(2026, 10, 19))
-    candidates, excluded = static_candidates(spot, fut, RULE, w)
+    candidates, excluded = static_candidates(spot, fut, RULE, w, status_filter=True)
     reasons = {e["symbol"]: e["reason"] for e in excluded}
     assert candidates == ["BTCUSDT", "DOGEUSDT", "ETHUSDT", "JUPUSDT", "SOLUSDT", "XRPUSDT"]
     assert reasons["USDCUSDT"] == "stablecoin base"
@@ -121,7 +121,7 @@ def test_ranking_by_min_of_markets_and_data_requirements(tmp_path: Path) -> None
     assert ranked[0]["score"] == ranked[0]["spot_median_daily_quote_volume"]
     reasons = {e["symbol"]: e["reason"] for e in excluded}
     assert "24 months" in reasons["DOGEUSDT"]
-    assert "spot=60" in reasons["JUPUSDT"]
+    assert "through the snapshot" in reasons["JUPUSDT"]
     assert reasons["MISSING"] == "no lake data"
     doc = snapshot_document(
         SNAP, RULE, w, ranked, excluded, {"dataset_ids": ["x"]}, ms(2026, 10, 19)
@@ -147,3 +147,31 @@ def test_rule_file_loads_and_rejects_unknown_keys() -> None:
         UniverseRule.from_mapping({"top_m": 3})
     with pytest.raises(ValueError, match="rank_by"):
         UniverseRule.from_mapping({"rank_by": "max"})
+
+
+def test_research_mode_ignores_today_status_and_rejects_late_snapshots() -> None:
+    from tsclaude.marketdata.universe import (
+        RESEARCH_SNAPSHOT,
+        UniverseError,
+        check_research_snapshot,
+    )
+
+    spot, fut = _infos()
+    w = windows(RESEARCH_SNAPSHOT, RULE)
+    assert w.volume == (ms(2024, 10, 3), ms(2025, 1, 1))  # L-08: 2024-10-03 .. 2024-12-31
+    assert w.listing_cutoff_ms == ms(2023, 1, 1)
+    research, _ = static_candidates(spot, fut, RULE, w, status_filter=False)
+    assert "HALTUSDT" in research  # today's BREAK status is not used for research
+    check_research_snapshot(RESEARCH_SNAPSHOT)
+    check_research_snapshot(date(2026, 1, 1))
+    with pytest.raises(UniverseError, match="after the holdout start"):
+        check_research_snapshot(date(2026, 1, 2))
+
+
+def test_data_through_snapshot_is_required() -> None:
+    w = windows(SNAP, RULE)
+    early_end = {k: v for k, v in _vols(1000).items() if k < ms(2026, 10, 17)}
+    data = {"BTCUSDT": SymbolData(True, early_end, _vols(1000))}
+    ranked, excluded = select_universe(["BTCUSDT"], data, RULE, w)
+    assert ranked == []
+    assert "through the snapshot" in excluded[0]["reason"]

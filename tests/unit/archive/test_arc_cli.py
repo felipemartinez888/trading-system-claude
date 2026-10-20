@@ -25,9 +25,26 @@ def test_data_commands_parse() -> None:
     )
     assert args.func.__name__ == "_cmd_import"
     assert (args.date_from, args.date_to) == (date(2022, 1, 1), date(2026, 9, 30))
-    uni = parser.parse_args(["data", "universe", "--snapshot", "2026-10-19"])
+    uni = parser.parse_args(["data", "universe"])
     assert uni.func.__name__ == "_cmd_universe"
+    assert uni.snapshot is None  # research default 2025-01-01 (L-08)
+    assert not uni.live
     assert uni.rule == "configs/universe_rule.yaml"
+    live = parser.parse_args(["data", "universe", "--live", "--snapshot", "2026-10-19"])
+    assert live.live
+    unlock = parser.parse_args(
+        [
+            "research",
+            "unlock-holdout",
+            "--prereg",
+            "P1",
+            "--strategy-hash",
+            "sha256:abc",
+            "--reason",
+            "x",
+        ]
+    )
+    assert unlock.func.__name__ == "_cmd_unlock"
     ver = parser.parse_args(["data", "verify", "--all"])
     assert ver.all
     assert ver.dataset_id is None

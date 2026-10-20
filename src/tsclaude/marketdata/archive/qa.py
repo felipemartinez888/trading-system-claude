@@ -17,6 +17,7 @@ from tsclaude.contracts.market import Bar, Interval
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, to_iso
 from tsclaude.marketdata.aggregate import aggregate
 from tsclaude.marketdata.types import RestKline
+from tsclaude.store.holdout import HOLDOUT_END_MS, HOLDOUT_START_MS
 
 SAMPLE = 20
 ZERO_VOLUME_MIN_RUN = 3
@@ -127,7 +128,7 @@ def cross_check(
             diffs["trades"] = [d.trades, n.trades]
         if diffs:
             mismatches.append(
-                {"open_time_ms": d.open_time_ms, "open": to_iso(d.open_time_ms), "diffs": diffs}
+                {"open_time_ms": d.open_time_ms, "time": to_iso(d.open_time_ms), "diffs": diffs}
             )
     native_without_derived = len(set(by_open) - {d.open_time_ms for d in derived})
     return {
@@ -141,6 +142,29 @@ def cross_check(
         "mismatch_samples": mismatches[:SAMPLE],
         "ok": compared > 0 and not mismatches,
     }
+
+
+_PRICE_BEARING = ("row", "kept", "dropped")
+
+
+def _in_holdout(entry: dict[str, Any]) -> bool:
+    t = entry.get("open_time_ms", entry.get("funding_time_ms"))
+    return isinstance(t, int) and HOLDOUT_START_MS <= t < HOLDOUT_END_MS
+
+
+def redact_holdout(entries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Decision L-07 c: QA outputs carry no holdout prices -- counts and timestamps only."""
+    out: list[dict[str, Any]] = []
+    for e in entries:
+        if not _in_holdout(e):
+            out.append(e)
+            continue
+        r = {k: v for k, v in e.items() if k not in _PRICE_BEARING}
+        if "diffs" in r:
+            r["diffs"] = sorted(r["diffs"])  # field names only
+        r["redacted"] = "holdout period: values withheld"
+        out.append(r)
+    return out
 
 
 def build_report(
@@ -176,13 +200,16 @@ def build_report(
         "gaps": [_range_dict(lo, hi, step_ms) for lo, hi in gaps],
         "uncovered_head": None if head is None else _range_dict(*head, step_ms),
         "uncovered_tail": None if tail is None else _range_dict(*tail, step_ms),
-        "duplicate_conflicts": collector.duplicate_conflicts[:SAMPLE],
-        "rejected_rows": collector.rejected[:SAMPLE],
+        "duplicate_conflicts": redact_holdout(collector.duplicate_conflicts[:SAMPLE]),
+        "rejected_rows": redact_holdout(collector.rejected[:SAMPLE]),
         "malformed_rows": collector.malformed[:SAMPLE],
         "zero_volume_runs": [_range_dict(lo, hi, MS_PER_MINUTE) for lo, hi in zero_runs[:SAMPLE]],
         "unit_notes": collector.unit_notes,
         "unavailable_files": collector.unavailable,
-        "cross_checks": list(cross_checks),
+        "cross_checks": [
+            {**c, "mismatch_samples": redact_holdout(c.get("mismatch_samples", []))}
+            for c in cross_checks
+        ],
         **(extra or {}),
         "notes": [
             "gaps are reported, never interpolated",
