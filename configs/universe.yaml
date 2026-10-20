@@ -1,0 +1,10 @@
+# Trading universe — PROPOSED v0 for M1 (live tape walking skeleton).
+# The rule-based top-10 universe (DATA_ARCHITECTURE §6) replaces this in M2, once archives are
+# available to compute 24-month listing history and 90-day median quote volume.
+version: 0
+snapshot_date: "2026-10-19"
+rule: >-
+  M1 proposed v0: fixed list of three large USDT-quoted pairs listed on both Binance Spot and
+  USD-M perpetuals. Not a selection result; no ranking was computed.
+spot: [BTCUSDT, ETHUSDT, SOLUSDT]
+usdm: [BTCUSDT, ETHUSDT, SOLUSDT]

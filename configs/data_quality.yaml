@@ -1,0 +1,51 @@
+# Data-quality budgets and ingestion behaviour (DATA_ARCHITECTURE §1 and §3).
+# Binance limits (per-second message limits, 24 h connection lifetime, 300 connection attempts per
+# 5 min per IP) are upper bounds; the values here stay well below them. REST weight limits are NOT
+# configured here: they are read from exchangeInfo.rateLimits and corrected from response headers.
+version: 0
+
+freshness:
+  kline_1m_s: 75        # since the last closed 1m bar
+  book_ticker_s: 10     # since the last bookTicker message
+  mark_price_s: 5       # since the last markPrice@1s message
+  tick_interval_s: 1
+
+watermark:
+  grace_s: 5            # a minute is due for REST recovery at open + 60 s + grace (server time)
+  check_interval_s: 1
+  gap_retry_interval_s: 60
+  gap_retry_max_attempts: 5   # after this, the gap stays open for the next startup backfill
+
+ws:
+  recycle_after_s: 82800      # 23 h planned recycle (Binance disconnects at 24 h)
+  first_message_timeout_s: 30 # new connection must deliver a message before the old one is closed
+  recycle_retry_s: 300
+  backoff_base_s: 1
+  backoff_cap_s: 60
+  stable_after_s: 30
+  supervisor_stable_after_s: 300  # crash after >= 5 min of running restarts without long back-off
+  fallback_after_failures: 3
+  connect_budget: 30          # attempts per window per IP (Binance: 300 / 5 min)
+  connect_budget_window_s: 300
+  control_msgs_per_s_spot: 4      # Binance: 5/s
+  control_msgs_per_s_futures: 8   # Binance: 10/s
+  max_streams_per_connection: 200 # Binance: 1024
+  open_timeout_s: 10
+  ping_interval_s: 20
+  ping_timeout_s: 20
+
+rest:
+  timeout_s: 10
+  max_retries: 3
+  weight_budget_fraction: 0.5     # use at most half of each exchangeInfo REQUEST_WEIGHT limit
+  unseeded_requests_per_s: 2      # safety cap until exchangeInfo has been read
+  funding_rate_requests_per_5min: 250  # documented separate limit: 500 / 5 min / IP
+
+backfill:
+  lookback_days: 3
+  max_backfill_days: 30       # older missing history is registered as a gap for the M2 importer
+
+clock:
+  sample_interval_s: 300
+  samples_per_round: 5
+  skew_threshold_ms: 1000
