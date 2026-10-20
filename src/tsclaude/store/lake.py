@@ -411,7 +411,9 @@ class Lake:
                             d["last_time_ms"],
                         ],
                     )
-            for kind in LakeKind:
+            # Views read Parquet; a lake written with another codec (tests) gets the tables only.
+            kinds = list(LakeKind) if self.codec.extension == "parquet" else []
+            for kind in kinds:
                 files = sorted(
                     {
                         (self.data_dir / ip.part.path).as_posix()
@@ -426,7 +428,8 @@ class Lake:
                 # resolves those. The views are for exploration, not for research reads.
                 con.execute(
                     f"CREATE VIEW {kind} AS SELECT * FROM read_parquet([{listing}],"  # noqa: S608
-                    " hive_partitioning = true, filename = true)"
+                    " hive_partitioning = true, filename = true,"
+                    " hive_types = {'year': INTEGER, 'month': INTEGER})"
                 )
         finally:
             con.close()
