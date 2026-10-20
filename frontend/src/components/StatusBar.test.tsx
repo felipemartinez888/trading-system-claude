@@ -210,7 +210,7 @@ describe("StatusBar", () => {
     expect(new Headers(init?.headers).get(TOKEN_HEADER)).toBe(TOKEN);
   });
 
-  it("disables the button while the request is pending", async () => {
+  it("prevents a second start while the request is pending", async () => {
     setToken();
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -224,8 +224,10 @@ describe("StatusBar", () => {
     });
     renderBar();
     await userEvent.click(await screen.findByRole("button", { name: "Start" }));
-    const pending = await screen.findByRole("button", { name: "Starting…" });
-    expect(pending).toBeDisabled();
+    // while the start is pending: no second Start, a "Starting…" label and only "Cancel start"
+    expect(await screen.findByTestId("starting")).toHaveTextContent("Starting…");
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel start" })).toBeEnabled();
     release();
     expect(await screen.findByRole("button", { name: "Stop" })).toBeEnabled();
   });
