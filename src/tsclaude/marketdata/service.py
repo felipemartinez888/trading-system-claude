@@ -160,7 +160,14 @@ class MarketDataService:
         self._bars = bars if bars is not None else LiveBarStore(store.path)
         self._rng = rng
         self._subscribers: set[Subscription] = set()
-        self.gaps = GapRegistry(self._emit, clock.now_ms)
+        self._running = False
+        self._closed = False
+        self._reset_run_state()
+
+    def _reset_run_state(self) -> None:
+        """Per-run state. Rebuilt at every start(); kept after stop() so the last run's
+        snapshot (now STALE) stays readable until the next start or close()."""
+        self.gaps = GapRegistry(self._emit, self._clock.now_ms)
         self.builder = BarBuilder()
         self._rest: dict[Market, BinanceRest] = {}
         self._ws: WsManager | None = None
@@ -175,8 +182,6 @@ class MarketDataService:
         self._watch_from: int | None = None
         self.backfill_results: list[BackfillResult] = []
         self._backfill_done = asyncio.Event()
-        self._running = False
-        self._closed = False
         self._last_gap_retry_ms = 0
 
     # ------------------------------------------------------------------ events
@@ -208,21 +213,23 @@ class MarketDataService:
     def rest(self, market: Market) -> BinanceRest:
         return self._rest[market]
 
-    async def start(self) -> None:
+    async def start(self, session_id: str | None = None) -> None:
+        """Start ingestion. Can be called again after stop() (e.g. a new monitoring interval);
+        `session_id`, if given, replaces the one used for `observed_session_id` of live bars.
+        Subscriptions are closed by stop(); consumers subscribe again after a restart."""
         if self._running:
             raise RuntimeError("market data service already running")
         if self._closed:
             raise RuntimeError("market data service was closed; create a new one")
+        if session_id is not None:
+            self._session_id = session_id
+        self._reset_run_state()
         try:
             await self._start()
         except BaseException:
             log.exception("market data service failed to start; cleaning up")
             await self._shutdown()
-            # Reset per-start state so a later start() begins from scratch.
-            self.builder = BarBuilder()
-            self.freshness = None
-            self._ws = None
-            self._rest = {}
+            self._reset_run_state()
             raise
 
     async def _start(self) -> None:

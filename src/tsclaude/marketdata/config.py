@@ -82,6 +82,8 @@ class WsConfig(BaseModel):
     backoff_base_s: float = Field(default=1.0, gt=0)
     backoff_cap_s: float = Field(default=60.0, gt=0)
     stable_after_s: float = Field(default=30.0, ge=0)  # reset back-off after this long connected
+    # reset the supervisor's restart back-off if a connection task ran this long before dying
+    supervisor_stable_after_s: float = Field(default=300.0, ge=0)
     fallback_after_failures: int = Field(default=3, ge=1)
     connect_budget: int = Field(
         default=30, ge=1

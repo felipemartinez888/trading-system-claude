@@ -39,7 +39,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from tsclaude.contracts.market import Market
 from tsclaude.contracts.timeutil import WallClock
@@ -445,35 +445,68 @@ class StreamConnection:
             stop_task.cancel()
 
     async def _recycle(self) -> bool:
+        """Open a new connection, wait for its first message, then close the old one.
+
+        The wait races against `stop()` and against the new connection dropping. Whatever ends
+        the recycle early — timeout, stop, drop, or cancellation of this task — the new
+        connection is disposed of unless it has already replaced the old one.
+        """
         old = self._active
         if old is None:
             return False
         log.info("planned websocket recycle", extra={"group": self.group.name})
-        new = await self._attempt()
-        if new is None:
-            self.stats.recycle_failures += 1
-            return False
+        new: _Live | None = None
         try:
-            await asyncio.wait_for(new.first_message.wait(), self._cfg.first_message_timeout_s)
-        except TimeoutError:
-            self.stats.recycle_failures += 1
-            log.warning(
-                "recycle: new connection silent; keeping the old one",
-                extra={"group": self.group.name},
+            new = await self._attempt()
+            if new is None:
+                self.stats.recycle_failures += 1
+                return False
+            outcome = await self._await_first_message(new)
+            if outcome != "message":
+                if outcome != "stopped":
+                    self.stats.recycle_failures += 1
+                    log.warning(
+                        "recycle aborted; keeping the old connection",
+                        extra={"group": self.group.name, "outcome": outcome},
+                    )
+                await self._dispose(new)
+                return False
+            self._active = new
+            self.stats.url = new.url
+            self.stats.recycles += 1
+            self.stats.connected_since_ms = self._clock.now_ms()
+            await self._dispose(old)
+            log.info("recycle complete", extra={"group": self.group.name, "url": new.url})
+            return True
+        except BaseException:
+            if new is not None and self._active is not new:
+                await self._dispose(new)
+            raise
+
+    async def _await_first_message(self, new: _Live) -> str:
+        """'message', 'stopped', 'dropped' or 'timeout' — whichever happens first."""
+        if new.first_message.is_set():
+            return "message"
+        msg = asyncio.create_task(new.first_message.wait())
+        stop = asyncio.create_task(self._stopping.wait())
+        waiters: set[asyncio.Future[Any]] = {msg, stop}
+        if new.reader is not None:
+            waiters.add(new.reader)
+        try:
+            await asyncio.wait(
+                waiters,
+                timeout=self._cfg.first_message_timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            await self._dispose(new)
-            return False
+        finally:
+            msg.cancel()
+            stop.cancel()
+            await asyncio.gather(msg, stop, return_exceptions=True)
+        if self._stopping.is_set():
+            return "stopped"
         if new.reader is not None and new.reader.done():
-            self.stats.recycle_failures += 1
-            await self._dispose(new)
-            return False
-        self._active = new
-        self.stats.url = new.url
-        self.stats.recycles += 1
-        self.stats.connected_since_ms = self._clock.now_ms()
-        await self._dispose(old)
-        log.info("recycle complete", extra={"group": self.group.name, "url": new.url})
-        return True
+            return "dropped"
+        return "message" if new.first_message.is_set() else "timeout"
 
     async def _dispose(self, live: _Live) -> None:
         if live.reader is not None and not live.reader.done():
@@ -602,7 +635,9 @@ class WsManager:
             self._config.backoff_cap_s,
             self._rng if self._rng is not None else random.SystemRandom().uniform,
         )
+        loop = asyncio.get_running_loop()
         while True:
+            started = loop.time()
             try:
                 await conn.run()
             except asyncio.CancelledError:
@@ -622,6 +657,8 @@ class WsManager:
                     "websocket connection task ended without stop; restarting",
                     extra={"group": conn.group.name},
                 )
+            if loop.time() - started >= self._config.supervisor_stable_after_s:
+                backoff.reset()  # one crash after a long healthy run restarts promptly
             if conn.stopping or await conn.wait_or_stop(backoff.next_delay()):
                 return
 

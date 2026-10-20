@@ -7,6 +7,7 @@ tests/integration/marketdata/test_ws_fake_server.py (CI).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -476,5 +477,100 @@ def test_manager_restarts_a_crashed_connection_task() -> None:
         assert mgr.running
         await mgr.stop()
         assert not mgr.running
+
+    _run(scenario)
+
+
+# ---------------------------------------------------------------- re-review R1 / R2
+def _leftover_tasks() -> list[str]:
+    current = asyncio.current_task()
+    return sorted(t.get_name() for t in asyncio.all_tasks() if t is not current and not t.done())
+
+
+def test_stop_during_recycle_closes_new_connection_promptly() -> None:
+    async def scenario() -> None:
+        ex = FakeExchange()
+        cfg = _cfg(recycle_after_s=0.1, first_message_timeout_s=30)
+        mgr = WsManager([GROUP], lambda _m: None, cfg, SystemClock(), ex.connect)
+        mgr.start()
+        await ex.wait_conn(2)  # recycle opened a new, silent connection
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await mgr.stop(timeout_s=10)
+        assert loop.time() - started < 2  # did not wait for first_message_timeout_s
+        assert [c.closed for c in ex.conns] == [True, True]
+        await asyncio.sleep(0)
+        assert _leftover_tasks() == []
+
+    _run(scenario)
+
+
+def test_cancel_during_recycle_disposes_new_connection() -> None:
+    async def scenario() -> None:
+        ex = FakeExchange()
+        cfg = _cfg(recycle_after_s=0.1, first_message_timeout_s=30)
+        conn = StreamConnection(GROUP, lambda _m: None, cfg, SystemClock(), ex.connect, _budget())
+        task = asyncio.create_task(conn.run(), name="ws-run")
+        await ex.wait_conn(2)
+        await asyncio.sleep(0.05)
+        task.cancel()  # hard cancel, without stop()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert [c.closed for c in ex.conns] == [True, True]
+        await asyncio.sleep(0)
+        assert _leftover_tasks() == []
+
+    _run(scenario)
+
+
+def test_recycle_aborts_when_new_connection_drops_before_first_message() -> None:
+    async def scenario() -> None:
+        ex = FakeExchange()
+        cfg = _cfg(recycle_after_s=0.1, first_message_timeout_s=30, recycle_retry_s=3600)
+        conn = StreamConnection(GROUP, lambda _m: None, cfg, SystemClock(), ex.connect, _budget())
+        task = asyncio.create_task(conn.run())
+        old = await ex.wait_conn(1)
+        new = await ex.wait_conn(2)
+        new.drop()
+        await _until(lambda: conn.stats.recycle_failures == 1, timeout=2)
+        assert not old.closed
+        assert new.closed
+        await conn.stop()
+        await task
+
+    _run(scenario)
+
+
+def test_supervisor_backoff_resets_after_sustained_run() -> None:
+    async def scenario() -> None:
+        ex = FakeExchange()
+        delays: list[tuple[float, float]] = []
+
+        def rng(lo: float, hi: float) -> float:
+            delays.append((lo, hi))
+            return 0.0
+
+        cfg = _cfg(backoff_base_s=1, backoff_cap_s=60, supervisor_stable_after_s=0.2)
+        mgr = WsManager([GROUP], lambda _m: None, cfg, SystemClock(), ex.connect, rng=rng)
+        conn = mgr.connections[0]
+        real_serve = conn._serve
+        plan = ["crash", "crash", "long", "crash"]
+
+        async def scripted() -> str:
+            step = plan.pop(0) if plan else "serve"
+            if step == "long":
+                await asyncio.sleep(0.3)
+                raise RuntimeError("crash after a sustained run")
+            if step == "crash":
+                raise RuntimeError("quick crash")
+            return await real_serve()
+
+        conn._serve = scripted  # type: ignore[method-assign]
+        mgr.start()
+        await _until(lambda: conn.stats.crashes == 4, timeout=5)
+        await mgr.stop()
+        ceilings = [hi for lo, hi in delays if hi >= 1]  # supervisor delays (base 1 s)
+        # quick crashes grow the ceiling; the crash after the sustained run starts over at base
+        assert ceilings[:4] == [1, 2, 1, 2]
 
     _run(scenario)

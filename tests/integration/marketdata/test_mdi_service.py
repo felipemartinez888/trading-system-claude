@@ -437,3 +437,48 @@ def test_failed_start_closes_http_clients(tmp_path: Path) -> None:
         store.close()
 
     asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
+def test_start_stop_start_on_the_same_service(tmp_path: Path) -> None:
+    """Re-review R4: monitoring can be stopped and started again within one process."""
+
+    async def scenario() -> None:
+        clock = ManualClock(T0 + 30_000)
+        store = EventStore(tmp_path / "state.db")
+        ex = FakeExchange()
+        svc = MarketDataService(
+            CONFIG,
+            store,
+            clock,
+            http_transport=httpx.MockTransport(_exchange(clock)),
+            ws_connect=ex.connect,
+            session_id="RUN1",
+        )
+        bars = LiveBarStore(store.path)
+        for run, session in ((1, "RUN1"), (2, "RUN2")):
+            sub = svc.subscribe()
+            await svc.start(session_id=None if run == 1 else session)
+            await svc.wait_backfill(5)
+            await _until(lambda n=run: len(ex.conns) == 3 * n)
+            minute = svc.watch_from_ms
+            assert minute is not None
+            ex.latest("spot.test").push(ws_kline(minute), "btcusdt@kline_1m")
+            await _until(lambda m=minute: bars.get(SPOT, "BTCUSDT", m) is not None)
+            stored = bars.get(SPOT, "BTCUSDT", minute)
+            assert stored is not None
+            assert stored.observed_session_id == session
+            assert await sub.get(timeout=1) is not None  # the new subscription receives updates
+            await svc.stop()
+            assert all(c.closed for c in ex.conns)
+            clock.advance(10 * MIN)
+        assert len(store.read(types=[EventType.BACKFILL_COMPLETED])) == 4  # 2 runs x 2 markets
+        # the 10 minutes between the runs were backfilled by the second start
+        between = bars.range(SPOT, "BTCUSDT", T0 + MIN, T0 + 10 * MIN)
+        assert len(between) == 9 - sum(
+            1 for m, t in MISSING_IN_REST if m is SPOT and T0 + MIN <= t < T0 + 10 * MIN
+        )
+        svc.close()
+        bars.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 30))

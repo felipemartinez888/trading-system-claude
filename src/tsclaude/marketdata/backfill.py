@@ -86,7 +86,7 @@ class BackfillResult:
 class ObservationIndex:
     """Which 1m minutes lie entirely inside an observation interval (the app was monitoring)?
 
-    Lead decision (M1-T1 review N1): minute `m` is observed only if
+    Lead decision L-02 (docs/DECISIONS_PENDING.md): minute `m` is observed only if
     `start_ms <= m` and `close_time = m + 60 s - 1 < end_ms`. A minute only partly covered (the
     monitoring started or stopped inside it) is not observed. An open interval ends at `now_ms`.
     The set is kept as 1m-aligned ranges of open times, so long windows stay cheap.

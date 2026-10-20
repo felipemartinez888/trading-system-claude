@@ -23,6 +23,7 @@ ws:
   backoff_base_s: 1
   backoff_cap_s: 60
   stable_after_s: 30
+  supervisor_stable_after_s: 300  # crash after >= 5 min of running restarts without long back-off
   fallback_after_failures: 3
   connect_budget: 30          # attempts per window per IP (Binance: 300 / 5 min)
   connect_budget_window_s: 300
