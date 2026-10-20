@@ -10,7 +10,11 @@ interface Meta {
 }
 
 export const PROVENANCE_META: Record<Provenance, Meta> = {
-  LIVE: { label: "LIVE", description: "Observed live by the running app; fresh" },
+  LIVE: { label: "LIVE", description: "Market data observed live from the exchange; fresh" },
+  SYSTEM: {
+    label: "SYSTEM",
+    description: "The app's own runtime state, read from the backend (not market data)",
+  },
   PARTIAL: { label: "PARTIAL", description: "Forming candle or incomplete aggregate" },
   RECOVERED: {
     label: "RECOVERED",

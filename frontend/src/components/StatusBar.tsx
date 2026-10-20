@@ -1,32 +1,18 @@
 // Persistent status bar: always the real backend state (AC-02). Nothing here is ever shown as
 // healthy unless the API said so; stream groups stay UNAVAILABLE until M1 delivers them.
 
-import { useEffect, useState } from "react";
-
 import { ApiError } from "../api/client";
 import {
-  type LinkState,
+  type LiveLink,
   type MonitoringAction,
-  STATUS_POLL_MS,
   useMonitoringMutation,
   useQuitMutation,
   useStatus,
 } from "../api/hooks";
-import type { Provenance, Sourced, StatusResponse } from "../api/types";
+import type { ShutdownInfo, StatusResponse } from "../api/types";
 import { formatDuration, formatUtc } from "../format";
+import { shown, useBackendFreshness, useNow } from "../freshness";
 import { ProvenanceBadge } from "./ProvenanceBadge";
-
-/** Client-side freshness budget for the last status snapshot, in heartbeats. */
-const CLIENT_STALE_HEARTBEATS = 3;
-
-function useNow(intervalMs = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 function errorText(error: unknown): string {
   if (error instanceof ApiError) {
@@ -39,46 +25,62 @@ function errorText(error: unknown): string {
   return "Unknown error";
 }
 
-/**
- * The UI may only *downgrade* provenance (never upgrade it): when the last snapshot is older than
- * the freshness budget, LIVE values are shown as STALE with the reason.
- */
-function displayed<T>(
-  sourced: Sourced<T>,
-  stale: boolean,
-): { provenance: Provenance; reason: string | null } {
-  if (stale && sourced.provenance === "LIVE") {
-    return { provenance: "STALE", reason: "no fresh update from the backend" };
+/** Shown once the app is stopping; says only what the backend actually reported. */
+function EndedBar({ outcome, state }: { outcome: ShutdownInfo | null; state: LiveLink["state"] }) {
+  let title: string;
+  let body: string;
+  let tone: "ok" | "warn" | "bad";
+  if (outcome !== null && outcome.clean) {
+    title = "Trading System Claude has stopped.";
+    body = `The session was closed cleanly (session_stopped recorded, reason: ${outcome.reason}). You can close this tab.`;
+    tone = "ok";
+  } else if (outcome !== null) {
+    title = "Trading System Claude stopped, but the session was NOT closed cleanly.";
+    body = outcome.detail ?? "The backend reported a failure while closing the session.";
+    tone = "bad";
+  } else if (state === "stopping") {
+    title = "Trading System Claude is shutting down…";
+    body = "Waiting for the backend to confirm that the session was closed.";
+    tone = "warn";
+  } else {
+    title = "Trading System Claude is no longer reachable.";
+    body =
+      "It was shutting down, but whether the session was closed cleanly could not be confirmed. " +
+      "The next start shows how the previous session ended.";
+    tone = "warn";
   }
-  return { provenance: sourced.provenance, reason: sourced.reason };
+  return (
+    <header className={`statusbar statusbar--ended statusbar--ended-${tone}`} role="banner">
+      <strong data-testid="ended-title">{title}</strong>
+      <span data-testid="ended-body">{body}</span>
+    </header>
+  );
 }
 
 export interface StatusBarProps {
-  link: LinkState;
+  live: LiveLink;
 }
 
-export function StatusBar({ link }: StatusBarProps) {
+export function StatusBar({ live }: StatusBarProps) {
   const status = useStatus();
   const monitoring = useMonitoringMutation();
   const quit = useQuitMutation();
   const now = useNow();
+  const freshness = useBackendFreshness();
+  const link = live.state;
 
   const data: StatusResponse | undefined = status.data;
-  // Fresh = pushed within a few heartbeats or polled within two polling periods (push may be down).
-  const budgetMs = Math.max(
-    (data?.heartbeat_interval_s ?? 5) * 1000 * CLIENT_STALE_HEARTBEATS,
-    2 * STATUS_POLL_MS + 5_000,
-  );
-  const stale = data !== undefined && now - status.dataUpdatedAt > budgetMs;
-  const quitDone = quit.isSuccess || link === "shutdown";
+  const stale = freshness.stale;
+  const quitOutcome = quit.data?.accepted ? (quit.data.session.value ?? null) : null;
+  const outcome = quitOutcome ?? live.shutdown;
+  const ending =
+    outcome !== null ||
+    link === "stopping" ||
+    link === "shutdown" ||
+    link === "stopped-unconfirmed";
 
-  if (quitDone) {
-    return (
-      <header className="statusbar statusbar--ended" role="banner">
-        <strong>Trading System Claude has stopped.</strong>
-        <span>The session was closed cleanly. You can close this tab.</span>
-      </header>
-    );
+  if (ending) {
+    return <EndedBar outcome={outcome} state={link} />;
   }
 
   if (data === undefined) {
@@ -114,7 +116,9 @@ export function StatusBar({ link }: StatusBarProps) {
     session === null
       ? null
       : session.uptime_s + Math.max(0, (now - status.dataUpdatedAt) / 1000);
-  const monDisplay = displayed(data.monitoring, stale);
+  const monDisplay = shown(data.monitoring, freshness);
+  const chainDisplay = shown(data.chain, freshness);
+  const prevDisplay = shown(data.previous_session, freshness);
 
   return (
     <header className="statusbar" role="banner">
@@ -131,7 +135,7 @@ export function StatusBar({ link }: StatusBarProps) {
         <ProvenanceBadge
           provenance={monDisplay.provenance}
           reason={monDisplay.reason ?? mon?.blocked_reason ?? null}
-          asOfMs={data.monitoring.as_of_ms}
+          asOfMs={monDisplay.asOfMs}
           compact
         />
         <button
@@ -155,22 +159,26 @@ export function StatusBar({ link }: StatusBarProps) {
       <section className="statusbar__group" aria-label="Session">
         <span className="statusbar__label">Session</span>
         <span data-testid="session-uptime">{uptime === null ? "—" : formatDuration(uptime)}</span>
-        <ProvenanceBadge {...displayed(data.session, stale)} asOfMs={data.session.as_of_ms} compact />
+        <ProvenanceBadge {...shown(data.session, freshness)} compact />
       </section>
 
       <section className="statusbar__group" aria-label="Event chain">
         <span className="statusbar__label">Chain</span>
-        {chain === null ? (
-          <ProvenanceBadge provenance="UNAVAILABLE" reason={data.chain.reason} compact />
-        ) : chain.ok ? (
-          <span className="chip chip--ok" title={`${chain.events_checked} events verified`}>
+        {chain === null ? null : chain.ok ? (
+          <span
+            className={`chip chip--ok${stale ? " chip--stale" : ""}`}
+            title={`${chain.events_checked} events verified at startup`}
+          >
             verified · {chain.events_checked}
           </span>
         ) : (
-          <span className="chip chip--bad" role="alert">
+          <span className={`chip chip--bad${stale ? " chip--stale" : ""}`} role="alert">
             FAILED at seq {chain.first_bad_seq ?? "?"}: {chain.reason}
           </span>
         )}
+        <span data-testid="chain-provenance">
+          <ProvenanceBadge {...chainDisplay} compact />
+        </span>
       </section>
 
       <section className="statusbar__group" aria-label="Market data streams">
@@ -204,10 +212,10 @@ export function StatusBar({ link }: StatusBarProps) {
         </button>
       </section>
 
-      {stale || status.isError ? (
+      {stale ? (
         <div className="statusbar__notice statusbar__notice--warn" role="alert">
           <span>
-            Backend not responding — showing the last known state from{" "}
+            Values are STALE ({freshness.reason}) — showing the last known state from{" "}
             {formatUtc(new Date(status.dataUpdatedAt).toISOString())}.
             {status.isError ? ` ${errorText(status.error)}` : ""}
           </span>
@@ -220,6 +228,12 @@ export function StatusBar({ link }: StatusBarProps) {
           <button type="button" className="btn btn--ghost" onClick={() => monitoring.reset()}>
             Dismiss
           </button>
+        </div>
+      ) : null}
+
+      {quit.data !== undefined && !quit.data.accepted ? (
+        <div className="statusbar__notice statusbar__notice--error" role="alert">
+          <span>Quit was not accepted: {quit.data.session.reason ?? "unknown reason"}</span>
         </div>
       ) : null}
 
@@ -237,6 +251,9 @@ export function StatusBar({ link }: StatusBarProps) {
 
       {prev !== null && prev.outcome === "CRASHED" ? (
         <div className="statusbar__notice statusbar__notice--warn" role="status" data-testid="crash-notice">
+          <span data-testid="crash-provenance">
+            <ProvenanceBadge {...prevDisplay} compact />
+          </span>
           <span>
             The previous session ({prev.session_id}) did not shut down cleanly
             {prev.monitoring_was_active ? " while monitoring was running" : ""}. Not observed from{" "}

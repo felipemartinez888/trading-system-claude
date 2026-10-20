@@ -164,6 +164,16 @@ body {
 }
 .statusbar--ended {
   gap: 1rem;
+  border-left: 4px solid var(--neutral);
+}
+.statusbar--ended-ok {
+  border-left-color: var(--ok);
+}
+.statusbar--ended-warn {
+  border-left-color: var(--warn);
+}
+.statusbar--ended-bad {
+  border-left-color: var(--bad);
 }
 .statusbar__brand {
   font-weight: 700;
@@ -288,6 +298,10 @@ body {
   color: var(--bad);
   font-weight: 600;
 }
+.chip--stale {
+  opacity: 0.6;
+  border-style: dashed;
+}
 .chip--gap {
   border-style: dashed;
   border-color: var(--down);
@@ -310,6 +324,12 @@ body {
 }
 .prov--live {
   color: var(--up);
+}
+.prov--system {
+  color: #d0d4dc;
+}
+:root[data-theme="light"] .prov--system {
+  color: #3a4150;
 }
 .prov--partial {
   color: var(--up);

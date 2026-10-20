@@ -29,13 +29,13 @@ function PageContent({ path }: { path: string }) {
 }
 
 export function App() {
-  const link = useLiveStatus();
+  const live = useLiveStatus();
   const [rawPath, go] = usePath();
   const path = rawPath === "/" || rawPath === "/index.html" ? DEFAULT_PATH : rawPath;
 
   return (
     <div className="shell">
-      <StatusBar link={link} />
+      <StatusBar live={live} />
       <nav className="rail" aria-label="Workspaces">
         {WORKSPACES.map((ws) => (
           <div key={ws.id} className="rail__workspace">

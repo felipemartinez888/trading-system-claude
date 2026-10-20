@@ -44,6 +44,21 @@ not built, with the current backend status. Install Node.js and run the launcher
   allows. If the process is killed (Task Manager, power loss), the next start shows a notice
   that the previous session did not end cleanly, with the time span that was not observed.
 
+## Manual acceptance check (owner, Windows)
+
+Each case must end with the right notice on the next start (System › Health shows how the previous
+session ended):
+
+1. Double-click the launcher → the dashboard opens → **Start** / **Stop** toggle the state.
+2. **Quit** in the dashboard → the page says the session was closed cleanly → relaunch: previous
+   session "ended cleanly".
+3. **Ctrl+C** in the launcher window → relaunch: "ended cleanly".
+4. Close the console with the window's **X** button (this path uses the Windows console-close
+   handler, not a signal, so it must be tested separately) → relaunch: "ended cleanly". If it
+   shows a crash instead, report it: Windows allows only a few seconds for this path.
+5. End the `python` process in Task Manager → relaunch: the crash notice with the unobserved
+   interval.
+
 ## Settings (environment variables)
 
 | Variable | Default | Meaning |

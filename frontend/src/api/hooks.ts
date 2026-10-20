@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { api, liveUrl, readToken } from "./client";
-import type { LiveMessage, StatusResponse } from "./types";
+import type { LiveMessage, ShutdownInfo, StatusResponse } from "./types";
 
 export const queryKeys = {
   status: ["status"] as const,
@@ -61,18 +61,37 @@ export function useQuitMutation() {
   return useMutation({ mutationFn: () => api.quit() });
 }
 
-export type LinkState = "connecting" | "open" | "closed" | "no-token" | "shutdown";
+/**
+ * - `stopping`: the backend announced it is shutting down; the outcome is not known yet;
+ * - `shutdown`: the backend reported the outcome (see `LiveLink.shutdown`, clean or not);
+ * - `stopped-unconfirmed`: the connection ended during shutdown without an outcome message.
+ */
+export type LinkState =
+  | "connecting"
+  | "open"
+  | "closed"
+  | "no-token"
+  | "stopping"
+  | "shutdown"
+  | "stopped-unconfirmed";
+
+export interface LiveLink {
+  state: LinkState;
+  /** Outcome of closing the session, exactly as reported by the backend. */
+  shutdown: ShutdownInfo | null;
+}
 
 /**
  * Subscribes to /ws/live and writes pushed status snapshots into the query cache.
  * Reconnects with capped backoff; the returned state is shown in the status bar so a dead
  * connection is never mistaken for a quiet backend.
  */
-export function useLiveStatus(): LinkState {
+export function useLiveStatus(): LiveLink {
   const client = useQueryClient();
   const [state, setState] = useState<LinkState>(() =>
     readToken() === null ? "no-token" : "connecting",
   );
+  const [shutdown, setShutdown] = useState<ShutdownInfo | null>(null);
 
   useEffect(() => {
     const token = readToken();
@@ -84,7 +103,7 @@ export function useLiveStatus(): LinkState {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let stopped = false;
-    let serverShutdown = false;
+    let phase: "running" | "stopping" | "done" = "running";
 
     const connect = () => {
       if (stopped) return;
@@ -103,16 +122,24 @@ export function useLiveStatus(): LinkState {
         }
         if (message.type === "status") {
           client.setQueryData(queryKeys.status, message.data);
+        } else if (message.type === "shutting_down") {
+          if (phase === "running") phase = "stopping";
+          setState("stopping");
         } else if (message.type === "shutdown") {
-          serverShutdown = true;
+          phase = "done";
+          setShutdown(message.data);
           setState("shutdown");
         }
       };
       socket.onclose = () => {
         socket = null;
         if (stopped) return;
-        if (serverShutdown) {
+        if (phase === "done") {
           setState("shutdown");
+          return;
+        }
+        if (phase === "stopping") {
+          setState("stopped-unconfirmed");
           return;
         }
         setState("closed");
@@ -132,5 +159,5 @@ export function useLiveStatus(): LinkState {
     };
   }, [client]);
 
-  return state;
+  return { state, shutdown };
 }

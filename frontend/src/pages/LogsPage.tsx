@@ -3,11 +3,13 @@
 import { useEvents } from "../api/hooks";
 import { ProvenanceBadge } from "../components/ProvenanceBadge";
 import { formatUtc, shortHash } from "../format";
+import { shown, useBackendFreshness } from "../freshness";
 
 const LIMIT = 200;
 
 export function LogsPage() {
   const events = useEvents(LIMIT);
+  const freshness = useBackendFreshness();
   const data = events.data;
   const page = data?.events.value ?? null;
   const chain = data?.chain.value ?? null;
@@ -24,7 +26,12 @@ export function LogsPage() {
             Chain at startup:{" "}
             <span className={chain.ok ? "ok" : "bad"}>
               {chain.ok ? "verified" : `FAILED at seq ${chain.first_bad_seq ?? "?"} (${chain.reason ?? "?"})`}
-            </span>
+            </span>{" "}
+            {data !== undefined ? (
+              <span data-testid="logs-chain-provenance">
+                <ProvenanceBadge {...shown(data.chain, freshness)} compact />
+              </span>
+            ) : null}
             .
           </>
         ) : null}
@@ -48,7 +55,7 @@ export function LogsPage() {
         <>
         <p>
           Read from the local event store{" "}
-          <ProvenanceBadge provenance={data.events.provenance} asOfMs={data.events.as_of_ms} compact />
+          <ProvenanceBadge {...shown(data.events, freshness)} compact />
         </p>
         <table className="table table--dense" data-testid="events-table">
           <caption className="sr-only">Recent events</caption>

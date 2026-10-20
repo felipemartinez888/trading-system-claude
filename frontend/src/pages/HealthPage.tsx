@@ -4,6 +4,7 @@ import { useCoverage, useStatus } from "../api/hooks";
 import type { CoverageGap, CoverageInterval } from "../api/types";
 import { ProvenanceBadge } from "../components/ProvenanceBadge";
 import { durationBetween, formatUtc, shortHash } from "../format";
+import { shown, useBackendFreshness } from "../freshness";
 
 type Row =
   | { kind: "observed"; start: string; end: string | null; note: string }
@@ -35,6 +36,7 @@ function timeline(intervals: CoverageInterval[], gaps: CoverageGap[]): Row[] {
 export function HealthPage() {
   const status = useStatus();
   const coverage = useCoverage();
+  const freshness = useBackendFreshness();
   const s = status.data;
   const chain = s?.chain.value ?? null;
   const session = s?.session.value ?? null;
@@ -46,7 +48,7 @@ export function HealthPage() {
 
       <section className="card" aria-labelledby="h-session">
         <h2 id="h-session" className="card__title">
-          App session {s ? <ProvenanceBadge provenance={s.session.provenance} reason={s.session.reason} asOfMs={s.session.as_of_ms} compact /> : null}
+          App session {s ? <ProvenanceBadge {...shown(s.session, freshness)} compact /> : null}
         </h2>
         {session === null ? (
           <p className="muted">{s?.session.reason ?? "Waiting for the backend…"}</p>
@@ -59,7 +61,7 @@ export function HealthPage() {
             <dt>Last heartbeat</dt>
             <dd>
               {formatUtc(s?.heartbeat.value)}{" "}
-              {s ? <ProvenanceBadge provenance={s.heartbeat.provenance} reason={s.heartbeat.reason} asOfMs={s.heartbeat.as_of_ms} compact /> : null}
+              {s ? <ProvenanceBadge {...shown(s.heartbeat, freshness)} compact /> : null}
             </dd>
             <dt>Previous session</dt>
             <dd>
@@ -79,7 +81,7 @@ export function HealthPage() {
 
       <section className="card" aria-labelledby="h-chain">
         <h2 id="h-chain" className="card__title">
-          Event-chain integrity {s ? <ProvenanceBadge provenance={s.chain.provenance} reason={s.chain.reason} asOfMs={s.chain.as_of_ms} compact /> : null}
+          Event-chain integrity {s ? <ProvenanceBadge {...shown(s.chain, freshness)} compact /> : null}
         </h2>
         {chain === null ? (
           <p className="muted">{s?.chain.reason ?? "Waiting for the backend…"}</p>
@@ -135,12 +137,7 @@ export function HealthPage() {
         <h2 id="h-coverage" className="card__title">
           Observation coverage{" "}
           {coverage.data ? (
-            <ProvenanceBadge
-              provenance={coverage.data.intervals.provenance}
-              reason={coverage.data.intervals.reason}
-              asOfMs={coverage.data.intervals.as_of_ms}
-              compact
-            />
+            <ProvenanceBadge {...shown(coverage.data.intervals, freshness)} compact />
           ) : null}
         </h2>
         <p className="muted">

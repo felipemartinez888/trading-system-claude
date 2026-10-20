@@ -3,6 +3,7 @@
 
 export const PROVENANCES = [
   "LIVE",
+  "SYSTEM",
   "PARTIAL",
   "RECOVERED",
   "HISTORICAL",
@@ -118,10 +119,20 @@ export interface EventsResponse {
   chain: Sourced<ChainInfo>;
 }
 
+/** Outcome of closing the app session, sent only after it was attempted. */
+export interface ShutdownInfo {
+  /** True only if session_stopped was written to the event log. */
+  clean: boolean;
+  reason: string;
+  detail: string | null;
+}
+
 export interface QuitResponse {
   accepted: boolean;
+  session: Sourced<ShutdownInfo>;
 }
 
 export type LiveMessage =
   | { type: "status"; data: StatusResponse }
-  | { type: "shutdown"; data: { reason: string } };
+  | { type: "shutting_down"; data: { reason: string } }
+  | { type: "shutdown"; data: ShutdownInfo };
