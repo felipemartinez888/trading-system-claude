@@ -11,8 +11,11 @@ import pytest
 
 from tsclaude.research.stats.bootstrap import (
     bootstrap_ci,
+    bootstrap_distribution,
+    bootstrap_statistics,
     optimal_block_length,
     percentile_bounds,
+    replicates_degenerate,
     row_mean,
     stationary_bootstrap_indices,
 )
@@ -203,3 +206,37 @@ def test_expected_max_approximation_vs_simulation() -> None:
     for n_trials in (10, 100, 1000):
         mc = float(gen.standard_normal((4000, n_trials)).max(axis=1).mean())
         assert abs(expected_max_sharpe(n_trials, 1.0) - mc) < 0.1
+
+
+def test_expected_max_sharpe_huge_trial_count_is_finite() -> None:
+    """F4 analogue: 1 - 1/N rounds to 1.0 for N > 2^53; the reflected quantile stays finite."""
+    v = expected_max_sharpe(10**17, 1.0)
+    assert math.isfinite(v)
+    assert 8.0 < v < 9.5  # E[max of 1e17 normals] ~ sqrt(2 ln N) - ... ~ 8.6
+
+
+def test_bootstrap_statistics_share_one_stream_and_allow_marked_neg_inf() -> None:
+    x = np.random.default_rng(4).standard_normal(120)
+    both = bootstrap_statistics(
+        x, {"mean": row_mean, "max": lambda s: np.max(s, axis=1)}, n_resamples=300, seed=9
+    )
+    assert np.array_equal(
+        both["mean"], bootstrap_distribution(x, row_mean, n_resamples=300, seed=9, vectorized=True)
+    )
+
+    def undefined_half(s: np.ndarray) -> np.ndarray:
+        out = np.mean(s, axis=1)
+        out[::2] = -math.inf
+        return out
+
+    reps = bootstrap_statistics(
+        x, {"u": undefined_half}, n_resamples=100, seed=1, allow_neg_inf=("u",)
+    )
+    assert percentile_bounds(reps["u"], 0.05, "lower").lower == -math.inf
+    with pytest.raises(ValueError, match=r"non-finite"):
+        bootstrap_statistics(x, {"u": undefined_half}, n_resamples=100, seed=1)
+
+
+def test_replicates_degenerate() -> None:
+    assert replicates_degenerate(np.full(10, 0.3))
+    assert not replicates_degenerate(np.array([0.3, 0.3, 0.31]))

@@ -93,3 +93,13 @@ def test_n_min_exact_large_n_and_unreachable() -> None:
         n_min_exact(0.50, 0.5001, 0.05, 0.80, max_n=1000)
     with pytest.raises(ValueError, match=r"p_alt must satisfy"):
         n_min_exact(0.6, 0.5)
+
+
+def test_tiny_alpha_does_not_overflow() -> None:
+    """F4: z_{1-alpha} must be formed as -Phi^-1(alpha); 1 - 1e-20 rounds to 1.0 (-> inf)."""
+    z = -Z(1e-20)
+    raw = (z * math.sqrt(0.25) + Z(0.8) * math.sqrt(0.24)) ** 2 / 0.1**2
+    assert n_min_one_sided(0.5, 0.6, 1e-20, 0.8) == math.ceil(raw)
+    n = n_min_exact(0.5, 0.6, 1e-20, 0.8)
+    assert exact_test_power(n, 0.5, 0.6, 1e-20).power >= 0.8
+    assert 0.0 < normal_approx_power(n, 0.5, 0.6, 1e-20) <= 1.0

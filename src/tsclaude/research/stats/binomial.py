@@ -351,7 +351,7 @@ def wilson(k: int, n: int, alpha: float = 0.05) -> Interval:
     """
     ki, ni = check_count(k, n)
     a = check_open_prob(alpha, "alpha")
-    z = norm_ppf(1.0 - a / 2.0)
+    z = -norm_ppf(a / 2.0)  # = z_{1-a/2}; no 1 - a rounding for tiny a
     phat = ki / ni
     z2n = z * z / ni
     denom = 1.0 + z2n

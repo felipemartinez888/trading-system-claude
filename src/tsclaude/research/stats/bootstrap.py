@@ -49,7 +49,7 @@ sample autocorrelations are insignificant, ``|rho(m_hat + k)| < c sqrt(log10(n)/
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Literal
 
 import numpy as np
@@ -109,6 +109,65 @@ def _as_series(values: Sequence[float] | FloatArray) -> FloatArray:
     return x
 
 
+def _resample_chunks(
+    x: FloatArray, n_resamples: int, mean_block: float | None, seed: int
+) -> Iterator[FloatArray]:
+    """Yield resampled rows in chunks; the stream depends only on ``(n, n_resamples, mb, seed)``."""
+    n = int(x.size)
+    nr = as_int(n_resamples, "n_resamples")
+    if nr < 1:
+        raise ValueError(f"n_resamples must be >= 1, got {nr}")
+    mb = 1.0 if mean_block is None else _check_mean_block(mean_block, n)
+    rng = np.random.Generator(np.random.PCG64(as_int(seed, "seed")))
+    rows = max(1, _CHUNK_ELEMENTS // n)
+    done = 0
+    while done < nr:
+        r = min(rows, nr - done)
+        yield x[stationary_bootstrap_indices(n, mb, rng, r)]
+        done += r
+
+
+def _check_replicates(out: FloatArray, allow_neg_inf: bool) -> FloatArray:
+    bad = np.isnan(out) | (out == math.inf)
+    if not allow_neg_inf:
+        bad |= out == -math.inf
+    if np.any(bad):
+        raise ValueError("statistic returned non-finite values on some resamples")
+    out.sort()
+    return out
+
+
+def bootstrap_statistics(
+    values: Sequence[float] | FloatArray,
+    statistics: Mapping[str, VectorizedStatistic],
+    *,
+    n_resamples: int = 10_000,
+    mean_block: float | None = None,
+    seed: int = 0,
+    allow_neg_inf: Sequence[str] = (),
+) -> dict[str, FloatArray]:
+    """Sorted replicates of several vectorized statistics computed on the **same** resamples.
+
+    Each statistic receives a chunk ``(rows, n)`` and returns one value per row. Statistics named
+    in ``allow_neg_inf`` may return ``-inf`` to mark a resample on which they are undefined and
+    must count *against* the hypothesis (a lower bound then becomes ``-inf`` if more than the
+    tail fraction of resamples is undefined). NaN and ``+inf`` are always rejected.
+    """
+    x = _as_series(values)
+    nr = as_int(n_resamples, "n_resamples")
+    outs = {name: np.empty(nr, dtype=np.float64) for name in statistics}
+    done = 0
+    for sample in _resample_chunks(x, nr, mean_block, seed):
+        r = sample.shape[0]
+        for name, stat in statistics.items():
+            vals = np.asarray(stat(sample), dtype=np.float64)
+            if vals.shape != (r,):
+                raise ValueError("vectorized statistic must return one value per resample row")
+            outs[name][done : done + r] = vals
+        done += r
+    return {name: _check_replicates(o, name in allow_neg_inf) for name, o in outs.items()}
+
+
 def bootstrap_distribution(
     values: Sequence[float] | FloatArray,
     statistic: Statistic | VectorizedStatistic,
@@ -124,18 +183,11 @@ def bootstrap_distribution(
     the statistic receives a 2-D chunk ``(rows, n)`` and must return one value per row.
     """
     x = _as_series(values)
-    n = int(x.size)
     nr = as_int(n_resamples, "n_resamples")
-    if nr < 1:
-        raise ValueError(f"n_resamples must be >= 1, got {nr}")
-    mb = 1.0 if mean_block is None else _check_mean_block(mean_block, n)
-    rng = np.random.Generator(np.random.PCG64(as_int(seed, "seed")))
-    rows = max(1, _CHUNK_ELEMENTS // n)
-    out = np.empty(nr, dtype=np.float64)
+    out = np.empty(max(nr, 0), dtype=np.float64)
     done = 0
-    while done < nr:
-        r = min(rows, nr - done)
-        sample = x[stationary_bootstrap_indices(n, mb, rng, r)]
+    for sample in _resample_chunks(x, nr, mean_block, seed):
+        r = sample.shape[0]
         if vectorized:
             vals = np.asarray(statistic(sample), dtype=np.float64)
             if vals.shape != (r,):
@@ -145,10 +197,24 @@ def bootstrap_distribution(
             for i in range(r):
                 out[done + i] = float(statistic(sample[i]))
         done += r
-    if not np.all(np.isfinite(out)):
-        raise ValueError("statistic returned non-finite values on some resamples")
-    out.sort()
-    return out
+    return _check_replicates(out, allow_neg_inf=False)
+
+
+def replicates_degenerate(replicates: FloatArray) -> bool:
+    """True when every bootstrap replicate is identical (zero-width, uninformative bootstrap)."""
+    reps = np.asarray(replicates, dtype=np.float64)
+    return bool(reps.size == 0 or np.min(reps) == np.max(reps))
+
+
+def _order_stat(sorted_reps: FloatArray, q: float, round_up: bool) -> float:
+    """Order statistic at virtual index ``q (B - 1)``, floored (lower) or ceiled (upper).
+
+    Identical to ``numpy.quantile(method="lower" / "higher")`` but with no arithmetic on the
+    values, so ``-inf`` replicates are handled exactly.
+    """
+    pos = q * (sorted_reps.size - 1)
+    idx = math.ceil(pos) if round_up else math.floor(pos)
+    return float(sorted_reps[min(max(idx, 0), sorted_reps.size - 1)])
 
 
 def percentile_bounds(
@@ -162,14 +228,14 @@ def percentile_bounds(
     """
     a = check_open_prob(alpha, "alpha")
     s = check_side(side)
-    reps = np.asarray(replicates, dtype=np.float64)
+    reps = np.sort(np.asarray(replicates, dtype=np.float64))
+    if reps.size == 0 or np.any(np.isnan(reps)):
+        raise ValueError("replicates must be non-empty and free of NaN")
     if s == "two-sided":
-        lo = float(np.quantile(reps, a / 2.0, method="lower"))
-        hi = float(np.quantile(reps, 1.0 - a / 2.0, method="higher"))
-        return Interval(lo, hi)
+        return Interval(_order_stat(reps, a / 2.0, False), _order_stat(reps, 1.0 - a / 2.0, True))
     if s == "lower":
-        return Interval(float(np.quantile(reps, a, method="lower")), math.inf)
-    return Interval(-math.inf, float(np.quantile(reps, 1.0 - a, method="higher")))
+        return Interval(_order_stat(reps, a, False), math.inf)
+    return Interval(-math.inf, _order_stat(reps, 1.0 - a, True))
 
 
 def bootstrap_ci(

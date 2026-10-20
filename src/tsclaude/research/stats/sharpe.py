@@ -127,7 +127,8 @@ def expected_max_sharpe(n_trials: int, var_trials: float) -> float:
     if nt == 1:
         return 0.0
     g = EULER_MASCHERONI
-    z = (1.0 - g) * norm_ppf(1.0 - 1.0 / nt) + g * norm_ppf(1.0 - 1.0 / (nt * math.e))
+    # Phi^-1(1 - u) = -Phi^-1(u): avoids rounding 1 - u for very large n_trials
+    z = -((1.0 - g) * norm_ppf(1.0 / nt) + g * norm_ppf(1.0 / (nt * math.e)))
     return math.sqrt(v) * z
 
 

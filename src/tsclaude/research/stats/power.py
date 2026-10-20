@@ -61,7 +61,7 @@ def n_min_one_sided(p_star: float, p_alt: float, alpha: float = 0.05, power: flo
     ps, pa = _check_effect(p_star, p_alt)
     a = check_open_prob(alpha, "alpha")
     pw = check_open_prob(power, "power")
-    z_a = norm_ppf(1.0 - a)
+    z_a = -norm_ppf(a)  # = z_{1-alpha}; 1 - a would round to 1 for a < 1.1e-16
     z_b = norm_ppf(pw)
     num = z_a * math.sqrt(ps * (1.0 - ps)) + z_b * math.sqrt(pa * (1.0 - pa))
     if num <= 0.0:
@@ -79,7 +79,8 @@ def normal_approx_power(n: int, p_star: float, p_alt: float, alpha: float = 0.05
     sd_alt = math.sqrt(pa * (1.0 - pa))
     if sd_alt == 0.0:
         return 1.0
-    z = ((pa - ps) * math.sqrt(ni) - norm_ppf(1.0 - a) * math.sqrt(ps * (1.0 - ps))) / sd_alt
+    z_a = -norm_ppf(a)  # z_{1-alpha} without forming 1 - a
+    z = ((pa - ps) * math.sqrt(ni) - z_a * math.sqrt(ps * (1.0 - ps))) / sd_alt
     return norm_cdf(z)
 
 
