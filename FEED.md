@@ -1,14 +1,15 @@
 # Feed de agentes — Trading System Claude
 
-Actualizado: **2026-10-19 19:36** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
+Actualizado: **2026-10-19 19:39** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
 
 ## M0-T4 · API, dashboard y lanzador Windows
-Agente `platform-ui-engineer` · rama `task/m0-t4` · 28 acciones · última actividad 19:36 · commits 0 · archivos con cambios 1
+Agente `platform-ui-engineer` · rama `task/m0-t4` · 29 acciones · última actividad 19:38 · commits 0 · archivos con cambios 1
 
 **Archivos tocados (sin commit):**
 - `?? src/tsclaude/api/`
 
 **Últimas acciones:**
+- `19:38` **Write** — src/tsclaude/api/context.py
 - `19:36` **Write** — src/tsclaude/api/live.py
 - `19:36` **Write** — src/tsclaude/api/schemas.py
 - `19:35` **Write** — src/tsclaude/api/__init__.py
@@ -18,7 +19,6 @@ Agente `platform-ui-engineer` · rama `task/m0-t4` · 28 acciones · última act
 - `19:14` **Bash** — Read uvicorn startup and shutdown internals
 - `19:11` **Bash** — Search for React types and test pydantic generic Sourced
 - `19:09` **Bash** — Diff main against original task base
-- `19:09` **Bash** — Create task worktree and inspect main changes
 
 ## M1-T1 · Ingesta en vivo de Binance
 Agente `data-engineer` · rama `task/m1-t1` · 25 acciones · última actividad 19:36 · commits 0 · archivos con cambios 1
@@ -54,9 +54,10 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 13 acciones · última activi
 - `18:57` **Bash** — Read ADRs, pyproject, metrics, orchestration; check tooling
 
 ## M2-T3 · Estadística: win rate certificado
-Agente `quant-engineer` · rama `task/m2-t3` · 17 acciones · última actividad 19:30 · commits 0 · archivos con cambios 0
+Agente `quant-engineer` · rama `task/m2-t3` · 18 acciones · última actividad 19:37 · commits 0 · archivos con cambios 0
 
 **Últimas acciones:**
+- `19:37` **Bash** — Create package and test directories
 - `19:30` **Bash** — Read roadmap M2 section and package init
 - `19:24` **Bash** — Look for any local hypothesis package
 - `19:19` **Bash** — Read proxy notes and status
@@ -66,5 +67,4 @@ Agente `quant-engineer` · rama `task/m2-t3` · 17 acciones · última actividad
 - `19:09` **Bash** — Create worktree for task branch and fast-forward to main
 - `19:09` **Bash** — List commits on main since task branch base
 - `19:08` **Bash** — Check main checkout state, worktrees and task branch
-- `19:08` **Bash** — Check parallel task brief for overlap
 
