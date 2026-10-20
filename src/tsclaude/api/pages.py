@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 TOKEN_META_NAME = "tsc-token"  # noqa: S105 - a tag name, not a secret
@@ -34,9 +34,29 @@ def load_index(static_dir: Path) -> str | None:
     return index.read_text(encoding="utf-8")
 
 
+def is_safe_relative_path(rel_path: str) -> bool:
+    r"""True only for a plain relative path made of normal segments.
+
+    Checked lexically, *before* any filesystem access: on Windows, resolving an absolute UNC path
+    such as ``//host/share/x`` or ``\\host\share\x`` would make an outbound SMB connection
+    (and leak NTLM credentials) even if the result were rejected afterwards.
+    """
+    if not rel_path or "\x00" in rel_path or "\\" in rel_path or ":" in rel_path:
+        return False
+    for flavour in (PurePosixPath(rel_path), PureWindowsPath(rel_path)):
+        if flavour.is_absolute() or flavour.anchor or flavour.drive:
+            return False
+        if any(part in ("..", ".") for part in flavour.parts):
+            return False
+    segments = rel_path.split("/")
+    return all(segment not in ("", ".", "..") for segment in segments)
+
+
 def resolve_static_file(static_dir: Path, rel_path: str) -> Path | None:
-    """Return the file for `rel_path` inside `static_dir`, refusing any path traversal."""
-    if not rel_path or "\x00" in rel_path:
+    """Return the file for `rel_path` inside `static_dir`, refusing anything that is not a plain
+    relative path (traversal, absolute, drive, UNC, backslashes) without touching the filesystem.
+    """
+    if not is_safe_relative_path(rel_path):
         return None
     root = static_dir.resolve()
     try:

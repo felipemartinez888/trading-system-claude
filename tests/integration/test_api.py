@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from tsclaude.api import pages
 from tsclaude.api.app import create_app
 from tsclaude.api.context import AppContext
 from tsclaude.contracts.timeutil import ManualClock
@@ -298,16 +299,19 @@ def test_websocket_rejects_missing_or_wrong_token(client: TestClient) -> None:
         with pytest.raises(WebSocketDisconnect) as info, client.websocket_connect(url) as ws:
             ws.receive_json()
         assert info.value.code == 1008
+        assert info.value.reason == "missing or invalid token"
 
 
 def test_websocket_rejects_foreign_origin(client: TestClient, ctx: AppContext) -> None:
     with (
-        pytest.raises(WebSocketDisconnect),
+        pytest.raises(WebSocketDisconnect) as info,
         client.websocket_connect(
             f"{WS_URL}?token={ctx.token}", headers={"Origin": "http://evil.example"}
         ) as ws,
     ):
         ws.receive_json()
+    assert info.value.code == 1008
+    assert info.value.reason == "forbidden origin"
 
 
 def test_websocket_pushes_status_on_change(client: TestClient, ctx: AppContext) -> None:
@@ -372,3 +376,27 @@ def test_index_injects_token_and_serves_assets(ctx: AppContext, bundle: Path) ->
             r = c.get(probe)
             assert r.status_code == 404
             assert "outside the bundle" not in r.text
+
+
+def test_unc_and_absolute_paths_are_refused_before_filesystem_access(
+    ctx: AppContext, bundle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F1: <img src="http://127.0.0.1:8765///attacker/share/x"> must not trigger SMB on Windows.
+    calls: list[str] = []
+    real = pages.resolve_static_file
+
+    def spy(static_dir: Path, rel_path: str) -> Path | None:
+        calls.append(rel_path)
+        return real(static_dir, rel_path)
+
+    monkeypatch.setattr(pages, "resolve_static_file", spy)
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        # Absolute URLs: a relative "///x" would be normalized by the client, not by a browser.
+        probes = ("///attacker/share/x", "/%5C%5Cattacker%5Cshare%5Cx", "/C:/x", "//etc/passwd")
+        for probe in probes:
+            r = c.get(BASE_URL + probe)
+            assert r.status_code == 404, probe
+            assert ctx.token not in r.text
+        assert calls == []
+        assert c.get("/assets/app.js").status_code == 200
+        assert calls == ["assets/app.js"]

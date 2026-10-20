@@ -8,6 +8,7 @@ import socket
 import types
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin
+from urllib.parse import unquote
 
 import pytest
 from api_testkit import TOKEN, ContextFactory, make_tampered_db
@@ -21,7 +22,12 @@ from tsclaude.api.context import (
     new_token,
 )
 from tsclaude.api.live import LiveHub
-from tsclaude.api.pages import fallback_page, inject_token, resolve_static_file
+from tsclaude.api.pages import (
+    fallback_page,
+    inject_token,
+    is_safe_relative_path,
+    resolve_static_file,
+)
 from tsclaude.api.process import InstanceLock, bind_loopback, dashboard_url
 from tsclaude.api.security import (
     TokenRedactionFilter,
@@ -226,6 +232,36 @@ def test_resolve_static_file_refuses_traversal(tmp_path: Path) -> None:
     assert resolve_static_file(root, "assets/a.js") == (root / "assets" / "a.js").resolve()
     for bad in ("../secret.txt", "assets/../../secret.txt", "", "assets", "a\x00b"):
         assert resolve_static_file(root, bad) is None
+    unc_and_absolute = (
+        "//h/s/x",
+        "\\\\h\\s\\x",
+        "C:/x",
+        "C:x",
+        "/etc/passwd",
+        unquote("%5C%5Ch%5Cs"),
+        "\\\\?\\C:\\x",
+        "assets\\a.js",
+        "./assets/a.js",
+    )
+    for bad in unc_and_absolute:
+        assert not is_safe_relative_path(bad), bad
+        assert resolve_static_file(root, bad) is None, bad
+
+
+def test_unsafe_paths_never_reach_the_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    touched: list[str] = []
+    real_resolve = Path.resolve
+
+    def spy(self: Path, strict: bool = False) -> Path:
+        touched.append(str(self))
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", spy)
+    for bad in ("//attacker/share/x", "\\\\attacker\\share\\x", "C:/x"):
+        assert resolve_static_file(tmp_path, bad) is None
+    assert touched == []
 
 
 def test_fallback_page_escapes_status() -> None:

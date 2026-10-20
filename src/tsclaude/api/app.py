@@ -30,6 +30,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, s
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
+from tsclaude.api import pages
 from tsclaude.api.context import (
     MAX_EVENTS_LIMIT,
     AppContext,
@@ -37,7 +38,7 @@ from tsclaude.api.context import (
     TransitionRefused,
 )
 from tsclaude.api.live import LiveMessage
-from tsclaude.api.pages import fallback_page, inject_token, load_index, resolve_static_file
+from tsclaude.api.pages import fallback_page, inject_token, is_safe_relative_path, load_index
 from tsclaude.api.schemas import (
     CoverageResponse,
     ErrorResponse,
@@ -257,9 +258,14 @@ def create_app(
             return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
         if path == "index.html":
             return _index()
-        file = resolve_static_file(static_dir, path)
+        route = path[:-1] if path.endswith("/") else path
+        if not is_safe_relative_path(route):
+            # Absolute, drive, UNC, backslash or dot segments: refused before any filesystem
+            # access (on Windows resolving a UNC path would open an SMB connection).
+            return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
+        file = pages.resolve_static_file(static_dir, route)
         if file is None:
-            last = path.rsplit("/", 1)[-1]
+            last = route.rsplit("/", 1)[-1]
             if "." in last:  # a missing asset, not a client-side route
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
             return _index()
