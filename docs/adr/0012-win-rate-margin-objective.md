@@ -105,3 +105,26 @@ checked against realized payoffs (losses far beyond the stop certified 35 % at n
    (gap risk) are invisible in samples that happen not to contain them; with 300 trades the chance of
    missing a 1 %-frequency tail event is ≈ 5 %. Backtests on real data contain real gaps, and
    reports must show the worst trade in R and the share of trades closed beyond −1R.
+
+## Amendment 4 (2026-10-20) — block cap, crisp floor, robust expectancy bound
+
+Final re-review findings: a large caller block length collapses stationary-bootstrap variance and
+*loosens* certification (gap-risk false certification 0.19 at block = n = 300); n_eff noise at the
+floor masked a ≈ 6 % gap-risk rate for 310 ≤ n ≤ 400; few huge losses are handled poorly by the
+percentile bootstrap.
+
+1. **Block cap.** The usable block length is capped at `min(3·√n, n/3)`. If the required block
+   (caller or estimate) exceeds the cap, certification fails closed with `dependence_unresolved`.
+2. **Crisp floor.** A variance ratio within `3·√(2/B)` of 1 (B = bootstrap replicates) is treated
+   as exactly 1, so `n_eff = n` on independent data.
+3. **Robust expectancy bound.** The expectancy lower bound is the minimum of the block-bootstrap
+   percentile bound and the t-type bound `mean − t_{1−α_adj, n_eff−1} · s / √n_eff`. Samples
+   containing a few very large losses are therefore rejected; the residual risk is samples
+   containing no tail event at all, which no outcomes-only test can detect.
+4. **Acceptance target.** For the gap-risk, fat-tail and persistent-Markov reference strategies,
+   the simulated false-certification rate + 2·SE must be ≤ α for every n in {300, 310, 350, 400,
+   500, 700, 1000} and for caller block lengths {None, 1, 5, 25, 50, √n, n}.
+5. **Reporting.** `share_beyond_stop` / `count_beyond_stop` = trades with `r < −(stop_loss_r) −
+   tolerance`, where `stop_loss_r` (planned loss at the stop incl. costs) is a required input when
+   p* is given by design; with realized p* and no stop the field is labelled "below −1R". Gates not
+   evaluated report `None`, never `False`.
