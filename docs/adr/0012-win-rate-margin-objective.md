@@ -52,3 +52,26 @@ cost-aware terms with trend-following ones.
   margin, and whether it is certified — never a bare win rate.
 - Fewer strategies will qualify; that is the intended effect.
 - The signal engine stays purely mathematical; LLM agents do not influence entries (ADR-0007).
+
+## Amendment 1 (2026-10-20) — small-sample and realized-payoff safeguards
+
+The independent statistical review of M2-T3 found paths that certified under-sampled or losing
+strategies: with p* estimated from realized payoffs, a fat-tailed losing strategy (true E = −0.05R)
+was certified in 54 % of simulated runs at n = 10 and 8 % at n = 80; constant samples produced
+zero-width bootstrap intervals; and n_min computed at the observed effect is post-hoc power, so a
+large observed margin made the sample-size gate vacuous. The following are therefore added to the
+admission constraints. They make certification strictly harder, never easier.
+
+1. **Hard sample floor.** `n ≥ max(n_min, N_FLOOR)` with `N_FLOOR = 100` when p* is fixed by design
+   (bracket exits) and `N_FLOOR = 300` when p* is estimated from realized payoffs. Preregistrations
+   may raise but never lower these floors.
+2. **Realized-payoff uncertainty is carried.** When p* is realized, the certified margin is the
+   *minimum* of (a) the Clopper–Pearson-based margin and (b) the lower bound of a joint block
+   bootstrap of `p̂* − L̂*/(Ŵ* + L̂*)` (win rate and payoffs resampled together), both at the adjusted
+   level. Resamples in which W or L is undefined count against certification.
+3. **Degenerate samples fail closed.** Fewer than two distinct outcome values, or a bootstrap whose
+   replicates are all equal, cannot be certified.
+4. **Policy floors.** `alpha ≤ 0.10` and `min_power ≥ 0.80`; other values are rejected as invalid
+   input.
+5. **Every admission gate must be individually tested**: for each gate a case where it is the only
+   failing condition, so that deleting the gate fails a test (mutation check in review).
