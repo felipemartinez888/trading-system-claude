@@ -175,6 +175,7 @@ class MarketDataService:
         self.backfill_results: list[BackfillResult] = []
         self._backfill_done = asyncio.Event()
         self._running = False
+        self._closed = False
         self._last_gap_retry_ms = 0
 
     # ------------------------------------------------------------------ events
@@ -209,6 +210,8 @@ class MarketDataService:
     async def start(self) -> None:
         if self._running:
             raise RuntimeError("market data service already running")
+        if self._closed:
+            raise RuntimeError("market data service was closed; create a new one")
         from tsclaude.marketdata.binance.rest import BinanceRest  # needs httpx
 
         q = self._cfg.quality
@@ -322,10 +325,16 @@ class MarketDataService:
             await self._ws.stop()
         for rest in self._rest.values():
             await rest.aclose()
-        if self._own_bars:
-            self._bars.close()
         for sub in list(self._subscribers):
             sub.close()
+
+    def close(self) -> None:
+        """Release the bar store (if owned). `snapshot()` stays usable after `stop()` until then."""
+        if self._running:
+            raise RuntimeError("stop() the service before close()")
+        if self._own_bars and not self._closed:
+            self._bars.close()
+        self._closed = True
 
     async def wait_backfill(self, timeout: float | None = None) -> None:
         await asyncio.wait_for(self._backfill_done.wait(), timeout)
@@ -486,6 +495,8 @@ class MarketDataService:
         return Sourced[T](value=value, provenance=prov, as_of_ms=as_of_ms)
 
     def _bar_sourced(self, market: Market, symbol: str) -> Sourced[Bar]:
+        if self._closed:
+            return Sourced[Bar].unavailable("market data service closed")
         stored = self._bars.last(market, symbol)
         if stored is None:
             return Sourced[Bar].unavailable("no closed bar stored yet")

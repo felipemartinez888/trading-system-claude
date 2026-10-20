@@ -187,6 +187,8 @@ def test_missing_in_rest_becomes_gap_then_retry_resolves(
     assert not b.caught_up()  # gaps still have retries left
 
     fetch.put(M, SYM, rest_kline(T0))
+    assert asyncio.run(b.retry_gaps(fetch)) == 0  # not in the same instant it was detected
+    clock.advance(1_000)
     assert asyncio.run(b.retry_gaps(fetch)) == 1
     resolved = sink.of(EventType.GAP_RESOLVED)
     assert len(resolved) == 1
@@ -205,6 +207,7 @@ def test_gap_retries_are_bounded_and_gap_stays_visible(
     clock.set(T0 + MIN + 5_001)
     asyncio.run(b.check_watermark(fetch))  # attempt 1
     for _ in range(5):
+        clock.advance(1_000)
         asyncio.run(b.retry_gaps(fetch))
     assert len(fetch.calls) == 3  # 1 watermark + 2 retries
     assert b.caught_up()  # exhausted gap no longer blocks recovery...

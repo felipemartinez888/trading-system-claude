@@ -327,7 +327,8 @@ class BinanceRest:
             if not rows:
                 break
             out.extend(r for r in rows if r.open_time_ms >= cursor)
-            nxt = rows[-1].open_time_ms + 1
+            # 1m: the next possible open time; other intervals: just past the last row.
+            nxt = rows[-1].open_time_ms + (MS_PER_MINUTE if interval == "1m" else 1)
             if nxt <= cursor:
                 break  # defensive: no progress
             cursor = nxt

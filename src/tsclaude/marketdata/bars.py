@@ -315,7 +315,12 @@ class SymbolBarBuilder:
 
         Exhausted gaps stay open (visible); the next startup backfill retries them.
         """
-        gaps = [g for g in self.live_gaps() if g.attempts < self.max_gap_attempts]
+        now = self.now_ms()
+        gaps = [
+            g
+            for g in self.live_gaps()
+            if g.attempts < self.max_gap_attempts and g.detected_at_ms < now
+        ]
         if not gaps:
             return 0
         recovered: list[int] = []
