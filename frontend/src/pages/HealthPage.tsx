@@ -5,6 +5,7 @@ import type { CoverageGap, CoverageInterval } from "../api/types";
 import { ProvenanceBadge } from "../components/ProvenanceBadge";
 import { durationBetween, formatUtc, shortHash } from "../format";
 import { shown, useBackendFreshness } from "../freshness";
+import { StreamsHealth } from "./StreamsHealth";
 
 type Row =
   | { kind: "observed"; start: string; end: string | null; note: string }
@@ -105,33 +106,7 @@ export function HealthPage() {
         )}
       </section>
 
-      <section className="card" aria-labelledby="h-streams">
-        <h2 id="h-streams" className="card__title">Market-data streams</h2>
-        {s ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Stream group</th>
-                <th scope="col">State</th>
-                <th scope="col">Provenance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(s.streams).map(([name, st]) => (
-                <tr key={name}>
-                  <td>{name}</td>
-                  <td>{st.value ?? st.reason ?? "—"}</td>
-                  <td>
-                    <ProvenanceBadge provenance={st.provenance} reason={st.reason} compact />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted">Waiting for the backend…</p>
-        )}
-      </section>
+      <StreamsHealth />
 
       <section className="card" aria-labelledby="h-coverage">
         <h2 id="h-coverage" className="card__title">
@@ -142,7 +117,7 @@ export function HealthPage() {
         </h2>
         <p className="muted">
           Only time inside a monitoring interval counts as observed. Unobserved time can never
-          produce live signals; market data for it can only be backfilled later (M1).
+          produce live signals; market data for it can only be backfilled (startup backfill, tagged accordingly).
         </p>
         {coverage.isError ? (
           <p className="bad" role="alert">

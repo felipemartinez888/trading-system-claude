@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 from api_testkit import TOKEN
+from m1t2_fakes import FakeFactory
 
 from tsclaude.api import context as context_module
 from tsclaude.api import server
@@ -98,7 +99,11 @@ def test_run_serves_and_quits_cleanly(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(context_module, "new_token", lambda: TOKEN)
     settings = _settings(tmp_path, _free_port())
     result: dict[str, int] = {}
-    thread = threading.Thread(target=lambda: result.update(code=server.run(settings)), daemon=True)
+    factory = FakeFactory()
+    options = server.RunOptions(service_factory=factory)
+    thread = threading.Thread(
+        target=lambda: result.update(code=server.run(settings, options)), daemon=True
+    )
     thread.start()
     base = f"http://127.0.0.1:{settings.port}"
     _wait_until_healthy(base, thread)
@@ -132,7 +137,8 @@ def test_run_serves_and_quits_cleanly(tmp_path: Path, monkeypatch: pytest.Monkey
             EventType.MONITORING_STOPPED,
             EventType.SESSION_STOPPED,
         ]
-        assert events[2].payload["reason"] == "session_closing"
+        # market data is stopped inside the event loop before the session closes
+        assert events[2].payload["reason"] == "app_shutdown"
         assert events[3].payload["reason"] == "user_quit"
         assert store.verify().ok
 
@@ -148,14 +154,19 @@ def test_run_refuses_busy_port_without_touching_the_store(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------- real process + signals
-# The app runs as a child process (`python -m tsclaude.cli app`); the per-launch token is pinned by
-# patching `new_token` inside the child only, so the test can drive authenticated requests.
+# The app runs as a child process (`server.run` with a fake market-data service: no network); the
+# per-launch token is pinned by patching `new_token` inside the child only, so the test can drive
+# authenticated requests.
 _CHILD = (
     "import sys\n"
+    "sys.path.insert(0, sys.argv[3])\n"
     "import tsclaude.api.context as c\n"
     "c.new_token = lambda: sys.argv[1]\n"
-    "from tsclaude.cli import main\n"
-    "raise SystemExit(main(['app', '--no-browser', '--port', sys.argv[2]]))\n"
+    "from m1t2_fakes import FakeFactory\n"
+    "from tsclaude.api.server import RunOptions, run\n"
+    "from tsclaude.runtime.settings import Settings\n"
+    "settings = Settings.from_env().model_copy(update={'port': int(sys.argv[2])})\n"
+    "raise SystemExit(run(settings, RunOptions(service_factory=FakeFactory())))\n"
 )
 _WS_SUPPORTED = any(importlib.util.find_spec(m) is not None for m in ("websockets", "wsproto"))
 
@@ -202,7 +213,7 @@ def test_process_stops_cleanly_on_signal_and_never_logs_the_token(
     }
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     proc = subprocess.Popen(
-        [sys.executable, "-c", _CHILD, token, str(port)],
+        [sys.executable, "-c", _CHILD, token, str(port), str(Path(__file__).resolve().parent)],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
