@@ -16,8 +16,8 @@ Partial candles. The latest forming kline is kept in memory only (`partial()`), 
 `PARTIAL`. It is never written to storage and never published as a bar.
 
 `observed_session_id` is set only on `ws_live` bars: those are the only bars actually *seen live*.
-Recovered bars are inside observation coverage (a fact recorded by the session intervals) but
-were not seen on the stream.
+Recovered bars are inside observation coverage (recorded by the session intervals) but were not
+seen on the stream.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from tsclaude.contracts.market import Bar, BarSource, Interval, Market
 from tsclaude.contracts.timeutil import MS_PER_MINUTE
 from tsclaude.marketdata.convert import bar_from_rest, bar_from_ws, bar_payload
 from tsclaude.marketdata.types import EventSink, KlineUpdate, RestKline, symbol_id
-from tsclaude.quality.gaps import GapCause, GapRegistry
+from tsclaude.quality.gaps import GapCause, GapRecord, GapRegistry
 from tsclaude.store.livebars import LiveBarStore, WriteOutcome
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ class SymbolBarBuilder:
     server_now_ms: Callable[[], int]  # corrected server time (watermark)
     session_id: str | None
     grace_ms: int = 5_000
+    max_gap_attempts: int = 5
     on_bar: BarListener | None = None
     cause_for: CauseFor | None = None
     stats: BuilderStats = field(default_factory=BuilderStats)
@@ -117,9 +118,21 @@ class SymbolBarBuilder:
             m += STEP
         return out
 
+    def live_gaps(self) -> list[GapRecord]:
+        """Open gaps inside this builder's live window (older ones belong to backfill)."""
+        return [
+            g for g in self.gaps.open_gaps(self.market, self.symbol) if g.to_ms > self.watch_from_ms
+        ]
+
     def caught_up(self) -> bool:
-        """No minute is overdue and no open gap remains for this symbol."""
-        return not self.due_minutes() and not self.gaps.open_minutes(self.market, self.symbol)
+        """No minute is overdue and every live gap has had all its automatic recovery attempts.
+
+        A gap that stays open after `max_gap_attempts` remains registered and visible; it no longer
+        holds the stream in RECOVERING (the bar is known missing, not pending).
+        """
+        if self.due_minutes():
+            return False
+        return all(g.attempts >= self.max_gap_attempts for g in self.live_gaps())
 
     # ------------------------------------------------------------------ inputs
     def on_kline(self, k: KlineUpdate) -> None:
@@ -137,8 +150,12 @@ class SymbolBarBuilder:
             self.stats.invalid += 1
             log.error(
                 "invalid closed kline rejected",
-                extra={"market": str(self.market), "symbol": self.symbol,
-                       "open_time_ms": k.open_time_ms, "error": str(exc)},
+                extra={
+                    "market": str(self.market),
+                    "symbol": self.symbol,
+                    "open_time_ms": k.open_time_ms,
+                    "error": str(exc),
+                },
             )
             return
         self.stats.ws_closed += 1
@@ -155,8 +172,10 @@ class SymbolBarBuilder:
         if last is not None and k.open_time_ms <= last:
             return  # forming update for a minute that is already closed
         p = self._partial
-        if p is None or k.open_time_ms > p.open_time_ms or (
-            k.open_time_ms == p.open_time_ms and k.event_time_ms >= p.event_time_ms
+        if (
+            p is None
+            or k.open_time_ms > p.open_time_ms
+            or (k.open_time_ms == p.open_time_ms and k.event_time_ms >= p.event_time_ms)
         ):
             self._partial = k
 
@@ -175,12 +194,18 @@ class SymbolBarBuilder:
             return result.outcome
         if result.outcome in (WriteOutcome.CONFLICT, WriteOutcome.REPLACED):
             self.stats.conflicts += 1
-            assert result.existing is not None  # noqa: S101 - store guarantees it
-            kept = bar if result.outcome is WriteOutcome.REPLACED else result.existing.bar
+            existing = result.existing
+            if existing is None:  # pragma: no cover - the store guarantees it
+                raise RuntimeError("conflict without the stored version")
+            replaced = result.outcome is WriteOutcome.REPLACED
             log.warning(
                 "bar conflict",
-                extra={"market": str(bar.market), "symbol": bar.symbol,
-                       "open_time_ms": bar.open_time_ms, "kept": str(kept.source)},
+                extra={
+                    "market": str(bar.market),
+                    "symbol": bar.symbol,
+                    "open_time_ms": bar.open_time_ms,
+                    "kept": "incoming" if replaced else "stored",
+                },
             )
             self.emit(
                 NewEvent(
@@ -192,10 +217,10 @@ class SymbolBarBuilder:
                         "market": str(bar.market),
                         "symbol": bar.symbol,
                         "open_time_ms": bar.open_time_ms,
-                        "stored": bar_payload(result.existing.bar),
+                        "stored": bar_payload(existing.bar),
                         "incoming": bar_payload(bar),
-                        "kept": "incoming" if result.outcome is WriteOutcome.REPLACED else "stored",
-                        "rule": "ws_live wins over rest; otherwise first stored is kept",
+                        "kept": "incoming" if replaced else "stored",
+                        "rule": "ws_live replaces a non-ws row; otherwise the stored row is kept",
                     },
                 )
             )
@@ -238,7 +263,8 @@ class SymbolBarBuilder:
             missing.append(m)
         if missing:
             cause = self.cause_for(self.market, self.symbol) if self.cause_for else GapCause.UNKNOWN
-            self.gaps.open(self.market, self.symbol, missing, cause, detail=error)
+            for rec in self.gaps.open(self.market, self.symbol, missing, cause, detail=error):
+                rec.attempts = 1  # the watermark fetch above was the first attempt
             self.stats.gap_minutes += len(missing)
             for m in missing:
                 self._settle(m)
@@ -253,8 +279,12 @@ class SymbolBarBuilder:
             self.stats.invalid += 1
             log.error(
                 "invalid REST kline rejected",
-                extra={"market": str(self.market), "symbol": self.symbol,
-                       "open_time_ms": open_time_ms, "error": str(exc)},
+                extra={
+                    "market": str(self.market),
+                    "symbol": self.symbol,
+                    "open_time_ms": open_time_ms,
+                    "error": str(exc),
+                },
             )
             return False
         outcome = self._store(bar, None)
@@ -281,42 +311,48 @@ class SymbolBarBuilder:
         return True
 
     async def retry_gaps(self, fetch: KlineFetcher) -> int:
-        """Try to recover open gap minutes for this symbol. Returns minutes recovered."""
-        open_minutes = sorted(self.gaps.open_minutes(self.market, self.symbol))
-        if not open_minutes:
+        """Retry live gaps that still have automatic attempts left. Returns minutes recovered.
+
+        Exhausted gaps stay open (visible); the next startup backfill retries them.
+        """
+        gaps = [g for g in self.live_gaps() if g.attempts < self.max_gap_attempts]
+        if not gaps:
             return 0
-        for g in self.gaps.open_gaps(self.market, self.symbol):
-            g.attempts += 1
-        try:
-            rows = await fetch(self.market, self.symbol, open_minutes[0], open_minutes[-1] + STEP)
-        except Exception as exc:
-            self.stats.rest_errors += 1
-            log.warning(
-                "gap retry failed",
-                extra={"market": str(self.market), "symbol": self.symbol, "error": repr(exc)},
-            )
-            return 0
-        wanted = set(open_minutes)
-        server_now = self.server_now_ms()
         recovered: list[int] = []
-        for row in rows:
-            if row.open_time_ms not in wanted or row.close_time_ms >= server_now:
-                continue
-            try:
-                bar = bar_from_rest(
-                    self.market, self.symbol, row, BarSource.REST_RECOVERED, self.now_ms()
-                )
-            except ValueError:
-                self.stats.invalid += 1
-                continue
-            outcome = self._store(bar, None)
-            if outcome is WriteOutcome.INSERTED:
-                self.stats.late_recovered += 1
-            # Whatever the outcome, a closed bar is now stored for this minute.
-            recovered.append(row.open_time_ms)
-        return self.gaps.resolve(
-            self.market, self.symbol, recovered, str(BarSource.REST_RECOVERED)
-        )
+        server_now = self.server_now_ms()
+        for g in gaps:
+            g.attempts += 1
+            for lo, hi in g.missing.ranges():
+                try:
+                    rows = await fetch(self.market, self.symbol, lo, hi)
+                except Exception as exc:
+                    self.stats.rest_errors += 1
+                    log.warning(
+                        "gap retry failed",
+                        extra={
+                            "market": str(self.market),
+                            "symbol": self.symbol,
+                            "error": repr(exc),
+                        },
+                    )
+                    continue
+                for row in rows:
+                    if not lo <= row.open_time_ms < hi or row.close_time_ms >= server_now:
+                        continue
+                    try:
+                        bar = bar_from_rest(
+                            self.market, self.symbol, row, BarSource.REST_RECOVERED, self.now_ms()
+                        )
+                    except ValueError:
+                        self.stats.invalid += 1
+                        continue
+                    if self._store(bar, None) is WriteOutcome.INSERTED:
+                        self.stats.late_recovered += 1
+                    # Whatever the outcome, a closed bar is now stored for this minute.
+                    recovered.append(row.open_time_ms)
+        if not recovered:
+            return 0
+        return self.gaps.resolve(self.market, self.symbol, recovered, str(BarSource.REST_RECOVERED))
 
 
 class BarBuilder:

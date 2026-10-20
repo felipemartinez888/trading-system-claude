@@ -60,7 +60,9 @@ class FreshnessMonitor:
         self._repaired: RepairCheck = repaired if repaired is not None else (lambda _k: True)
         now = now_ms()
         self._streams: dict[StreamKey, StreamHealth] = {
-            k: StreamHealth(key=k, state=StreamState.CONNECTING, since_ms=now, budget_ms=budget_ms(k.kind))
+            k: StreamHealth(
+                key=k, state=StreamState.CONNECTING, since_ms=now, budget_ms=budget_ms(k.kind)
+            )
             for k in streams
         }
 
@@ -76,6 +78,9 @@ class FreshnessMonitor:
 
     def keys(self) -> list[StreamKey]:
         return list(self._streams)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._streams
 
     # ------------------------------------------------------------------ inputs
     def on_open(self, key: StreamKey) -> None:
@@ -117,9 +122,7 @@ class FreshnessMonitor:
                 if now - ref > h.budget_ms:
                     self._transition(h, StreamState.STALE, "freshness_budget_exceeded")
             elif (
-                h.state is StreamState.RECOVERING
-                and h.message_since_open
-                and self._repaired(h.key)
+                h.state is StreamState.RECOVERING and h.message_since_open and self._repaired(h.key)
             ):
                 self._transition(h, StreamState.HEALTHY, "recovered")
 

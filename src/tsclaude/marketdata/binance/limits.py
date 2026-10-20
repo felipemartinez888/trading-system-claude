@@ -1,8 +1,8 @@
 """Rate limiting, back-off and connection budgets (pure asyncio; no network libraries).
 
 - `SlidingWindowLimiter`: at most N events in any rolling window (WS control messages, connection
-  attempts, the separate fundingRate budget). Strictly stronger than a token bucket of the same rate,
-  so a burst can never exceed Binance's per-second message limit.
+  attempts, the separate fundingRate budget). Strictly stronger than a token bucket of the same
+  rate, so a burst can never exceed Binance's per-second message limit.
 - `WeightLimiter`: REST request-weight budget seeded from `exchangeInfo.rateLimits`, corrected from
   `X-MBX-USED-WEIGHT-<n><unit>` response headers, blocked by 429 `Retry-After`, stopped by 418.
 - `Backoff`: exponential back-off with full jitter, capped.
@@ -208,7 +208,7 @@ class WeightLimiter:
         self._blocked_until_ms = max(self._blocked_until_ms, self._clock.now_ms() + retry_after_ms)
 
     def next_window_ms(self) -> int:
-        """Milliseconds until the shortest weight window rolls over (fallback when no Retry-After)."""
+        """Milliseconds until the shortest weight window rolls over (429 without Retry-After)."""
         now = self._clock.now_ms()
         if not self._windows:
             return 60_000
@@ -244,7 +244,7 @@ class Backoff:
         self.attempt = 0
 
     def ceiling(self, attempt: int) -> float:
-        return min(self.cap_s, self.base_s * (2 ** min(attempt, 30)))
+        return min(self.cap_s, self.base_s * (2.0 ** min(attempt, 30)))
 
     def next_delay(self) -> float:
         delay = self._rng(0.0, self.ceiling(self.attempt))

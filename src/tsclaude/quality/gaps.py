@@ -313,7 +313,13 @@ class GapRegistry:
 
     def resolve(self, market: Market, symbol: str, minutes: Iterable[int], source: str) -> int:
         """Mark minutes as recovered (closed bars now stored). Returns open minutes closed."""
-        ranges = minutes_to_ranges(minutes)
+        return self.resolve_ranges(market, symbol, minutes_to_ranges(minutes), source)
+
+    def resolve_ranges(
+        self, market: Market, symbol: str, ranges: Iterable[tuple[int, int]], source: str
+    ) -> int:
+        """Range form of `resolve`; one GAP_RESOLVED event per affected gap."""
+        ranges = list(ranges)
         now = self._now()
         closed = 0
         for gap in self.open_gaps(market, symbol):

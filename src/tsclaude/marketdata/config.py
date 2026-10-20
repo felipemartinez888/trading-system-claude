@@ -83,7 +83,9 @@ class WsConfig(BaseModel):
     backoff_cap_s: float = Field(default=60.0, gt=0)
     stable_after_s: float = Field(default=30.0, ge=0)  # reset back-off after this long connected
     fallback_after_failures: int = Field(default=3, ge=1)
-    connect_budget: int = Field(default=30, ge=1)  # attempts per window, per IP (Binance: 300/5 min)
+    connect_budget: int = Field(
+        default=30, ge=1
+    )  # attempts per window, per IP (Binance: 300/5 min)
     connect_budget_window_s: float = Field(default=300.0, gt=0)
     control_msgs_per_s_spot: int = Field(default=4, ge=1, le=4)  # Binance limit 5/s
     control_msgs_per_s_futures: int = Field(default=8, ge=1, le=8)  # Binance limit 10/s

@@ -167,9 +167,7 @@ class LiveBarStore:
             ).fetchone()
         return None if row is None else _from_row(row)
 
-    def range(
-        self, market: Market, symbol: str, start_ms: int, end_ms: int
-    ) -> list[StoredBar]:
+    def range(self, market: Market, symbol: str, start_ms: int, end_ms: int) -> list[StoredBar]:
         """Bars with start_ms <= open_time_ms < end_ms, ascending."""
         with self._lock:
             rows = self._conn.execute(
@@ -197,6 +195,14 @@ class LiveBarStore:
                 (str(market), symbol),
             ).fetchone()
         return None if row is None else _from_row(row)
+
+    def first_open_time(self, market: Market, symbol: str) -> int | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MIN(open_time_ms) FROM bars_1m WHERE market=? AND symbol=?",
+                (str(market), symbol),
+            ).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
 
     def count(self, market: Market | None = None, symbol: str | None = None) -> int:
         clauses: list[str] = []
