@@ -80,7 +80,7 @@ def test_context_start_opens_session_and_verifies_chain(make_context: ContextFac
     assert status.chain.value.ok
     assert status.monitoring.value is not None
     assert status.monitoring.value.state == "STOPPED"
-    assert status.heartbeat.provenance == "LIVE"
+    assert status.heartbeat.provenance == "SYSTEM"
     assert all(s.provenance == "UNAVAILABLE" and s.reason for s in status.streams.values())
 
 
@@ -131,13 +131,13 @@ def test_heartbeat_goes_stale_without_beats(
 ) -> None:
     ctx = make_context(heartbeat_interval_s=1.0)
     clock.advance(2_000)
-    assert ctx.status().heartbeat.provenance == "LIVE"
+    assert ctx.status().heartbeat.provenance == "SYSTEM"
     clock.advance(2_000)  # > 3 intervals since the last beat
     stale = ctx.status().heartbeat
     assert stale.provenance == "STALE"
     assert stale.as_of_ms is not None
     ctx.heartbeat()
-    assert ctx.status().heartbeat.provenance == "LIVE"
+    assert ctx.status().heartbeat.provenance == "SYSTEM"
 
 
 def test_previous_session_clean_and_crashed(
@@ -165,14 +165,47 @@ def test_previous_session_clean_and_crashed(
     assert prev.unobserved_from == "2025-10-09T08:53:30.000Z"
 
 
-def test_request_shutdown_without_server(make_context: ContextFactory) -> None:
+def test_request_shutdown_without_server_closes_nothing(make_context: ContextFactory) -> None:
     ctx = make_context()
-    assert ctx.request_shutdown("user_quit") is False
+    refused = ctx.request_shutdown("user_quit")
+    assert refused.accepted is False
+    assert refused.session.provenance == "UNAVAILABLE"
+    assert not ctx.closed
+    assert ctx.shutdown_reason is None
     calls: list[int] = []
     ctx.set_shutdown_callback(lambda: calls.append(1))
-    assert ctx.request_shutdown("again") is True
+    accepted = ctx.request_shutdown("user_quit")
+    assert accepted.accepted is True
+    assert accepted.session.value is not None
+    assert accepted.session.value.clean is True
     assert calls == [1]
-    assert ctx.shutdown_reason == "user_quit"  # first reason wins
+    again = ctx.request_shutdown("other")
+    assert again.session.value == accepted.session.value  # first outcome wins
+    assert ctx.shutdown_reason == "user_quit"
+
+
+def test_close_without_session_is_not_clean(make_context: ContextFactory) -> None:
+    ctx = make_context(start=False)
+    outcome = ctx.close("user")
+    assert outcome.clean is False
+    assert outcome.detail is not None
+
+
+def test_shutdown_message_is_published_after_session_stopped(
+    make_context: ContextFactory,
+) -> None:
+    ctx = make_context()
+    seen: list[tuple[str, list[str]]] = []
+    original = ctx.hub.publish
+
+    def spy(message: dict[str, Any]) -> None:
+        seen.append((message["type"], [str(e.type) for e in ctx.store.read()]))
+        original(message)
+
+    ctx.hub.publish = spy  # type: ignore[method-assign]
+    ctx.close("user")
+    shutdown = [events for kind, events in seen if kind == "shutdown"]
+    assert shutdown == [["session_started", "session_stopped"]]
 
 
 def test_events_paging(make_context: ContextFactory) -> None:

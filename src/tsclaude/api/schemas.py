@@ -7,9 +7,9 @@ intervals) are plain. `tests/integration/test_api_core.py` enforces this for eve
 Timestamps are ISO-8601 UTC strings with a `Z` suffix (CLAUDE.md). `Sourced.as_of_ms` is part of the
 Lead-owned contract and stays an epoch-ms integer.
 
-Provenance used for the app's *own* runtime state (session, monitoring, chain, coverage): `LIVE`
-with `as_of_ms` = when the backend read that state. These are first-hand observations of the
-running process, never exchange data; exchange-derived values start in M1.
+Provenance used for the app's *own* runtime state (session, monitoring, chain, coverage, events,
+shutdown): `SYSTEM` with `as_of_ms` = when the backend read that state (`STALE` for an overdue
+heartbeat). `LIVE` is reserved for market data observed from the exchange (M1+).
 """
 
 from __future__ import annotations
@@ -137,8 +137,17 @@ class HealthResponse(_Model):
     version: str
 
 
+class ShutdownInfo(_Model):
+    """Outcome of closing the app session; reported only after it was attempted."""
+
+    clean: bool  # True only if monitoring_stopped/session_stopped were written to the event log
+    reason: str
+    detail: str | None
+
+
 class QuitResponse(_Model):
-    accepted: bool
+    accepted: bool  # False when no server is attached that could stop (nothing was closed)
+    session: Sourced[ShutdownInfo]
 
 
 class ErrorResponse(_Model):

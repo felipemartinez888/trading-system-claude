@@ -85,7 +85,7 @@ def test_status_reflects_session(client: TestClient, ctx: AppContext) -> None:
     assert body["app_version"] == "test"
     assert body["server_time"].endswith("Z")
     session = body["session"]
-    assert session["provenance"] == "LIVE"
+    assert session["provenance"] == "SYSTEM"
     assert session["value"]["session_id"] == ctx.store.read()[0].aggregate_id
     assert session["value"]["started_at"].endswith("Z")
     assert _monitoring(body)["state"] == "STOPPED"
@@ -196,7 +196,7 @@ def test_423_when_chain_verification_failed(
         assert "verification failed" in coverage["intervals"]["reason"]
         # ...but the raw events stay readable for the audit page.
         events = c.get("/api/events").json()
-        assert events["events"]["provenance"] == "LIVE"
+        assert events["events"]["provenance"] == "SYSTEM"
         assert events["chain"]["value"]["ok"] is False
         # The UI still serves and shows the failure.
         page = c.get("/")
@@ -211,7 +211,7 @@ def test_coverage_after_start_stop_cycle(
     empty = client.get("/api/coverage").json()
     assert empty["intervals"] == {
         "value": [],
-        "provenance": "LIVE",
+        "provenance": "SYSTEM",
         "as_of_ms": clock.now_ms(),
         "reason": None,
     }
@@ -227,7 +227,7 @@ def test_coverage_after_start_stop_cycle(
 
     body = client.get("/api/coverage").json()
     intervals = body["intervals"]["value"]
-    assert body["intervals"]["provenance"] == "LIVE"
+    assert body["intervals"]["provenance"] == "SYSTEM"
     assert len(intervals) == 2
     first, second = intervals
     assert first["end_reason"] == "user"
@@ -245,7 +245,7 @@ def test_events_endpoint_pages(client: TestClient, ctx: AppContext) -> None:
     client.post("/api/monitoring/stop", headers=_auth(ctx))
     newest = client.get("/api/events", params={"limit": 2}).json()
     page = newest["events"]["value"]
-    assert newest["events"]["provenance"] == "LIVE"
+    assert newest["events"]["provenance"] == "SYSTEM"
     assert [e["type"] for e in page["items"]] == ["monitoring_started", "monitoring_stopped"]
     assert page["has_more"] is True
     assert page["head_seq"] == 3
@@ -334,18 +334,56 @@ def test_websocket_pushes_on_heartbeat(make_context: ContextFactory, no_bundle: 
         ws.receive_json()  # initial snapshot
         beat = ws.receive_json()  # produced by the heartbeat loop
         assert beat["type"] == "status"
-        assert beat["data"]["heartbeat"]["provenance"] in ("LIVE", "STALE")
+        assert beat["data"]["heartbeat"]["provenance"] in ("SYSTEM", "STALE")
 
 
 # ---------------------------------------------------------------------- quit
-def test_quit_triggers_shutdown_callback(client: TestClient, ctx: AppContext) -> None:
-    calls: list[str] = []
-    ctx.set_shutdown_callback(lambda: calls.append("quit"))
-    r = client.post("/api/app/quit", headers=_auth(ctx))
-    assert r.status_code == 202
-    assert r.json() == {"accepted": True}
-    assert calls == ["quit"]
+def test_quit_closes_session_then_triggers_shutdown_callback(
+    client: TestClient, ctx: AppContext
+) -> None:
+    calls: list[list[str]] = []
+    # The server is asked to stop only after session_stopped is in the event log.
+    ctx.set_shutdown_callback(lambda: calls.append([str(e.type) for e in ctx.store.read()]))
+    assert client.post("/api/monitoring/start", headers=_auth(ctx)).status_code == 200
+    with client.websocket_connect(f"{WS_URL}?token={ctx.token}") as ws:
+        ws.receive_json()  # initial snapshot
+        r = client.post("/api/app/quit", headers=_auth(ctx))
+        assert r.status_code == 202
+        body = r.json()
+        assert body["accepted"] is True
+        assert body["session"]["provenance"] == "SYSTEM"
+        assert body["session"]["value"] == {"clean": True, "reason": "user_quit", "detail": None}
+        types: list[str] = []
+        final: dict[str, Any] = {}
+        for _ in range(20):  # status snapshots may interleave; the final message is `shutdown`
+            message = ws.receive_json()
+            types.append(message["type"])
+            if message["type"] == "shutdown":
+                final = message["data"]
+                break
+    assert calls == [
+        ["session_started", "monitoring_started", "monitoring_stopped", "session_stopped"]
+    ]
     assert ctx.shutdown_reason == "user_quit"
+    assert "shutting_down" in types
+    assert types.index("shutting_down") < types.index("shutdown")
+    assert final == {"clean": True, "reason": "user_quit", "detail": None}
+
+
+def test_quit_reports_unclean_close_truthfully(
+    client: TestClient, ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx.set_shutdown_callback(lambda: None)
+
+    def broken_close(reason: str = "user") -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ctx._sessions, "close", broken_close)
+    body = client.post("/api/app/quit", headers=_auth(ctx)).json()
+    value = body["session"]["value"]
+    assert value["clean"] is False
+    assert "session_stopped could not be recorded" in value["detail"]
+    assert "session_stopped" not in [str(e.type) for e in ctx.store.read()]
 
 
 # ---------------------------------------------------------------------- static
@@ -353,7 +391,7 @@ def test_fallback_page_when_bundle_missing(client: TestClient) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert "dashboard bundle is not built" in r.text.lower()
-    assert '"provenance": "LIVE"' in html.unescape(r.text)  # the /api/status JSON is shown
+    assert '"provenance": "SYSTEM"' in html.unescape(r.text)  # the /api/status JSON is shown
     assert "test-token" not in r.text  # the fallback page has no use for the token
 
 

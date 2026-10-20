@@ -10,7 +10,7 @@ Endpoints (all JSON, ISO-8601 `Z` timestamps, metric-like values as `Sourced`):
 | GET  | `/api/events?after_seq=&limit=` | event page (newest page if `after_seq` is omitted) |
 | POST | `/api/monitoring/start` | token; 409 invalid transition; 423 chain failed / no session |
 | POST | `/api/monitoring/stop` | token; 409 invalid transition |
-| POST | `/api/app/quit` | token; 202, graceful shutdown |
+| POST | `/api/app/quit` | token; 202; closes the session, then stops the server |
 | WS   | `/ws/live?token=` | pushes `status` on every change and heartbeat |
 | GET  | `/`, `/{path}` | built dashboard (token injected into `index.html`) or fallback page |
 
@@ -202,7 +202,7 @@ def create_app(
     )
     def quit_app() -> QuitResponse:
         log.info("quit requested from the dashboard")
-        return QuitResponse(accepted=context.request_shutdown("user_quit"))
+        return context.request_shutdown("user_quit")
 
     # ------------------------------------------------------------------ live push
     @app.websocket("/ws/live")

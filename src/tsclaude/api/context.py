@@ -7,7 +7,7 @@ pool), and publishes a status snapshot to WebSocket clients on every change and 
 Fail-closed rules implemented here:
 - if the chain failed verification at startup, monitoring cannot be started (HTTP 423);
 - if the session could not be opened, monitoring cannot be started and the status says why;
-- a heartbeat older than `STALE_HEARTBEATS` intervals is reported `STALE`, never `LIVE`.
+- a heartbeat older than `STALE_HEARTBEATS` intervals is reported `STALE`, never `SYSTEM`.
 
 This module deliberately does not import FastAPI, so it is unit-testable everywhere.
 """
@@ -33,7 +33,9 @@ from tsclaude.api.schemas import (
     EventsResponse,
     MonitoringInfo,
     PreviousSessionInfo,
+    QuitResponse,
     SessionInfo,
+    ShutdownInfo,
     StatusResponse,
 )
 from tsclaude.contracts.events import AggregateType, Event, EventType
@@ -112,6 +114,7 @@ class AppContext:
         self._previous: PreviousSessionInfo | None = None
         self._last_heartbeat_ms: int | None = None
         self._closed = False
+        self._close_result: ShutdownInfo | None = None
         self._shutdown_callback: Callable[[], None] | None = None
         self.shutdown_reason: str | None = None
 
@@ -150,19 +153,41 @@ class AppContext:
                 self._session_error = f"{type(exc).__name__}: {exc}"
         self._publish_status()
 
-    def close(self, reason: str = "user") -> None:
-        """Close the session cleanly (stops monitoring first). Safe to call more than once."""
+    def close(self, reason: str = "user") -> ShutdownInfo:
+        """Close the session (stops monitoring first) and publish the *actual* outcome.
+
+        Idempotent: later calls return the first outcome. The `shutdown` push message is sent only
+        after `session_stopped` was written, or after writing it failed (`clean=False`).
+        """
         with self._lock:
-            if self._closed:
-                return
+            if self._close_result is not None:
+                return self._close_result
             self._closed = True
-            if self._session_id is not None:
+            if self._session_id is None:
+                result = ShutdownInfo(
+                    clean=False,
+                    reason=reason,
+                    detail=f"no app session was open: {self._session_error or 'not opened'}",
+                )
+            else:
                 try:
                     self._sessions.close(reason)
-                    log.info("app session closed", extra={"reason": reason})
-                except Exception:
+                except Exception as exc:
                     log.exception("failed to close the app session cleanly")
-        self.hub.publish({"type": "shutdown", "data": {"reason": reason}})
+                    result = ShutdownInfo(
+                        clean=False,
+                        reason=reason,
+                        detail=(
+                            f"session_stopped could not be recorded ({type(exc).__name__}); "
+                            "the next start will report this session as not closed cleanly"
+                        ),
+                    )
+                else:
+                    log.info("app session closed", extra={"reason": reason})
+                    result = ShutdownInfo(clean=True, reason=reason, detail=None)
+            self._close_result = result
+            self.hub.publish({"type": "shutdown", "data": result.model_dump(mode="json")})
+        return result
 
     @property
     def closed(self) -> bool:
@@ -171,16 +196,30 @@ class AppContext:
     def set_shutdown_callback(self, callback: Callable[[], None]) -> None:
         self._shutdown_callback = callback
 
-    def request_shutdown(self, reason: str) -> bool:
-        """Ask the hosting server to stop. Returns False if no server is attached."""
-        if self.shutdown_reason is None:
-            self.shutdown_reason = reason
-        self.hub.publish({"type": "shutdown", "data": {"reason": reason}})
+    def request_shutdown(self, reason: str) -> QuitResponse:
+        """Close the session, then ask the hosting server to stop.
+
+        The session is closed *before* the server stops, so the HTTP response (and the push
+        message) can report truthfully whether `session_stopped` was recorded. Without an
+        attached server nothing is closed (the app would keep serving with no session).
+        """
         callback = self._shutdown_callback
         if callback is None:
-            return False
+            return QuitResponse(
+                accepted=False,
+                session=Sourced[ShutdownInfo].unavailable("no server attached; nothing was closed"),
+            )
+        if self.shutdown_reason is None:
+            self.shutdown_reason = reason
+        self.hub.publish({"type": "shutting_down", "data": {"reason": reason}})
+        result = self.close(reason)
         callback()
-        return True
+        return QuitResponse(
+            accepted=True,
+            session=Sourced[ShutdownInfo](
+                value=result, provenance=Provenance.SYSTEM, as_of_ms=self.clock.now_ms()
+            ),
+        )
 
     # ------------------------------------------------------------------ periodic
     def heartbeat(self) -> None:
@@ -271,11 +310,11 @@ class AppContext:
             generated_at=to_iso(now),
             intervals=Sourced[list[CoverageInterval]](
                 value=[_interval_out(iv) for iv in intervals],
-                provenance=Provenance.LIVE,
+                provenance=Provenance.SYSTEM,
                 as_of_ms=now,
             ),
             gaps=Sourced[list[CoverageGap]](
-                value=coverage_gaps(intervals), provenance=Provenance.LIVE, as_of_ms=now
+                value=coverage_gaps(intervals), provenance=Provenance.SYSTEM, as_of_ms=now
             ),
         )
 
@@ -295,7 +334,7 @@ class AppContext:
                 value=EventPage(
                     items=[_event_out(e) for e in rows], head_seq=head_seq, has_more=has_more
                 ),
-                provenance=Provenance.LIVE,
+                provenance=Provenance.SYSTEM,
                 as_of_ms=now,
             )
         except Exception as exc:
@@ -340,7 +379,7 @@ class AppContext:
                 started_at=to_iso(started),
                 uptime_s=max(0, now - started) / 1000,
             ),
-            provenance=Provenance.LIVE,
+            provenance=Provenance.SYSTEM,
             as_of_ms=now,
         )
 
@@ -360,7 +399,7 @@ class AppContext:
                 start_allowed=state is MonitoringState.STOPPED and block is None,
                 blocked_reason=block,
             ),
-            provenance=Provenance.LIVE,
+            provenance=Provenance.SYSTEM,
             as_of_ms=now,
         )
 
@@ -379,7 +418,7 @@ class AppContext:
                 reason=r.reason,
                 verified_at=to_iso(chain.verified_at_ms),
             ),
-            provenance=Provenance.LIVE,
+            provenance=Provenance.SYSTEM,
             as_of_ms=chain.verified_at_ms,
         )
 
@@ -399,7 +438,7 @@ class AppContext:
                 self._session_error or "session not opened yet"
             )
         return Sourced[PreviousSessionInfo](
-            value=self._previous, provenance=Provenance.LIVE, as_of_ms=now
+            value=self._previous, provenance=Provenance.SYSTEM, as_of_ms=now
         )
 
     def _heartbeat_sourced(self, now: int) -> Sourced[str]:
@@ -409,7 +448,7 @@ class AppContext:
         budget_ms = int(self.heartbeat_interval_s * 1000 * STALE_HEARTBEATS)
         if now - hb > budget_ms:
             return Sourced[str](value=to_iso(hb), provenance=Provenance.STALE, as_of_ms=hb)
-        return Sourced[str](value=to_iso(hb), provenance=Provenance.LIVE, as_of_ms=hb)
+        return Sourced[str](value=to_iso(hb), provenance=Provenance.SYSTEM, as_of_ms=hb)
 
 
 # ---------------------------------------------------------------------- pure helpers
