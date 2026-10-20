@@ -65,6 +65,7 @@ export interface StatusBarProps {
 export function StatusBar({ live }: StatusBarProps) {
   const status = useStatus();
   const monitoring = useMonitoringMutation();
+  const cancelStart = useMonitoringMutation(); // separate: the start request is still pending
   const quit = useQuitMutation();
   const now = useNow();
   const freshness = useBackendFreshness();
@@ -118,6 +119,11 @@ export function StatusBar({ live }: StatusBarProps) {
     mon !== null &&
     backendAnswers &&
     (action === "stop" || (mon.start_allowed && !stale));
+  const starting = pendingAction === "start" || serverTransition === "starting";
+  // A start the user cancelled is reported by the backend as 409 "start cancelled …": expected,
+  // not an error to show.
+  const startCancelled =
+    monitoring.error instanceof ApiError && monitoring.error.detail.includes("start cancelled");
   const uptime =
     session === null
       ? null
@@ -144,22 +150,38 @@ export function StatusBar({ live }: StatusBarProps) {
           asOfMs={monDisplay.asOfMs}
           compact
         />
-        <button
-          type="button"
-          className={`btn ${action === "stop" ? "btn--stop" : "btn--start"}`}
-          disabled={!canAct}
-          aria-busy={monitoring.isPending}
-          title={mon?.blocked_reason ?? undefined}
-          onClick={() => monitoring.mutate(action)}
-        >
-          {pendingAction === "start" || serverTransition === "starting"
-            ? "Starting…"
-            : pendingAction === "stop" || serverTransition === "stopping"
+        {starting ? (
+          <>
+            <span className="statusbar__muted" aria-live="polite" data-testid="starting">
+              Starting…
+            </span>
+            {/* Review #10: a slow start (REST timeouts) can be cancelled; the backend cancels the
+                in-flight start cleanly and monitoring stays STOPPED. */}
+            <button
+              type="button"
+              className="btn btn--stop"
+              disabled={cancelStart.isPending || !backendAnswers}
+              onClick={() => cancelStart.mutate("stop")}
+            >
+              {cancelStart.isPending ? "Cancelling…" : "Cancel start"}
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={`btn ${action === "stop" ? "btn--stop" : "btn--start"}`}
+            disabled={!canAct}
+            aria-busy={monitoring.isPending}
+            title={mon?.blocked_reason ?? undefined}
+            onClick={() => monitoring.mutate(action)}
+          >
+            {pendingAction === "stop" || serverTransition === "stopping"
               ? "Stopping…"
               : action === "stop"
                 ? "Stop"
                 : "Start"}
-        </button>
+          </button>
+        )}
       </section>
 
       <section className="statusbar__group" aria-label="Session">
@@ -236,7 +258,13 @@ export function StatusBar({ live }: StatusBarProps) {
         </div>
       ) : null}
 
-      {monitoring.isError ? (
+      {cancelStart.isError ? (
+        <div className="statusbar__notice statusbar__notice--error" role="alert">
+          <span>Cancelling the start failed: {errorText(cancelStart.error)}</span>
+        </div>
+      ) : null}
+
+      {monitoring.isError && !startCancelled ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
           <span>{errorText(monitoring.error)}</span>
           <button type="button" className="btn btn--ghost" onClick={() => monitoring.reset()}>

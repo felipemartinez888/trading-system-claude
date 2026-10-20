@@ -77,7 +77,9 @@ export function CandleChart({ market, symbol, row }: CandleChartProps) {
       layout: {
         background: { type: ColorType.Solid, color: "#0f1115" },
         textColor: "#a3aab8",
-        attributionLogo: true, // required attribution (TradingView logo link)
+        // The built-in logo injects inline styles that the CSP (style-src 'self') blocks; the
+        // required attribution is given by the visible "Charts by TradingView" link below.
+        attributionLogo: false,
       },
       grid: { vertLines: { color: "#1c2130" }, horzLines: { color: "#1c2130" } },
       timeScale: { timeVisible: true, secondsVisible: false },

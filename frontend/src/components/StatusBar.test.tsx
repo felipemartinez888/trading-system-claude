@@ -166,9 +166,10 @@ describe("StatusBar", () => {
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled(); // retry allowed
   });
 
-  it("shows a server-side transition and blocks double clicks", async () => {
+  it("shows a server-side start (no second Start) and lets it be cancelled", async () => {
     const base = statusFixture("STOPPED");
-    installBackend({
+    setToken();
+    const mock = installBackend({
       ...base,
       monitoring: {
         ...base.monitoring,
@@ -184,7 +185,14 @@ describe("StatusBar", () => {
       },
     });
     renderBar();
-    expect(await screen.findByRole("button", { name: "Starting…" })).toBeDisabled();
+    expect(await screen.findByTestId("starting")).toHaveTextContent("Starting…");
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    // review #10: a slow start can be cancelled
+    const cancel = screen.getByRole("button", { name: "Cancel start" });
+    expect(cancel).toBeEnabled();
+    await userEvent.click(cancel);
+    await waitFor(() => expect(postCalls(mock)).toHaveLength(1));
+    expect(String(postCalls(mock)[0]![0])).toBe("/api/monitoring/stop");
   });
 
   it("sends the token header on mutations and reflects the new state", async () => {
