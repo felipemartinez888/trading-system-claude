@@ -35,6 +35,13 @@ reachable inside the same 1m bar, the outcome is **SL first** and the trade is f
 the report shows the count and the P&L sensitivity if those trades were resolved TP-first. If the
 ambiguous share exceeds a threshold (default 5 % of trades) the run's evidence grade is capped.
 
+**Same-bar rules (Lead decision L-04).** An entry that fills *inside* a 1m bar (limit or stop
+entry) may be stopped out in that same bar — any stop inside the bar's range counts as hit and the
+trade is flagged `ambiguous_bar` — but **can never book its take-profit in the same bar**: the TP
+becomes eligible from the next 1m bar onward. Resting limits and TPs that gap through fill at their
+limit price, never at the better open. Trades spanning a data gap are flagged `spans_gap` and the
+run's evidence grade is capped like ambiguous bars.
+
 **Costs.** Fees from `configs/costs.yaml` (VIP-0 defaults, to be verified against Binance's current
 fee schedule when the evaluation protocol is frozen). Slippage = `half_spread + impact`, where:
 - live/paper: half-spread from the latest `book_top` sample, impact = k · σ_1m · √(order_notional / bar_quote_volume);

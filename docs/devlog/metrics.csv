@@ -1,2 +1,5 @@
 task_id,milestone,role,started_utc,finished_utc,agent_sessions,tokens_in,tokens_out,est_cost_usd,human_minutes,review_findings_blocking,review_findings_nonblocking,ci_failures,rework_cycles,defects_escaped_later,notes
 P-001,P,lead,2026-10-20T00:22Z,2026-10-20T00:45Z,1,,,,,0,0,0,0,,Repository inspection and planning documents; no subagents used; token counts not exposed by tooling
+M0-core,M0,lead,2026-10-20T00:40Z,2026-10-20T01:00Z,1,,,,,0,0,1,0,,contracts/event store/sessions/CI; 1 CI failure (strict mypy on lazy import) fixed
+M0-T4,M0,platform-ui-engineer,2026-10-20T00:58Z,2026-10-20T14:10Z,4,,,,,1,8,0,1,,UNC/SMB path leak on Windows found in review; 3 sessions cut by usage limits; subagent tokens reported ~577k over 2 runs
+M1-T1,M1,data-engineer,2026-10-20T00:58Z,2026-10-20T14:40Z,5,,,,,3,7,1,2,,bad-frame kills WS; old bar labelled LIVE; recycle-stop leak — all found in review; ~1.1M subagent tokens reported across runs

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 class Provenance(StrEnum):
     LIVE = "LIVE"  # observed live from the exchange during a monitoring session, fresh
+    SYSTEM = "SYSTEM"  # the app's own runtime state (session, chain, coverage); not market data
     PARTIAL = "PARTIAL"  # forming candle / incomplete aggregate
     RECOVERED = "RECOVERED"  # filled after the fact from REST for a period we were observing
     HISTORICAL = "HISTORICAL"  # archive or backfill, never observed live
