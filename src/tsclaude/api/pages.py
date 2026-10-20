@@ -71,6 +71,15 @@ def _safe_segment(segment: str) -> bool:
     return stem not in _RESERVED_NAMES
 
 
+def is_index_file(static_dir: Path, file: Path) -> bool:
+    """True if `file` is the same file as `static_dir/index.html` (any alias of it)."""
+    index = static_dir / "index.html"
+    try:
+        return index.is_file() and file.samefile(index)
+    except OSError:
+        return False
+
+
 def is_index_path(rel_path: str) -> bool:
     """`index.html` in any letter case (case-insensitive filesystems would serve the same file)."""
     return rel_path.lower() == "index.html"

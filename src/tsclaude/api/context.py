@@ -48,11 +48,14 @@ from tsclaude.contracts.timeutil import WallClock, to_iso
 from tsclaude.runtime.sessions import (
     MonitoringState,
     ObservationInterval,
-    SessionError,
     SessionManager,
     observation_intervals,
 )
-from tsclaude.runtime.supervisor import MonitoringSupervisor, StartFailed, summarize_streams
+from tsclaude.runtime.supervisor import (
+    MonitoringSupervisor,
+    StartFailed,
+    summarize_streams,
+)
 from tsclaude.store.eventstore import ChainReport, EventStore
 from tsclaude.store.livebars import LiveBarStore
 
@@ -71,6 +74,10 @@ class TransitionRefused(StrEnum):
     INVALID = "invalid"  # 409: not allowed from the current state
     LOCKED = "locked"  # 423: blocked by a failed integrity check or a missing session
     FAILED = "failed"  # 503: market data could not be started (monitoring stays STOPPED)
+
+
+class _StartCancelled(Exception):
+    """A stop request arrived while market data was starting."""
 
 
 class TransitionError(RuntimeError):
@@ -126,12 +133,16 @@ class AppContext:
         self._shutdown_callback: Callable[[], None] | None = None
         self.shutdown_reason: str | None = None
         self.supervisor = supervisor
+        if supervisor is not None and supervisor.on_problem is None:
+            supervisor.on_problem = self.notify_problem
         self._transition: str | None = None
         self._last_start_error: str | None = None
         self._transition_lock: asyncio.Lock | None = None
         self._bars: LiveBarStore | None = None
         self.transient_notifications: deque[NotificationOut] = deque(maxlen=200)
         self.loop: asyncio.AbstractEventLoop | None = None  # set by the app lifespan
+        self._start_task: asyncio.Task[None] | None = None
+        self._cancel_start = False
 
     # ------------------------------------------------------------------ startup / shutdown
     def start(self) -> None:
@@ -259,7 +270,9 @@ class AppContext:
         """Start market data, then record `monitoring_started`.
 
         The monitoring interval (observation coverage) opens only once ingestion has actually
-        started; if it fails, monitoring stays STOPPED and `last_error` says why (HTTP 503).
+        started. *Any* failure — starting market data or writing `monitoring_started` — stops
+        ingestion again, leaves monitoring STOPPED and records `last_error` (HTTP 503). A Stop
+        request while starting cancels the start cleanly (HTTP 409 for the start request).
         """
         async with self._lock_transitions():
             with self._lock:
@@ -275,42 +288,86 @@ class AppContext:
                 if session_id is None:  # unreachable: _require_running checked it
                     raise TransitionError(TransitionRefused.LOCKED, "no app session")
                 self._transition = "starting"
+                self._cancel_start = False
             self._publish_status()
             try:
                 if self.supervisor is not None:
-                    await self.supervisor.start(session_id)
+                    self._start_task = asyncio.create_task(
+                        self.supervisor.start(session_id), name="monitoring-start"
+                    )
+                    try:
+                        await self._start_task
+                    finally:
+                        self._start_task = None
                 with self._lock:
+                    if self._cancel_start:
+                        raise _StartCancelled
                     mid = self._sessions.start_monitoring()
-            except (StartFailed, SessionError, OSError) as exc:
-                if self.supervisor is not None and self.supervisor.running:
-                    await self.supervisor.stop()
-                with self._lock:
-                    self._transition = None
-                    self._last_start_error = str(exc)
-                log.error("monitoring could not be started", extra={"error": str(exc)})
-                self._publish_status()
-                raise TransitionError(TransitionRefused.FAILED, str(exc)) from exc
-            except BaseException:
-                with self._lock:
-                    self._transition = None
-                raise
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if not self._cancel_start or (current is not None and current.cancelling()):
+                    await self._abort_start(None)  # this request itself was cancelled
+                    raise
+                await self._abort_start(None)
+                raise TransitionError(
+                    TransitionRefused.INVALID, "start cancelled by a stop request"
+                ) from None
+            except _StartCancelled:
+                await self._abort_start(None)
+                raise TransitionError(
+                    TransitionRefused.INVALID, "start cancelled by a stop request"
+                ) from None
+            except Exception as exc:  # B1: every failure stops ingestion and is surfaced
+                detail = str(exc) or type(exc).__name__
+                if not isinstance(exc, StartFailed):
+                    detail = f"{type(exc).__name__}: {detail}"
+                await self._abort_start(detail)
+                log.error("monitoring could not be started", extra={"error": detail})
+                raise TransitionError(TransitionRefused.FAILED, detail) from exc
             with self._lock:
                 self._transition = None
                 self._last_start_error = None
             log.info("monitoring started", extra={"monitoring_id": mid})
         return self._publish_status()
 
+    async def _abort_start(self, error: str | None) -> None:
+        """Undo a partial start: ingestion stopped, no interval, transition cleared."""
+        try:
+            if self.supervisor is not None and self.supervisor.running:
+                await asyncio.shield(self.supervisor.stop())
+        except Exception:
+            log.exception("stopping market data after a failed start failed")
+        finally:
+            with self._lock:
+                self._transition = None
+                self._last_start_error = error
+            self._publish_status()
+
     async def stop_monitoring(self, reason: str = "user") -> StatusResponse:
+        # A start in progress holds the transition lock: cancel it instead of queueing behind it.
+        if self._transition == "starting":
+            self._cancel_start = True
+            task = self._start_task
+            if task is not None and not task.done():
+                task.cancel()
         async with self._lock_transitions():
             with self._lock:
                 self._require_running()
                 if self._sessions.monitoring_id is None:
+                    if self._cancel_start:  # the start was cancelled: already stopped
+                        self._cancel_start = False
+                        return self.status()
                     raise TransitionError(TransitionRefused.INVALID, "monitoring is not running")
             await self._stop_locked(reason)
         return self._publish_status()
 
     async def shutdown_monitoring(self, reason: str = "app_shutdown") -> None:
         """Stop market data and close the monitoring interval if open (never raises)."""
+        if self._transition == "starting":
+            self._cancel_start = True
+            task = self._start_task
+            if task is not None and not task.done():
+                task.cancel()
         async with self._lock_transitions():
             try:
                 await self._stop_locked(reason)
@@ -318,9 +375,22 @@ class AppContext:
                 log.exception("stopping monitoring during shutdown failed")
 
     async def _stop_locked(self, reason: str) -> None:
-        """Stop ingestion first, then end the interval (also if stopping ingestion failed)."""
+        """End the interval first, then stop ingestion.
+
+        `monitoring_stopped` is timestamped before the sockets close, so observation coverage
+        never includes the shutdown of the streams. Ingestion is stopped even if writing the
+        event failed; that failure is then reported.
+        """
+        record_error: Exception | None = None
         with self._lock:
             self._transition = "stopping"
+            if self._sessions.monitoring_id is not None and not self._closed:
+                try:
+                    self._sessions.stop_monitoring(reason=reason)
+                    log.info("monitoring stopped", extra={"reason": reason})
+                except Exception as exc:
+                    log.exception("monitoring_stopped could not be recorded")
+                    record_error = exc
         self._publish_status()
         try:
             if self.supervisor is not None:
@@ -330,9 +400,29 @@ class AppContext:
         finally:
             with self._lock:
                 self._transition = None
-                if self._sessions.monitoring_id is not None and not self._closed:
-                    self._sessions.stop_monitoring(reason=reason)
-                    log.info("monitoring stopped", extra={"reason": reason})
+        if record_error is not None:
+            raise TransitionError(
+                TransitionRefused.FAILED,
+                f"monitoring_stopped could not be recorded: {type(record_error).__name__}",
+            )
+
+    def notify_problem(self, title: str, detail: str) -> None:
+        """Transient (not chained) error notification; picked up by /api/notifications."""
+        now = self.clock.now_ms()
+        self.transient_notifications.append(
+            NotificationOut(
+                id=f"problem-{now}-{len(self.transient_notifications)}",
+                seq=0,
+                ts=to_iso(now),
+                kind="runtime_problem",
+                severity="error",
+                title=title,
+                detail=detail,
+                market=None,
+                symbol=None,
+                provenance=Provenance.SYSTEM,
+            )
+        )
 
     def bar_store(self) -> LiveBarStore:
         """Read connection to the live bar table (same SQLite file, separate connection)."""

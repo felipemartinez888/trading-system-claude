@@ -66,7 +66,7 @@ def make_bar(
 class FakeSubscription:
     def __init__(self, owner: FakeMarketData) -> None:
         self._owner = owner
-        self.queue: asyncio.Queue[BarClosed | Event | None] = asyncio.Queue()
+        self.queue: asyncio.Queue[BarClosed | Event | Exception | None] = asyncio.Queue()
         self.closed = False
 
     def close(self) -> None:
@@ -77,9 +77,12 @@ class FakeSubscription:
 
     async def get(self, timeout: float | None = None) -> BarClosed | Event | None:
         try:
-            return await asyncio.wait_for(self.queue.get(), timeout)
+            item = await asyncio.wait_for(self.queue.get(), timeout)
         except TimeoutError:
             return None
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 @dataclass
@@ -99,8 +102,11 @@ class FakeMarketData:
         self._running = False
         self.closed = False
         self.fail_start: str | None = None
+        self.start_delay_s = 0.0
+        self.start_cancelled = False
         self.start_calls: list[str | None] = []
         self.stop_calls = 0
+        self.events_at_stop: list[str] = []
         self.subscriptions: set[FakeSubscription] = set()
         self.subscribed_total = 0
         self.state: dict[tuple[Market, str, str], StreamState] = {
@@ -118,13 +124,18 @@ class FakeMarketData:
 
     async def start(self, session_id: str | None = None) -> None:
         self.start_calls.append(session_id)
-        await asyncio.sleep(0)
+        try:
+            await asyncio.sleep(self.start_delay_s)
+        except asyncio.CancelledError:
+            self.start_cancelled = True
+            raise
         if self.fail_start is not None:
             raise ConnectionError(self.fail_start)
         self._running = True
 
     async def stop(self) -> None:
         self.stop_calls += 1
+        self.events_at_stop = [str(e.type) for e in self.store.read()]
         self._running = False
         for sub in list(self.subscriptions):
             sub.close()
@@ -240,15 +251,22 @@ class FakeMarketData:
         for sub in list(self.subscriptions):
             sub.queue.put_nowait(BarClosed(bar))
 
+    def break_consumer(self) -> None:
+        """Make the supervisor's consumer task die (an unexpected error from the subscription)."""
+        for sub in list(self.subscriptions):
+            sub.queue.put_nowait(RuntimeError("subscription broken"))
+
 
 class FakeFactory:
     """`ServiceFactory` that remembers the instance it created."""
 
-    def __init__(self, fail_start: str | None = None) -> None:
+    def __init__(self, fail_start: str | None = None, start_delay_s: float = 0.0) -> None:
         self.instance: FakeMarketData | None = None
         self.fail_start = fail_start
+        self.start_delay_s = start_delay_s
 
     def __call__(self, store: EventStore, clock: WallClock) -> Any:
         self.instance = FakeMarketData(store, clock)
         self.instance.fail_start = self.fail_start
+        self.instance.start_delay_s = self.start_delay_s
         return self.instance

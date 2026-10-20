@@ -202,7 +202,9 @@ def test_change_24h_from_stored_bars(h: Harness) -> None:
         c.post("/api/monitoring/start", headers=AUTH)
         bars = LiveBarStore(h.store.path)
         last = make_bar(Market.SPOT, "BTCUSDT", T0, close=110.0)
-        ref = make_bar(Market.SPOT, "BTCUSDT", T0 - MS_PER_DAY, close=100.0)
+        ref = make_bar(
+            Market.SPOT, "BTCUSDT", T0 - MS_PER_DAY, close=100.0, source=BarSource.REST_BACKFILL
+        )
         bars.write(ref)
         bars.write(last)
         h.service.bars[(Market.SPOT, "BTCUSDT")] = Sourced(
@@ -210,8 +212,38 @@ def test_change_24h_from_stored_bars(h: Harness) -> None:
         )
         spot = next(r for r in c.get("/api/markets").json()["rows"] if r["market"] == "spot")
         assert spot["change_24h"]["value"] == pytest.approx(0.10)
-        assert spot["change_24h"]["provenance"] == "LIVE"
+        # the reference bar was backfilled: the derived value is only as good as its weaker input
+        assert spot["change_24h"]["provenance"] == "HISTORICAL"
+        assert spot["change_24h"]["reason"] == "24 h reference bar source: rest_backfill"
         assert spot["last_closed_bar"]["provenance"] == "LIVE"
+        bars.close()
+
+
+@pytest.mark.parametrize(
+    ("ref_source", "last", "expected"),
+    [
+        (BarSource.WS_LIVE, Provenance.LIVE, "LIVE"),
+        (BarSource.REST_RECOVERED, Provenance.LIVE, "RECOVERED"),
+        (BarSource.REST_BACKFILL, Provenance.LIVE, "HISTORICAL"),
+        (BarSource.WS_LIVE, Provenance.STALE, "STALE"),
+        (BarSource.REST_BACKFILL, Provenance.RECOVERED, "HISTORICAL"),
+    ],
+)
+def test_change_24h_takes_the_weaker_provenance(
+    h: Harness, ref_source: BarSource, last: Provenance, expected: str
+) -> None:
+    with h.client() as c:
+        c.post("/api/monitoring/start", headers=AUTH)
+        bars = LiveBarStore(h.store.path)
+        newest = make_bar(Market.SPOT, "BTCUSDT", T0, close=110.0)
+        bars.write(
+            make_bar(Market.SPOT, "BTCUSDT", T0 - MS_PER_DAY, close=100.0, source=ref_source)
+        )
+        h.service.bars[(Market.SPOT, "BTCUSDT")] = Sourced(
+            value=newest, provenance=last, as_of_ms=newest.close_time_ms
+        )
+        spot = next(r for r in c.get("/api/markets").json()["rows"] if r["market"] == "spot")
+        assert spot["change_24h"]["provenance"] == expected
         bars.close()
 
 
@@ -426,3 +458,93 @@ def test_push_tick_contents(tmp_path: Path) -> None:
     asyncio.run(scenario())
     harness.ctx.release_resources()
     harness.store.close()
+
+
+# ---------------------------------------------------------------------- review fixes
+def test_failure_writing_monitoring_started_stops_market_data(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1: ingestion must never keep running without an open monitoring interval."""
+    import sqlite3
+
+    def broken() -> str:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    with h.client() as c:
+        monkeypatch.setattr(h.ctx._sessions, "start_monitoring", broken)
+        r = c.post("/api/monitoring/start", headers=AUTH)
+        assert r.status_code == 503
+        assert "OperationalError" in r.json()["detail"]
+        assert h.service.start_calls  # market data did start ...
+        assert not h.supervisor.running  # ... and was stopped again
+        mon = _mon(c.get("/api/status").json())
+        assert mon["state"] == "STOPPED"
+        assert mon["transition"] is None
+        assert "disk I/O error" in mon["last_error"]
+    assert "monitoring_started" not in [str(e.type) for e in h.store.read()]
+
+
+def test_monitoring_stopped_is_recorded_before_ingestion_stops(h: Harness) -> None:
+    """Review #1: coverage never includes the streams shutting down."""
+    with h.client() as c:
+        c.post("/api/monitoring/start", headers=AUTH)
+        assert c.post("/api/monitoring/stop", headers=AUTH).status_code == 200
+        assert h.service.events_at_stop[-1] == "monitoring_stopped"
+
+
+def test_stop_while_starting_cancels_the_start(tmp_path: Path) -> None:
+    """Review #10: Stop is honoured during a slow start (e.g. REST timeouts)."""
+    import threading
+
+    harness = Harness(tmp_path, SystemClock())
+    harness.factory.start_delay_s = 30.0
+    with harness.client() as c:
+        results: dict[str, Any] = {}
+        starter = threading.Thread(
+            target=lambda: results.update(start=c.post("/api/monitoring/start", headers=AUTH))
+        )
+        starter.start()
+        _wait(lambda: _mon(c.get("/api/status").json())["transition"] == "starting")
+        stop = c.post("/api/monitoring/stop", headers=AUTH)
+        assert stop.status_code == 200
+        assert _mon(stop.json())["state"] == "STOPPED"
+        starter.join(timeout=5)
+        assert results["start"].status_code == 409
+        assert "cancelled" in results["start"].json()["detail"]
+        assert harness.service.start_cancelled
+        assert not harness.supervisor.running
+        assert not harness.service.subscriptions  # the run's subscription was closed
+        mon = _mon(c.get("/api/status").json())
+        assert mon["transition"] is None
+        assert mon["last_error"] is None
+        assert mon["start_allowed"] is True
+        # and a normal start still works afterwards
+        harness.service.start_delay_s = 0.0
+        assert c.post("/api/monitoring/start", headers=AUTH).status_code == 200
+    types = [str(e.type) for e in harness.store.read()]
+    assert types.count("monitoring_started") == 1
+    harness.store.close()
+
+
+def test_consumer_death_is_surfaced(h: Harness) -> None:
+    """Review #2: a dead consumer silently disables the detector, so it must be visible."""
+    with h.client() as c:
+        c.post("/api/monitoring/start", headers=AUTH)
+        _on_loop(c, h.service.break_consumer)
+        _wait(lambda: h.supervisor.consumer_failures == 1)
+        notes = c.get("/api/notifications").json()["notifications"]["value"]
+        problem = next(n for n in notes if n["kind"] == "runtime_problem")
+        assert problem["severity"] == "error"
+        assert "subscription broken" in problem["detail"]
+
+
+def test_demo_needs_healthy_streams_in_both_markets(h: Harness) -> None:
+    """Review #9: a spot move is not signalled while the perp streams of that symbol are not
+    HEALTHY (and vice versa)."""
+    with h.client() as c:
+        c.post("/api/monitoring/start", headers=AUTH)
+        h.service.state[(Market.USDM, "BTCUSDT", "mark_price")] = StreamState.STALE
+        _on_loop(c, h.service.push_bar, make_bar(Market.SPOT, "BTCUSDT", T0, close=101.0))
+        _wait(lambda: h.supervisor.detector.stats.bars_seen == 1)
+        assert c.get("/api/signals").json()["signals"]["value"] == []
+        assert "usdm:mark_price=STALE" in (h.supervisor.detector.stats.last_skip_reason or "")

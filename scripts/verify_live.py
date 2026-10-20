@@ -33,6 +33,7 @@ from tsclaude.api.server import RunOptions, run  # noqa: E402
 from tsclaude.contracts.events import Event, EventType, NewEvent  # noqa: E402
 from tsclaude.contracts.market import Market  # noqa: E402
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, SystemClock, to_iso  # noqa: E402
+from tsclaude.marketdata.config import WatermarkConfig  # noqa: E402
 from tsclaude.quality.gaps import GapRegistry  # noqa: E402
 from tsclaude.runtime.settings import Settings  # noqa: E402
 from tsclaude.store.eventstore import EventStore  # noqa: E402
@@ -171,7 +172,11 @@ def build_report(
     samples: list[dict[str, Any]],
     final: dict[str, Any] | None,
     start_error: str | None,
+    retry_budget_ms: int,
+    app_exit_code: int = 0,
 ) -> dict[str, Any]:
+    """Build the report. `retry_budget_ms`: how long automatic recovery may take (attempts x
+    retry interval + check interval); a gap still open after that means recovery failed."""
     events = store.read()
     intervals = _intervals(events, window)
     in_window = [e for e in events if window[0] <= e.ts_ms <= window[1]]
@@ -198,21 +203,27 @@ def build_report(
                 missing.append(m)
             else:
                 by_source[str(s.bar.source)] = by_source.get(str(s.bar.source), 0) + 1
-        explained = [m for m in missing if registry.is_missing(market, symbol, m)]
+        with_gap = {m for m in missing if registry.is_missing(market, symbol, m)}
+        unexplained_minutes = [m for m in missing if m not in with_gap]
         per_symbol[f"{market}:{symbol}"] = {
             "expected_minutes": len(expected),
             "stored": len(expected) - len(missing),
             "by_source": by_source,
             "missing": len(missing),
-            "missing_with_open_gap": len(explained),
-            "missing_unexplained": [to_iso(m) for m in missing if m not in explained][:50],
+            "missing_with_open_gap": len(with_gap),
+            "missing_unexplained_count": len(unexplained_minutes),
+            "missing_unexplained": [to_iso(m) for m in unexplained_minutes[:50]],  # sample
         }
 
     offsets = [s["clock_offset_ms"] for s in samples if s.get("clock_offset_ms") is not None]
     skew_events = [e.payload for e in in_window if e.type is EventType.CLOCK_SKEW_CHANGED]
     connections = (final or {}).get("connections", [])
-    unexplained = sum(len(v["missing_unexplained"]) for v in per_symbol.values())
+    unexplained = sum(v["missing_unexplained_count"] for v in per_symbol.values())
     unknown_gaps = [g for g in open_gaps if str(g.cause) == "unknown"]
+    # B2: an open gap only *explains* a missing minute while recovery may still be running. A gap
+    # detected longer than the retry budget before the end of the window means REST recovery did
+    # not work (or the exchange has no data) and fails the gate; the owner investigates it.
+    overdue = [g for g in open_gaps if g.detected_at_ms < window[1] - retry_budget_ms]
     failures: list[str] = []
     if start_error is not None:
         failures.append(f"monitoring did not start: {start_error}")
@@ -222,6 +233,13 @@ def build_report(
         failures.append(f"{unexplained} expected minutes missing without an open gap")
     if unknown_gaps:
         failures.append(f"{len(unknown_gaps)} open gaps with cause 'unknown'")
+    if overdue:
+        failures.append(
+            f"{len(overdue)} gaps still open longer than the retry budget "
+            f"({retry_budget_ms // 1000} s): recovery did not complete"
+        )
+    if app_exit_code != 0:
+        failures.append(f"the app exited with code {app_exit_code} (see logs/tsclaude.jsonl)")
     if any(c.get("crashes", 0) for c in connections):
         failures.append("WebSocket connection tasks crashed (see connections)")
     return {
@@ -246,6 +264,20 @@ def build_report(
             "open": len(open_gaps),
             "open_minutes": sum(g.missing_minutes for g in open_gaps),
             "open_by_cause": _count(str(g.cause) for g in open_gaps),
+            "retry_budget_s": retry_budget_ms / 1000,
+            "open_beyond_retry_budget": [
+                {
+                    "gap_id": g.gap_id,
+                    "market": str(g.market),
+                    "symbol": g.symbol,
+                    "start": to_iso(g.from_ms),
+                    "end": to_iso(g.to_ms),
+                    "missing_minutes": g.missing_minutes,
+                    "cause": str(g.cause),
+                    "detected_at": to_iso(g.detected_at_ms),
+                }
+                for g in overdue
+            ],
         },
         "bars": per_symbol,
         "clock_offset_ms": {
@@ -260,6 +292,18 @@ def build_report(
         "final_snapshot": final,
         "verdict": {"pass": not failures, "failures": failures},
     }
+
+
+def retry_budget_ms(watermark: WatermarkConfig) -> int:
+    """Time automatic recovery may take: every retry attempt plus one watermark check."""
+    return int(
+        (
+            watermark.gap_retry_max_attempts * watermark.gap_retry_interval_s
+            + watermark.check_interval_s
+            + watermark.grace_s
+        )
+        * 1000
+    )
 
 
 def _read_only(_: NewEvent) -> Event:
@@ -312,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
             observer.samples,
             observer.final,
             observer.start_error,
+            retry_budget_ms(config.quality.watermark),
+            app_exit_code=code,
         )
     report["app_exit_code"] = code
     report["requested_hours"] = args.hours

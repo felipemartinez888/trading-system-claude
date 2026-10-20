@@ -86,10 +86,10 @@ At the end the app quits cleanly and writes `evidence/live/verify-<UTC>.json`:
 |---|---|
 | `stream_uptime` | per stream: share of monitored time in HEALTHY, transitions |
 | `totals` | reconnects, planned recycles, connection-task crashes, malformed messages |
-| `gaps` | detected / resolved / still open, minutes, by cause |
-| `bars` | per symbol: minutes fully inside monitoring vs stored bars (by source); `missing_unexplained` lists minutes missing *without* an open gap |
+| `gaps` | detected / resolved / still open, minutes, by cause; `open_beyond_retry_budget` lists gaps still open after the automatic retry budget (attempts × retry interval + check + grace, about 5 min by default) |
+| `bars` | per symbol: minutes fully inside monitoring vs stored bars (by source); `missing_unexplained_count` = minutes missing *without* any gap (a sample is listed) |
 | `clock_offset_ms` | min / max / mean / last of the per-minute samples, skew events |
-| `verdict` | `pass` and the list of failed criteria |
+| `verdict` | `pass` and the list of failed criteria: monitoring did not run, unexplained missing minutes, open gaps with cause `unknown`, gaps still open beyond the retry budget (recovery failed), WebSocket task crashes, or a non-zero app exit code |
 
 Exit code: `0` pass · `1` monitoring did not start (reason in the report and on screen) · `2` the
 run completed but a criterion failed. Attach the JSON file to the M1 review.

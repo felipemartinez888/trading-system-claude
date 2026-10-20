@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -485,3 +486,15 @@ def test_trailing_dot_space_and_device_names_are_refused(
         assert r.status_code == 404, probe
         assert ctx.token not in r.text
     assert calls == []  # refused before any filesystem access
+
+
+def test_any_alias_of_index_is_served_with_token(ctx: AppContext, bundle: Path) -> None:
+    # Review #7: another name for the same file (Windows 8.3 short name INDEX~1.HTM, or a link)
+    # must never be served raw, without the token, CSP and no-store.
+    os.link(bundle / "index.html", bundle / "alias.htm")
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        r = c.get(BASE_URL + "/alias.htm")
+        assert r.status_code == 200
+        assert f'content="{ctx.token}"' in r.text
+        assert r.headers["cache-control"] == "no-store"
+        assert "content-security-policy" in r.headers

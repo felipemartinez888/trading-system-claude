@@ -97,7 +97,31 @@ def freshness_of(streams: Iterable[StreamStatus]) -> Sourced[StreamState]:
     )
 
 
+# Value provenances from strongest to weakest; a value derived from two inputs carries the weaker.
+_STRENGTH = {
+    Provenance.LIVE: 0,
+    Provenance.RECOVERED: 1,
+    Provenance.HISTORICAL: 2,
+    Provenance.STALE: 3,
+}
+
+
+def reference_provenance(source: BarSource) -> Provenance:
+    """A stored reference bar: seen live, recovered via REST, or backfill/archive."""
+    if source is BarSource.WS_LIVE:
+        return Provenance.LIVE
+    if source is BarSource.REST_RECOVERED:
+        return Provenance.RECOVERED
+    return Provenance.HISTORICAL
+
+
+def weaker(a: Provenance, b: Provenance) -> Provenance:
+    return a if _STRENGTH.get(a, 3) >= _STRENGTH.get(b, 3) else b
+
+
 def change_24h(sym: SymbolSnapshot, bars: LiveBarStore | None) -> Sourced[float]:
+    """close(last) / close(bar 24 h earlier) - 1, labeled with the *weaker* input's provenance;
+    `reason` names the reference bar's source so a backfilled baseline is visible."""
     last = sym.last_closed_bar
     if last.value is None or last.provenance is Provenance.UNAVAILABLE:
         return Sourced[float].unavailable(last.reason or "no closed bar stored yet")
@@ -110,10 +134,13 @@ def change_24h(sym: SymbolSnapshot, bars: LiveBarStore | None) -> Sourced[float]
             "no stored 1m bar exactly 24 h before the last close (history or gap)"
         )
     value = last.value.close / ref.bar.close - 1.0
+    provenance = weaker(last.provenance, reference_provenance(ref.bar.source))
+    as_of = last.as_of_ms if last.as_of_ms is not None else last.value.close_time_ms
     return Sourced[float](
         value=value,
-        provenance=last.provenance,
-        as_of_ms=last.as_of_ms if last.as_of_ms is not None else last.value.close_time_ms,
+        provenance=provenance,
+        as_of_ms=as_of,
+        reason=f"24 h reference bar source: {ref.bar.source}",
     )
 
 

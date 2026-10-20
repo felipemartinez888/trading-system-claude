@@ -386,6 +386,10 @@ def create_app(
             # open an SMB connection; "nul.js" opens a device).
             return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
         file = pages.resolve_static_file(static_dir, route)
+        if file is not None and pages.is_index_file(static_dir, file):
+            # Another name for index.html (e.g. the Windows 8.3 short name INDEX~1.HTM): still
+            # served with the token, CSP and no-store, never as a raw file.
+            return _index()
         if file is None:
             last = route.rsplit("/", 1)[-1]
             if "." in last:  # a missing asset, not a client-side route

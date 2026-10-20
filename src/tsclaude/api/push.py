@@ -4,8 +4,9 @@ Every tick (on the event loop):
 1. refresh the supervisor's cached stream summary; if it changed, publish a `status` message
    (the status bar's Spot/Futures indicators);
 2. diff the market rows against what was last sent and collect the changed rows;
-3. collect new notification events since the last tick (from the event store) and connection
-   crashes (counter increases, which are not events) as transient notifications;
+3. collect new notification events since the last tick (from the event store) and new transient
+   notifications (connection crashes — counter increases, which are not events — and runtime
+   problems such as a dead market-data consumer);
 4. publish **one** `delta` message if anything changed: `{"markets": [...], "notifications": [...],
    "health_changed": bool}`.
 
@@ -39,6 +40,7 @@ class MarketPusher:
         self._summary = ""
         self._last_seq, _ = context.store.head
         self._crashes: dict[str, int] = {}
+        self._sent_transient: set[str] = {n.id for n in context.transient_notifications}
         self.messages_sent = 0
 
     def tick(self) -> dict[str, Any] | None:
@@ -56,7 +58,6 @@ class MarketPusher:
         snapshot = sup.snapshot()
         changed_rows: list[dict[str, Any]] = []
         health_changed = False
-        transient: list[NotificationOut] = []
         if snapshot is not None:
             for row in market_rows(snapshot, ctx.bar_store()):
                 data = row.model_dump(mode="json")
@@ -94,7 +95,6 @@ class MarketPusher:
                         symbol=None,
                         provenance=Provenance.SYSTEM,
                     )
-                    transient.append(note)
                     ctx.transient_notifications.append(note)
                 self._crashes[c.group] = c.crashes
         new = notifications_after(ctx.store, self._last_seq)
@@ -103,6 +103,8 @@ class MarketPusher:
             self._last_seq = max(n.seq for n in new)
         else:
             self._last_seq = head
+        transient = [n for n in ctx.transient_notifications if n.id not in self._sent_transient]
+        self._sent_transient.update(n.id for n in transient)
         notes = [n.model_dump(mode="json") for n in [*new, *transient]]
         if not changed_rows and not notes and not health_changed:
             return None

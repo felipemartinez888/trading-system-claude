@@ -182,6 +182,7 @@ class MonitoringSupervisor:
         *,
         service_factory: ServiceFactory | None = None,
         demo: DemoDetectorConfig | None = None,
+        on_problem: Callable[[str, str], None] | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -196,7 +197,9 @@ class MonitoringSupervisor:
             self._symbol_health,
             clock.now_ms,
         )
-        self.dropped_updates = 0
+        # (title, detail) callback for problems the UI must see (e.g. the consumer died)
+        self.on_problem = on_problem
+        self.consumer_failures = 0
         self.stream_summary: dict[str, Sourced[str]] = summarize_streams(None, NOT_STARTED)
         self.changes = 0  # bumped on every update; the push loop sends deltas when it moves
 
@@ -234,6 +237,7 @@ class MonitoringSupervisor:
             raise StartFailed(f"market data failed to start: {type(exc).__name__}: {exc}") from exc
         self._session_id = session_id
         self._consumer = asyncio.create_task(self._consume(subscription), name="md-consumer")
+        self._consumer.add_done_callback(self._consumer_done)
         self.refresh()
 
     async def stop(self) -> None:
@@ -244,7 +248,9 @@ class MonitoringSupervisor:
         finally:
             if self._consumer is not None:
                 self._consumer.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                # A consumer that already died was reported by `_consumer_done`; stopping must not
+                # fail because of it.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await self._consumer
                 self._consumer = None
             self.refresh()
@@ -292,8 +298,28 @@ class MonitoringSupervisor:
         return out or None
 
     # ------------------------------------------------------------------ internals
+    def _consumer_done(self, task: asyncio.Task[None]) -> None:
+        """The consumer ends normally when stop() closes the subscription; anything else is a
+        failure that silently disables the demo detector, so it is logged and surfaced."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        self.consumer_failures += 1
+        log.error(
+            "market-data consumer died; demo detector stopped until monitoring restarts",
+            exc_info=exc,
+        )
+        if self.on_problem is not None:
+            self.on_problem(
+                "Market-data consumer stopped",
+                f"{type(exc).__name__}: {exc}. Demo detector disabled until monitoring restarts.",
+            )
+
     def _symbol_health(self, market: Market, symbol: str) -> tuple[bool, str | None]:
-        """All streams of (market, symbol) HEALTHY while the service runs (fail closed)."""
+        """Every stream of `symbol` in *both* markets HEALTHY while the service runs (fail
+        closed): a perp-only or spot-only view of a move is not enough for a WATCH."""
         if not self.running:
             return False, "market data is not running"
         try:
@@ -302,11 +328,11 @@ class MonitoringSupervisor:
             return False, f"snapshot failed: {type(exc).__name__}"
         if snap is None:
             return False, "no snapshot"
-        streams = [s for s in snap.streams if s.market is market and s.symbol == symbol]
-        if not streams:
+        streams = [s for s in snap.streams if s.symbol == symbol]
+        if not any(s.market is market for s in streams):
             return False, "no streams for this symbol"
         bad = [
-            f"{s.kind}={s.state.value}"
+            f"{s.market}:{s.kind}={s.state.value}"
             for s in streams
             if s.state.value is not StreamState.HEALTHY
             or s.state.provenance is not Provenance.SYSTEM
