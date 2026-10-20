@@ -12,6 +12,7 @@ import {
 import type { ShutdownInfo, StatusResponse } from "../api/types";
 import { formatDuration, formatUtc } from "../format";
 import { shown, useBackendFreshness, useNow } from "../freshness";
+import { NotificationBell } from "./Notifications";
 import { ProvenanceBadge } from "./ProvenanceBadge";
 
 function errorText(error: unknown): string {
@@ -107,11 +108,16 @@ export function StatusBar({ live }: StatusBarProps) {
     ? (monitoring.variables ?? null)
     : null;
   const action: MonitoringAction = state === "RUNNING" ? "stop" : "start";
+  const serverTransition = mon?.transition ?? null;
+  // N1: Stop stays available whenever the backend answers, even if values are STALE (stopping is
+  // always the safe direction). Start additionally needs fresh state and the backend's consent.
+  const backendAnswers = !status.isError;
   const canAct =
     !monitoring.isPending &&
-    !stale &&
+    serverTransition === null &&
     mon !== null &&
-    (action === "stop" || mon.start_allowed);
+    backendAnswers &&
+    (action === "stop" || (mon.start_allowed && !stale));
   const uptime =
     session === null
       ? null
@@ -146,9 +152,9 @@ export function StatusBar({ live }: StatusBarProps) {
           title={mon?.blocked_reason ?? undefined}
           onClick={() => monitoring.mutate(action)}
         >
-          {pendingAction === "start"
+          {pendingAction === "start" || serverTransition === "starting"
             ? "Starting…"
-            : pendingAction === "stop"
+            : pendingAction === "stop" || serverTransition === "stopping"
               ? "Stopping…"
               : action === "stop"
                 ? "Stop"
@@ -182,24 +188,32 @@ export function StatusBar({ live }: StatusBarProps) {
       </section>
 
       <section className="statusbar__group" aria-label="Market data streams">
-        {Object.entries(data.streams).map(([name, stream]) => (
-          <span key={name} className="statusbar__stream" data-testid={`stream-${name}`}>
-            <span className="statusbar__label">{name === "spot" ? "Spot" : name === "futures" ? "Futures" : name}</span>
-            {stream.value !== null ? (
-              <span>{stream.value}</span>
-            ) : null}
-            <ProvenanceBadge provenance={stream.provenance} reason={stream.reason} compact />
-            {stream.provenance === "UNAVAILABLE" && stream.reason ? (
-              <span className="statusbar__muted">— {stream.reason}</span>
-            ) : null}
-          </span>
-        ))}
+        {Object.entries(data.streams).map(([name, stream]) => {
+          const display = shown(stream, freshness);
+          // Green only when the backend says every stream is HEALTHY and the value is current.
+          const healthy = display.provenance === "SYSTEM" && (stream.value ?? "").startsWith("HEALTHY");
+          return (
+            <span key={name} className="statusbar__stream" data-testid={`stream-${name}`}>
+              <span className="statusbar__label">
+                {name === "spot" ? "Spot" : name === "futures" ? "Futures" : name}
+              </span>
+              {stream.value !== null ? (
+                <span className={healthy ? "stream-ok" : "stream-bad"}>{stream.value}</span>
+              ) : null}
+              <ProvenanceBadge {...display} compact />
+              {stream.provenance === "UNAVAILABLE" && stream.reason ? (
+                <span className="statusbar__muted">— {stream.reason}</span>
+              ) : null}
+            </span>
+          );
+        })}
       </section>
 
       <section className="statusbar__group statusbar__group--end" aria-label="Connection">
         <span className={`link link--${link}`} title="Live push channel (/ws/live)">
           push: {link}
         </span>
+        <NotificationBell />
         <button
           type="button"
           className="btn btn--ghost"
@@ -240,6 +254,12 @@ export function StatusBar({ live }: StatusBarProps) {
       {quit.isError ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
           <span>Quit failed: {errorText(quit.error)}</span>
+        </div>
+      ) : null}
+
+      {mon !== null && mon.last_error !== null && state === "STOPPED" ? (
+        <div className="statusbar__notice statusbar__notice--error" role="alert" data-testid="start-error">
+          <span>Monitoring could not be started: {mon.last_error}. It stays STOPPED.</span>
         </div>
       ) : null}
 

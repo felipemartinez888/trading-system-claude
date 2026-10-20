@@ -81,14 +81,110 @@ describe("StatusBar", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
-  it("never shows streams as healthy before M1", async () => {
+  it("shows the stream groups' real state from the API", async () => {
     installBackend(statusFixture("RUNNING"));
     renderBar();
-    for (const name of ["spot", "futures"]) {
-      const stream = await screen.findByTestId(`stream-${name}`);
-      expect(stream).toHaveTextContent("UNAVAILABLE");
-      expect(stream).toHaveTextContent("not implemented until M1");
-    }
+    const spot = await screen.findByTestId("stream-spot");
+    expect(spot).toHaveTextContent("HEALTHY 6/6");
+    expect(spot).toHaveTextContent("SYSTEM");
+    expect(spot.querySelector(".stream-ok")).not.toBeNull();
+    expect(screen.getByTestId("stream-futures")).toHaveTextContent("HEALTHY 9/9");
+  });
+
+  it("never shows a degraded or stopped stream group as healthy", async () => {
+    const base = statusFixture("RUNNING");
+    installBackend({
+      ...base,
+      streams: {
+        spot: system("DISCONNECTED (4/6 healthy)"),
+        futures: {
+          value: "HEALTHY 9/9",
+          provenance: "STALE",
+          as_of_ms: Date.parse("2026-10-20T11:00:00.000Z"),
+          reason: "monitoring stopped",
+        },
+      },
+    });
+    renderBar();
+    const spot = await screen.findByTestId("stream-spot");
+    expect(spot).toHaveTextContent("DISCONNECTED (4/6 healthy)");
+    expect(spot.querySelector(".stream-bad")).not.toBeNull();
+    const futures = screen.getByTestId("stream-futures");
+    expect(futures).toHaveTextContent("STALE");
+    expect(futures.querySelector(".stream-ok")).toBeNull(); // last-known HEALTHY is not green
+  });
+
+  it("before monitoring starts, stream groups are UNAVAILABLE with the reason", async () => {
+    installBackend(statusFixture("STOPPED"));
+    renderBar();
+    const spot = await screen.findByTestId("stream-spot");
+    expect(spot).toHaveTextContent("UNAVAILABLE");
+    expect(spot).toHaveTextContent("monitoring has not been started");
+  });
+
+  it("keeps Stop available while values are STALE but the backend answers (N1)", async () => {
+    setToken();
+    const base = statusFixture("RUNNING");
+    const mock = installBackend({
+      ...base,
+      heartbeat: {
+        value: "2026-10-20T11:59:00.000Z",
+        provenance: "STALE",
+        as_of_ms: Date.parse("2026-10-20T11:59:00.000Z"),
+        reason: null,
+      },
+    });
+    renderBar();
+    const stop = await screen.findByRole("button", { name: "Stop" });
+    expect(screen.getByTestId("stream-spot")).toHaveTextContent("STALE"); // downgraded display
+    expect(stop).toBeEnabled();
+    await userEvent.click(stop);
+    await waitFor(() => expect(postCalls(mock)).toHaveLength(1));
+    expect(String(postCalls(mock)[0]![0])).toBe("/api/monitoring/stop");
+  });
+
+  it("shows why a start failed and stays STOPPED", async () => {
+    const base = statusFixture("STOPPED");
+    installBackend({
+      ...base,
+      monitoring: {
+        ...base.monitoring,
+        value: {
+          state: "STOPPED",
+          monitoring_id: null,
+          since: null,
+          start_allowed: true,
+          blocked_reason: null,
+          transition: null,
+          last_error: "market data failed to start: ConnectError: api.binance.com unreachable",
+        },
+      },
+    });
+    renderBar();
+    expect(await screen.findByTestId("start-error")).toHaveTextContent("api.binance.com unreachable");
+    expect(screen.getByTestId("monitoring-state")).toHaveTextContent("STOPPED");
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled(); // retry allowed
+  });
+
+  it("shows a server-side transition and blocks double clicks", async () => {
+    const base = statusFixture("STOPPED");
+    installBackend({
+      ...base,
+      monitoring: {
+        ...base.monitoring,
+        value: {
+          state: "STOPPED",
+          monitoring_id: null,
+          since: null,
+          start_allowed: false,
+          blocked_reason: null,
+          transition: "starting",
+          last_error: null,
+        },
+      },
+    });
+    renderBar();
+    expect(await screen.findByRole("button", { name: "Starting…" })).toBeDisabled();
   });
 
   it("sends the token header on mutations and reflects the new state", async () => {
