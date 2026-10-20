@@ -1,6 +1,6 @@
 # Feed de agentes — Trading System Claude
 
-Actualizado: **2026-10-20 00:31** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
+Actualizado: **2026-10-20 00:34** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
 
 ## M0-T4 · API, dashboard y lanzador Windows
 Agente `platform-ui-engineer` · rama `task/m0-t4` · 131 acciones · última actividad 00:26 · commits 5 · archivos con cambios 0
@@ -25,7 +25,7 @@ Agente `platform-ui-engineer` · rama `task/m0-t4` · 131 acciones · última ac
 - `00:18` **Bash** — Withhold projections on failed chain; rerun tests
 
 ## M1-T1 · Ingesta en vivo de Binance
-Agente `data-engineer` · rama `task/m1-t1` · 93 acciones · última actividad 00:30 · commits 2 · archivos con cambios 5
+Agente `data-engineer` · rama `task/m1-t1` · 101 acciones · última actividad 00:33 · commits 2 · archivos con cambios 5
 
 **Commits:**
 - `b901462 feat(data): bar builder, gap registry, backfill, WS manager, quality monitors`
@@ -39,19 +39,19 @@ Agente `data-engineer` · rama `task/m1-t1` · 93 acciones · última actividad 
 - `?? tests/integration/`
 
 **Últimas acciones:**
+- `00:33` **Bash** — Avoid version-specific websockets API in fake server test
+- `00:33` **Bash** — Run strict mypy on all src and the CI private-endpoint guard
+- `00:32` **Bash** — Fix lint and run the whole tree except property tests
+- `00:32` **Bash** — Show lines flagged by lint
+- `00:32` **Bash** — Show collection error and remaining lint errors
+- `00:32` **Bash** — Lint and run the full test tree with CI-like addopts
+- `00:32` **Write** — tests/integration/marketdata/test_mdi_live_smoke.py
+- `00:31` **Write** — tests/integration/marketdata/test_mdi_ws_fake_server.py
 - `00:30` **Bash** — Separate service stop and close; rerun tests
 - `00:30` **Bash** — Fix time-gated retry test and rerun all tests
-- `00:29` **Bash** — Run service end-to-end integration tests
-- `00:29` **Write** — tests/integration/marketdata/test_mdi_service.py
-- `00:28` **Bash** — Add in-memory WS fakes to integration helpers
-- `00:28` **Bash** — Fix pagination cursor step and throttle test, rerun
-- `00:27` **Bash** — Show the first two REST test failures
-- `00:27` **Bash** — Run REST integration tests with cached httpx
-- `00:27` **Write** — tests/integration/marketdata/test_mdi_rest.py
-- `00:26` **Write** — tests/integration/marketdata/mdi_helpers.py
 
 ## M2-T2 · Simulador (órdenes, fills, ledger)
-Agente `sim-risk-engineer` · rama `task/m2-t2` · 38 acciones · última actividad 00:30 · commits 1 · archivos con cambios 9
+Agente `sim-risk-engineer` · rama `task/m2-t2` · 39 acciones · última actividad 00:33 · commits 1 · archivos con cambios 9
 
 **Commits:**
 - `1758a26 wip(m2-t2): checkpoint before usage-limit pause (unreviewed, untested)`
@@ -68,6 +68,7 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 38 acciones · última activi
 - `?? src/tsclaude/sim/testing.py`
 
 **Últimas acciones:**
+- `00:32` **Bash** — Add scripted source and run helpers to testing module
 - `00:30` **Bash** — Record sizing basis in position-opened events
 - `00:29` **Bash** — Fix drawdown zero and end-of-data expiry
 - `00:27` **Bash** — Fix zero formatting and add equity curve origin
@@ -77,37 +78,26 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 38 acciones · última activi
 - `00:24` **Read** — src/tsclaude/sim/book.py
 - `00:23` **Bash** — Wrap long signature and recheck
 - `00:23` **Bash** — Add package init and SOURCE_ERROR; lint and type-check
-- `00:23` **Write** — src/tsclaude/sim/engine.py
 
 ## M2-T3 · Estadística: win rate certificado
-Agente `quant-engineer` · rama `task/m2-t3` · 105 acciones · última actividad 00:31 · commits 1 · archivos con cambios 12
+Agente `quant-engineer` · rama `task/m2-t3` · 110 acciones · última actividad 00:33 · commits 5 · archivos con cambios 0
 
 **Commits:**
+- `51b3066 Merge branch 'main' into task/m2-t3`
+- `34d2d9f test(research): exact-reference and property tests for the statistics core`
+- `d988bc6 feat(research): exact statistics core for certified win rates (M2-T3)`
+- `20b29e8 build: add numpy to runtime dependencies for the research statistics core`
 - `f24daa1 wip(m2-t3): checkpoint before usage-limit pause (unreviewed, untested)`
 
-**Archivos tocados (sin commit):**
-- `M pyproject.toml`
-- `M src/tsclaude/research/stats/binomial.py`
-- `M src/tsclaude/research/stats/normal.py`
-- `?? src/tsclaude/research/stats/__init__.py`
-- `?? src/tsclaude/research/stats/bootstrap.py`
-- `?? src/tsclaude/research/stats/breakeven.py`
-- `?? src/tsclaude/research/stats/certify.py`
-- `?? src/tsclaude/research/stats/multiple_testing.py`
-- `?? src/tsclaude/research/stats/power.py`
-- `?? src/tsclaude/research/stats/sharpe.py`
-- `?? tests/property/research/`
-- `?? tests/unit/research/`
-
 **Últimas acciones:**
+- `00:32` **Bash** — Print reference values for the final report
+- `00:32` **Bash** — Commit dependency, implementation, and tests separately
+- `00:32` **Bash** — Inspect metrics CSV and roadmap entries
+- `00:31` **Bash** — Full local verification: lint, format, mypy, unit and property tests
+- `00:31` **Bash** — Add tiny-margin test and re-run checks
 - `00:31` **Edit** — src/tsclaude/research/stats/certify.py
 - `00:30` **Edit** — src/tsclaude/research/stats/certify.py
 - `00:30` **Bash** — Re-run lint, mypy and certify tests
 - `00:30` **Edit** — src/tsclaude/research/stats/certify.py
 - `00:30` **Edit** — src/tsclaude/research/stats/certify.py
-- `00:30` **Read** — src/tsclaude/research/stats/certify.py
-- `00:30` **Bash** — Add fail-closed bootstrap resolution cap and required kwargs; test
-- `00:29` **Read** — src/tsclaude/research/stats/certify.py
-- `00:28` **Bash** — Run mypy on all of src, re-run property tests, check for SciPy use, list changes
-- `00:28` **Bash** — Add match= to raises, use pairwise, re-run lint, mypy, tests
 
