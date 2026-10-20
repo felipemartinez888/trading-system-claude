@@ -623,3 +623,7 @@ body {
   color: var(--text-muted);
   font-size: 12px;
 }
+.table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}

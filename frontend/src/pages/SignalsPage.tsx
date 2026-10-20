@@ -6,6 +6,9 @@ import { DemoWatermark, ProvenanceBadge } from "../components/ProvenanceBadge";
 import { formatUtc } from "../format";
 import { formatPct, formatPrice } from "./MarketsPage";
 
+const DEMO_BANNER =
+  "DEMO — output of a demo detector on live bars; not a strategy, not a recommendation";
+
 export function SignalsPage() {
   const signals = useSignals();
   const data = signals.data?.signals;
@@ -14,7 +17,7 @@ export function SignalsPage() {
   return (
     <div className="page">
       <h1 className="page__title">Live › Signals</h1>
-      <DemoWatermark>
+      <DemoWatermark banner={DEMO_BANNER}>
         <p>
           <strong>DEMO detector, not a strategy.</strong> It emits a <code>WATCH</code> when a
           live-closed 1m bar's body exceeds a threshold, only while every stream of that symbol is

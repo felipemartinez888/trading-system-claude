@@ -65,7 +65,7 @@ export function StreamsHealth() {
                   <td>
                     {s.last_message_ms === null
                       ? "never"
-                      : `${formatDuration((now - s.last_message_ms) / 1000)} ago`}
+                      : `${formatDuration(Math.max(0, now - s.last_message_ms) / 1000)} ago`}
                   </td>
                   <td>{formatDuration(s.budget_ms / 1000)}</td>
                   <td className="num">{s.disconnects}</td>

@@ -52,7 +52,9 @@ describe("Signals inbox", () => {
     expect(row).toHaveTextContent("WATCH");
     expect(row).toHaveTextContent("-0.42%");
     expect(screen.getByTestId("demo-watermark")).toBeInTheDocument();
-    expect(screen.getByText(/not a strategy/)).toBeInTheDocument();
+    expect(screen.getByText(/DEMO detector, not a strategy/)).toBeInTheDocument();
+    // the banner says what DEMO means here: derived from live bars, not fabricated data
+    expect(screen.getByRole("note")).toHaveTextContent("demo detector on live bars");
   });
 
   it("explains the empty inbox", async () => {

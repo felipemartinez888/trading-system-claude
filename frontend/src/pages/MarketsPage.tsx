@@ -162,7 +162,9 @@ export function MarketsPage() {
               Monitoring is stopped: the values below are the last known ones (STALE).
             </p>
           ) : null}
-          <MarketsTable rows={rows} selected={key} onSelect={setSelected} />
+          <div className="table-wrap">
+            <MarketsTable rows={rows} selected={key} onSelect={setSelected} />
+          </div>
           {key !== null ? <CandleChart key={key} market={market} symbol={symbol} row={row} /> : null}
         </>
       )}

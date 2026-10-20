@@ -178,9 +178,7 @@ class FakeMarketData:
                 SymbolSnapshot(
                     market=m,
                     symbol=s,
-                    last_closed_bar=self.bars.get(
-                        (m, s), Sourced[Bar].unavailable("no closed bar stored yet")
-                    ),
+                    last_closed_bar=self._bar(m, s),
                     partial_candle=Sourced[PartialCandle].unavailable("no forming candle received"),
                     best_bid_ask=Sourced[BookTop](value=book, provenance=prov, as_of_ms=now),
                     mark_price=(
@@ -224,6 +222,17 @@ class FakeMarketData:
                     last_error=None,
                 )
             ],
+        )
+
+    def _bar(self, market: Market, symbol: str) -> Sourced[Bar]:
+        """Like the real service: the last bar is a last-known (STALE) value after stop."""
+        stored = self.bars.get((market, symbol))
+        if stored is None:
+            return Sourced[Bar].unavailable("no closed bar stored yet")
+        if self._running or stored.value is None:
+            return stored
+        return Sourced[Bar](
+            value=stored.value, provenance=Provenance.STALE, as_of_ms=stored.value.close_time_ms
         )
 
     # ------------------------------------------------------------------ test drivers
