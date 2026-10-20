@@ -1,29 +1,30 @@
 # Feed de agentes — Trading System Claude
 
-Actualizado: **2026-10-19 19:57** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
+Actualizado: **2026-10-19 20:01** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
 
 ## M0-T4 · API, dashboard y lanzador Windows
-Agente `platform-ui-engineer` · rama `task/m0-t4` · 61 acciones · última actividad 19:57 · commits 0 · archivos con cambios 3
+Agente `platform-ui-engineer` · rama `task/m0-t4` · 69 acciones · última actividad 20:00 · commits 0 · archivos con cambios 4
 
 **Archivos tocados (sin commit):**
+- `?? frontend/`
 - `?? src/tsclaude/api/`
 - `?? src/tsclaude/web/`
 - `?? tests/integration/`
 
 **Últimas acciones:**
+- `20:00` **Write** — frontend/src/components/ProvenanceBadge.tsx
+- `20:00` **Write** — frontend/src/format.ts
+- `20:00` **Write** — frontend/src/api/hooks.ts
+- `20:00` **Bash** — Remove stray file from main checkout and verify clean
+- `20:00` **Write** — frontend/.keep-out
+- `19:59` **Write** — frontend/src/api/client.ts
+- `19:59` **Write** — frontend/src/api/types.ts
+- `19:59` **Bash** — Create frontend package, tsconfig, vite config, index.html
 - `19:57` **Bash** — Apply assertion split fixes and rerun without extra path
 - `19:57` **Bash** — Lint and run core plus API-core tests locally
-- `19:57` **Write** — tests/integration/test_api_core.py
-- `19:56` **Bash** — Extract process helpers into process.py
-- `19:56` **Bash** — Auto-fix import order and re-lint tests
-- `19:55` **Bash** — Fix fallback and traversal assertions, lint tests
-- `19:54` **Read** — src/tsclaude/api/server.py
-- `19:54` **Bash** — Split shared test helpers out of conftest
-- `19:54` **Write** — tests/integration/test_api.py
-- `19:52` **Edit** — tests/integration/conftest.py
 
 ## M1-T1 · Ingesta en vivo de Binance
-Agente `data-engineer` · rama `task/m1-t1` · 33 acciones · última actividad 19:55 · commits 0 · archivos con cambios 5
+Agente `data-engineer` · rama `task/m1-t1` · 37 acciones · última actividad 20:00 · commits 0 · archivos con cambios 5
 
 **Archivos tocados (sin commit):**
 - `M pyproject.toml`
@@ -33,16 +34,16 @@ Agente `data-engineer` · rama `task/m1-t1` · 33 acciones · última actividad 
 - `?? src/tsclaude/store/livebars.py`
 
 **Últimas acciones:**
+- `20:00` **Write** — src/tsclaude/marketdata/bars.py
+- `20:00` **Write** — src/tsclaude/marketdata/convert.py
+- `19:59` **Write** — src/tsclaude/quality/clock.py
+- `19:58` **Write** — src/tsclaude/quality/gaps.py
 - `19:55` **Write** — src/tsclaude/quality/freshness.py
 - `19:54` **Write** — src/tsclaude/quality/__init__.py
 - `19:50` **Write** — src/tsclaude/store/livebars.py
 - `19:45` **Bash** — Add pyyaml and types-PyYAML to pyproject dependencies
 - `19:45` **Write** — configs/data_quality.yaml
 - `19:45` **Write** — configs/universe.yaml
-- `19:45` **Write** — src/tsclaude/marketdata/config.py
-- `19:40` **Write** — src/tsclaude/marketdata/binance/limits.py
-- `19:36` **Write** — src/tsclaude/marketdata/binance/parse.py
-- `19:35` **Write** — src/tsclaude/marketdata/binance/__init__.py
 
 ## M2-T2 · Simulador (órdenes, fills, ledger)
 Agente `sim-risk-engineer` · rama `task/m2-t2` · 16 acciones · última actividad 19:56 · commits 0 · archivos con cambios 1
