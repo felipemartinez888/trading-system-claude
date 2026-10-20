@@ -17,3 +17,12 @@ That priority is formalized in [ADR-0012](adr/0012-win-rate-margin-objective.md)
 | **D-08** | Commit author identity | ✅ Approved | Commits authored as "Claude" with co-author trailer. |
 
 New decisions that require the owner will be appended below.
+
+## Lead decisions (technical, within approved scope)
+
+| ID | Date | Decision | Context |
+|---|---|---|---|
+| L-01 | 2026-10-20 | `Provenance.SYSTEM` added for the app's own runtime state (session, chain, coverage, stream health); `LIVE` is reserved for market data observed from the exchange. | M0-T4 review F6; M1-T1 applies it to stream health. |
+| L-02 | 2026-10-20 | A minute counts as *observed* only if it lies entirely inside a monitoring interval (`start ≤ open_time` and `close_time < end`). Partial overlap is not observation. | M1-T1 review N1 — conservative: observation coverage is never invented. |
+| L-03 | 2026-10-20 | ADR-0012 Amendment 1: certification sample floors (100 design p*, 300 realized p*), realized-payoff uncertainty carried via joint bootstrap, degenerate samples fail closed, alpha ≤ 0.10, power ≥ 0.80, one test per admission gate. | M2-T3 statistical review F1–F3. |
+| L-04 | 2026-10-20 | Same-bar entries may be stopped out in their fill bar but never book a take-profit in it; TP eligible from the next 1m bar. Trades spanning data gaps are flagged and capped. | M2-T2 causality audit F1: the O→nearer-extreme path booked unflagged same-bar wins (4.7 % of winners in random scenarios), biasing win rate upward. |
