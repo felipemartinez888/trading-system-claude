@@ -19,6 +19,7 @@ from tsclaude.research.stats._validate import as_float
 
 _SQRT2 = math.sqrt(2.0)
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
+_LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
 
 # Acklam (2003) coefficients.
 _A = (
@@ -107,5 +108,8 @@ def norm_ppf(p: float) -> float:
         return -norm_ppf(1.0 - pf)  # exact subtraction for p >= 0.5
     x = _acklam_lower_half(pf)
     e = norm_cdf(x) - pf
-    u = e * _SQRT_2PI * math.exp(0.5 * x * x)
+    if e == 0.0:
+        return x
+    # u = e / phi(x), formed in log space so it cannot overflow for p down to subnormals
+    u = math.copysign(math.exp(math.log(abs(e)) + _LOG_SQRT_2PI + 0.5 * x * x), e)
     return x - u / (1.0 + 0.5 * x * u)

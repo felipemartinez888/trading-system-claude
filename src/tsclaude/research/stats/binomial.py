@@ -1,4 +1,4 @@
-"""Exact binomial distribution, exact (Clopper–Pearson) confidence bounds and exact tests.
+"""Exact binomial distribution, exact (Clopper-Pearson) confidence bounds and exact tests.
 
 All functions are pure Python (``math`` only) and numerically stable for ``n`` well beyond 100 000.
 
@@ -235,7 +235,7 @@ def _validate_tail_args(k: object, n: object, p: object) -> tuple[int, int, floa
 
 
 def binom_cdf(k: int, n: int, p: float) -> float:
-    """``P(X <= k)`` for ``X ~ Binomial(n, p)``; any integer ``k`` (``k < 0 -> 0``, ``k >= n -> 1``)."""
+    """``P(X <= k)`` for ``X ~ Binomial(n, p)``; any integer ``k`` (``k < 0``: 0; ``k >= n``: 1)."""
     ki, ni, pf = _validate_tail_args(k, n, p)
     if ki < 0:
         return 0.0
@@ -263,7 +263,7 @@ def binom_sf(k: int, n: int, p: float) -> float:
 
 
 # ---------------------------------------------------------------------------------------------
-# Exact test and Clopper–Pearson bounds
+# Exact test and Clopper-Pearson bounds
 # ---------------------------------------------------------------------------------------------
 
 
@@ -278,9 +278,7 @@ def binomial_test_greater(k: int, n: int, p0: float) -> float:
     return binom_sf(ki - 1, ni, p0f)
 
 
-def _bisect(
-    f: Callable[[float], float], increasing: bool, conservative_low: bool
-) -> float:
+def _bisect(f: Callable[[float], float], increasing: bool, conservative_low: bool) -> float:
     """Find the root of a strictly monotone ``f`` on ``(0, 1)`` by bisection.
 
     Invariant: ``f(lo)`` and ``f(hi)`` are on opposite sides of 0. Iterates until
@@ -322,7 +320,7 @@ def _cp_upper(k: int, n: int, a: float) -> float:
 
 
 def clopper_pearson(k: int, n: int, alpha: float = 0.05, side: Side = "two-sided") -> Interval:
-    """Exact Clopper–Pearson confidence interval for a binomial proportion.
+    """Exact Clopper-Pearson confidence interval for a binomial proportion.
 
     ``side='two-sided'``: ``[p_L(alpha/2), p_U(alpha/2)]``, coverage >= 1 - alpha.
     ``side='lower'``: ``[p_L(alpha), 1]`` — one-sided lower confidence bound at level 1 - alpha.
@@ -349,7 +347,7 @@ def wilson(k: int, n: int, alpha: float = 0.05) -> Interval:
         centre = (p + z^2/(2n)) / (1 + z^2/n)
         half   = z / (1 + z^2/n) * sqrt(p(1-p)/n + z^2/(4 n^2))
 
-    Its coverage can fall below nominal for some ``p``; Clopper–Pearson is used for decisions.
+    Its coverage can fall below nominal for some ``p``; Clopper-Pearson is used for decisions.
     """
     ki, ni = check_count(k, n)
     a = check_open_prob(alpha, "alpha")
@@ -359,4 +357,8 @@ def wilson(k: int, n: int, alpha: float = 0.05) -> Interval:
     denom = 1.0 + z2n
     centre = (phat + z2n / 2.0) / denom
     half = z / denom * math.sqrt(phat * (1.0 - phat) / ni + z2n / (4.0 * ni))
-    return Interval(max(0.0, centre - half), min(1.0, centre + half))
+    # At k = 0 (k = n) the lower (upper) end is exactly 0 (1) algebraically:
+    # centre = half = (z^2/2n)/(1 + z^2/n); set it exactly instead of trusting rounding.
+    lower = 0.0 if ki == 0 else max(0.0, centre - half)
+    upper = 1.0 if ki == ni else min(1.0, centre + half)
+    return Interval(lower, upper)
