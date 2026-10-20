@@ -1,6 +1,6 @@
 # Feed de agentes — Trading System Claude
 
-Actualizado: **2026-10-20 00:40** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
+Actualizado: **2026-10-20 00:43** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
 
 ## M0-T4 · API, dashboard y lanzador Windows
 Agente `platform-ui-engineer` · rama `task/m0-t4` · 131 acciones · última actividad 00:26 · commits 5 · archivos con cambios 0
@@ -46,7 +46,7 @@ Agente `data-engineer` · rama `task/m1-t1` · 110 acciones · última actividad
 - `00:33` **Bash** — Avoid version-specific websockets API in fake server test
 
 ## M2-T2 · Simulador (órdenes, fills, ledger)
-Agente `sim-risk-engineer` · rama `task/m2-t2` · 45 acciones · última actividad 00:39 · commits 1 · archivos con cambios 9
+Agente `sim-risk-engineer` · rama `task/m2-t2` · 46 acciones · última actividad 00:42 · commits 1 · archivos con cambios 9
 
 **Commits:**
 - `1758a26 wip(m2-t2): checkpoint before usage-limit pause (unreviewed, untested)`
@@ -63,6 +63,7 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 45 acciones · última activi
 - `?? src/tsclaude/sim/testing.py`
 
 **Últimas acciones:**
+- `00:42` **Bash** — Add invariant checker; run over 40 seeds
 - `00:39` **Bash** — Add unrealized_pnl view; compute G5 drawdown values
 - `00:37` **Bash** — Cross-check remaining golden arithmetic
 - `00:36` **Bash** — Verify hand-computed golden values with Decimal
@@ -72,7 +73,6 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 45 acciones · última activi
 - `00:32` **Bash** — Add scripted source and run helpers to testing module
 - `00:30` **Bash** — Record sizing basis in position-opened events
 - `00:29` **Bash** — Fix drawdown zero and end-of-data expiry
-- `00:27` **Bash** — Fix zero formatting and add equity curve origin
 
 ## M2-T3 · Estadística: win rate certificado
 Agente `quant-engineer` · rama `task/m2-t3` · 110 acciones · última actividad 00:33 · commits 5 · archivos con cambios 0
