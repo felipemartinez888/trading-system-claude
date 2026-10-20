@@ -21,6 +21,7 @@ import contextlib
 import logging
 import signal
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -52,17 +53,18 @@ LOCK_FILE = "tsclaude.lock"
 
 
 def run(settings: Settings) -> int:
-    configure_logging(settings.log_level, settings.logs_dir)
+    # Lock before configuring logging: a refused second launch must not touch the running
+    # instance's log file or event store.
     try:
         lock = InstanceLock(settings.data_dir / LOCK_FILE)
     except OSError as exc:
-        log.error("another instance appears to be running", extra={"error": str(exc)})
         _console(
             f"Trading System Claude is already running with data dir {settings.data_dir} "
-            "(or its lock file is in use). Close the other instance first."
+            f"(or its lock file is in use: {exc}). Close the other instance first."
         )
         return EXIT_REFUSED
     try:
+        configure_logging(settings.log_level, settings.logs_dir)
         return _run_locked(settings)
     finally:
         lock.release()
@@ -84,7 +86,7 @@ def _run_locked(settings: Settings) -> int:
     try:
         try:
             store = EventStore(settings.state_db_path)
-        except (EventStoreError, OSError) as exc:
+        except (EventStoreError, sqlite3.Error, OSError) as exc:
             log.error("the event store cannot be opened", extra={"error": str(exc)})
             _console(f"The event store {settings.state_db_path} cannot be opened: {exc}")
             return EXIT_STORE

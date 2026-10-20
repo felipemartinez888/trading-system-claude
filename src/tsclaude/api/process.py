@@ -4,8 +4,8 @@
   crash detection (each would see the other's session as unclosed). The OS releases the lock if the
   process dies, so a crash never leaves a stale lock behind.
 - `bind_loopback`: bind the listening socket ourselves, before touching the event store, so a busy
-  port fails fast and writes nothing. On Windows `SO_EXCLUSIVEADDRUSE` prevents two processes from
-  sharing the port (plain `SO_REUSEADDR` there would allow port stealing).
+  port fails fast and writes nothing. `SO_REUSEADDR` is only set on POSIX (on Windows it would
+  allow binding over another process's live listener).
 """
 
 from __future__ import annotations
@@ -27,11 +27,13 @@ def bind_loopback(host: str, port: int) -> socket.socket:
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
-        if sys.platform == "win32":
-            # SO_REUSEADDR on Windows would allow stealing a port that another process holds.
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        else:
+        if sys.platform != "win32":
+            # POSIX: allow rebinding while old connections sit in TIME_WAIT (fast restart);
+            # a port held by a live listener is still refused.
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Windows: default semantics. They already refuse a port held by another listener and,
+        # unlike SO_EXCLUSIVEADDRUSE, do not block a quick restart on TIME_WAIT connections.
+        # (SO_REUSEADDR there would allow binding over a live listener.)
         sock.bind((host, port))
         sock.listen(128)
         sock.set_inheritable(False)

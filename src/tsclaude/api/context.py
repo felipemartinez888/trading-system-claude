@@ -250,6 +250,13 @@ class AppContext:
 
     def coverage(self) -> CoverageResponse:
         now = self.clock.now_ms()
+        untrusted = self._untrusted_projection_reason()
+        if untrusted is not None:
+            return CoverageResponse(
+                generated_at=to_iso(now),
+                intervals=Sourced[list[CoverageInterval]].unavailable(untrusted),
+                gaps=Sourced[list[CoverageGap]].unavailable(untrusted),
+            )
         try:
             intervals = observation_intervals(self.store)
         except Exception as exc:
@@ -376,7 +383,17 @@ class AppContext:
             as_of_ms=chain.verified_at_ms,
         )
 
+    def _untrusted_projection_reason(self) -> str | None:
+        """Projections folded from a chain that failed verification are not shown (fail closed)."""
+        block = self._chain_block_reason()
+        if block is None:
+            return None
+        return f"not derived: {block}; the raw events remain listed in Logs & audit"
+
     def _previous_sourced(self, now: int) -> Sourced[PreviousSessionInfo]:
+        untrusted = self._untrusted_projection_reason()
+        if untrusted is not None:
+            return Sourced[PreviousSessionInfo].unavailable(untrusted)
         if self._previous is None:
             return Sourced[PreviousSessionInfo].unavailable(
                 self._session_error or "session not opened yet"

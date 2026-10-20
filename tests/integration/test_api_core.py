@@ -101,8 +101,10 @@ def test_tampered_chain_locks_monitoring(
     with pytest.raises(TransitionError) as info:
         ctx.start_monitoring()
     assert info.value.kind is TransitionRefused.LOCKED
-    # Session still opens (the UI must come up), and the event store stays append-only.
+    # Session still opens (the UI must come up); derived projections are withheld.
     assert ctx.status().session.value is not None
+    assert ctx.status().previous_session.provenance == "UNAVAILABLE"
+    assert ctx.coverage().gaps.provenance == "UNAVAILABLE"
 
 
 def test_close_is_idempotent_and_stops_monitoring(make_context: ContextFactory) -> None:

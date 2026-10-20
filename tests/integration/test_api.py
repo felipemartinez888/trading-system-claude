@@ -188,6 +188,15 @@ def test_423_when_chain_verification_failed(
         r = c.post("/api/monitoring/start", headers=_auth(ctx))
         assert r.status_code == 423
         assert "verification failed" in r.json()["detail"]
+        # Projections folded from an untrusted chain are not presented as facts.
+        assert status["previous_session"]["provenance"] == "UNAVAILABLE"
+        coverage = c.get("/api/coverage").json()
+        assert coverage["intervals"]["provenance"] == "UNAVAILABLE"
+        assert "verification failed" in coverage["intervals"]["reason"]
+        # ...but the raw events stay readable for the audit page.
+        events = c.get("/api/events").json()
+        assert events["events"]["provenance"] == "LIVE"
+        assert events["chain"]["value"]["ok"] is False
         # The UI still serves and shows the failure.
         page = c.get("/")
         assert page.status_code == 200

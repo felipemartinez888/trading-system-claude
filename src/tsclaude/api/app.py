@@ -24,7 +24,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -77,10 +77,10 @@ _MEDIA_TYPES = {
     ".txt": "text/plain; charset=utf-8",
 }
 
-_ERRORS: dict[int | str, dict[str, object]] = {
+_ERRORS: dict[int | str, dict[str, Any]] = {
     403: {"model": ErrorResponse, "description": "missing/invalid token, foreign Origin or Host"},
 }
-_TRANSITION_ERRORS: dict[int | str, dict[str, object]] = {
+_TRANSITION_ERRORS: dict[int | str, dict[str, Any]] = {
     **_ERRORS,
     409: {"model": ErrorResponse, "description": "invalid transition for the current state"},
     423: {"model": ErrorResponse, "description": "locked: chain verification failed or no session"},
@@ -88,7 +88,9 @@ _TRANSITION_ERRORS: dict[int | str, dict[str, object]] = {
 
 
 def _content_security_policy(port: int) -> str:
-    ws_sources = " ".join(f"ws://{host}" for host in sorted(allowed_hosts(port)))
+    # Bracketed IPv6 hosts are not valid CSP sources (Chrome drops them); 'self' covers same-host
+    # WebSockets in current browsers, the explicit entries cover older ones.
+    ws_sources = f"ws://127.0.0.1:{port} ws://localhost:{port}"
     return (
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
         f"font-src 'self'; connect-src 'self' {ws_sources}; object-src 'none'; "
@@ -214,9 +216,8 @@ def create_app(
             await websocket.send_json(context.status_message())
             while True:
                 getter: asyncio.Task[LiveMessage] = asyncio.create_task(queue.get())
-                done, _ = await asyncio.wait(
-                    {getter, receiver}, return_when=asyncio.FIRST_COMPLETED
-                )
+                waiters: set[asyncio.Task[Any]] = {getter, receiver}
+                done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
                 if getter not in done:  # client went away
                     getter.cancel()
                     break
