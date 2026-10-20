@@ -28,6 +28,8 @@ class EventType(StrEnum):
     GAP_DETECTED = "gap_detected"
     GAP_RESOLVED = "gap_resolved"
     STREAM_STATE_CHANGED = "stream_state_changed"
+    CLOCK_SKEW_CHANGED = "clock_skew_changed"
+    BACKFILL_COMPLETED = "backfill_completed"
     # signals (M1+)
     SIGNAL_CREATED = "signal_created"
     SIGNAL_TRANSITIONED = "signal_transitioned"

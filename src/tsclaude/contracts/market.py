@@ -45,6 +45,16 @@ class BarSource(StrEnum):
     DERIVED = "derived"  # aggregated from canonical 1m bars
 
 
+class StreamState(StrEnum):
+    """Health state of one live stream (DATA_ARCHITECTURE §3)."""
+
+    CONNECTING = "CONNECTING"
+    HEALTHY = "HEALTHY"
+    STALE = "STALE"  # freshness budget exceeded; blocks new entries for affected symbols
+    DISCONNECTED = "DISCONNECTED"
+    RECOVERING = "RECOVERING"  # reconnected, repairing gaps before declaring HEALTHY
+
+
 class Bar(BaseModel):
     """A *closed* OHLCV bar. Partial bars never use this type.
 
