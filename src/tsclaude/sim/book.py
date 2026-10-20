@@ -338,6 +338,11 @@ class Book:
         tx = self.ledger.post(ts_ms, memo, legs)
         self._emit(SimEventType.LEDGER_POSTED, ts_ms, tx.to_payload())
 
+    def _post_fee(self, ts_ms: int, order_id: str, fee: Decimal) -> None:
+        """Fee paid from cash; a zero fee (fee-free schedule) posts nothing."""
+        if fee != 0:
+            self._post(ts_ms, f"fee:{order_id}", [(FEES, fee), (CASH, -fee)])
+
     def open_capital(self, ts_ms: int) -> None:
         if self._opened:
             return
@@ -729,7 +734,7 @@ class Book:
         self._post(
             ts, f"entry:{order.order_id}", [(asset, costs.notional), (CASH, -costs.notional)]
         )
-        self._post(ts, f"fee:{order.order_id}", [(FEES, costs.fee), (CASH, -costs.fee)])
+        self._post_fee(ts, order.order_id, costs.fee)
         self._emit(
             SimEventType.ORDER_FILLED,
             ts,
@@ -784,13 +789,16 @@ class Book:
             },
         )
         # The new position experiences the remainder of this bar (conservative same-bar rules).
+        # An entry filled at the open holds the position from the open, so the open-gap rules apply
+        # (e.g. a resting limit filled at its price on a bar that opened beyond the stop is stopped
+        # at that open, not at the more favourable stop price).
         fill = resolve_exit(
             remaining,
             pos.side,
             pos.stop,
             pos.take_profit,
             spec.tick_size,
-            held_at_open=False,
+            held_at_open=at_open,
             market_exit_due=None,
             tp_liquidity=self._tp_liquidity(),
             bar_low=prices.low,
@@ -871,7 +879,7 @@ class Book:
                 (REALIZED_PNL, -gross),
             ]
         self._post(ts, f"exit:{exit_order_id}", legs)
-        self._post(ts, f"fee:{exit_order_id}", [(FEES, costs.fee), (CASH, -costs.fee)])
+        self._post_fee(ts, exit_order_id, costs.fee)
         role = {
             ExitReason.STOP_LOSS: OrderRole.STOP_LOSS,
             ExitReason.TAKE_PROFIT: OrderRole.TAKE_PROFIT,

@@ -184,7 +184,7 @@ def random_scenario(
     for m, s in symbols:
         price = rng.randint(5_000, 20_000)  # in ticks
         for i in range(n_bars):
-            if i and rng.random() < gap_prob:
+            if 0 < i < flat_index and rng.random() < gap_prob:
                 continue  # missing minute: exercises gap reporting and gap-through opens
             o = price + (rng.randint(-30, 30) if rng.random() < 0.1 else rng.randint(-2, 2))
             c = max(10, o + rng.randint(-15, 15))

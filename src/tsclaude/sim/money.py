@@ -59,13 +59,17 @@ def is_q8(value: Decimal) -> bool:
 
 
 def floor_to(value: Decimal, step: Decimal) -> Decimal:
-    """Largest multiple of `step` that is <= value."""
-    return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step
+    """Largest multiple of `step` that is <= value, carrying the step's exponent.
+
+    The quantize makes the representation canonical (995 at tick 0.1 is always "995.0"), so event
+    payloads and the run fingerprint never depend on how a price happened to be computed.
+    """
+    return ((value / step).to_integral_value(rounding=ROUND_FLOOR) * step).quantize(step)
 
 
 def ceil_to(value: Decimal, step: Decimal) -> Decimal:
-    """Smallest multiple of `step` that is >= value."""
-    return (value / step).to_integral_value(rounding=ROUND_CEILING) * step
+    """Smallest multiple of `step` that is >= value, carrying the step's exponent."""
+    return ((value / step).to_integral_value(rounding=ROUND_CEILING) * step).quantize(step)
 
 
 def dstr(value: Decimal) -> str:

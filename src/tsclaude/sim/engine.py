@@ -244,16 +244,17 @@ class Simulator:
         self._drain_books()
 
     def _route(self, req: Request, decision: int, earliest: int) -> None:
-        targets = list(self.books) if req.books is None else list(req.books)
+        valid = isinstance(req, EntryRequest | ExitRequest)
+        targets = list(self.books) if not valid or req.books is None else list(req.books)
         unknown = [t for t in targets if t not in self.books]
-        if unknown or not isinstance(req, EntryRequest | ExitRequest):
+        if unknown or not valid:
             self._append(
                 SimEventType.REQUEST_REJECTED,
                 decision,
                 RUN_AGGREGATE_ID,
                 {
                     "request_id": getattr(req, "request_id", None),
-                    "reason": "unknown_book" if unknown else "invalid_request",
+                    "reason": "invalid_request" if not valid else "unknown_book",
                 },
             )
             return
