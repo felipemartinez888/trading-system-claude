@@ -1,4 +1,4 @@
-"""Command-line entry point: `tsclaude app | verify-chain | version`."""
+"""Command-line entry point: `tsclaude app | data | verify-chain | version`."""
 
 from __future__ import annotations
 
@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     app.add_argument("--no-browser", action="store_true", help="do not open the browser")
     app.add_argument("--port", type=int, default=None)
     app.set_defaults(func=_cmd_app)
+
+    # Historical data commands (M2-T1); their module imports nothing heavy at load time.
+    importlib.import_module("tsclaude.marketdata.datacli").register(sub)
 
     verify = sub.add_parser("verify-chain", help="verify the hash chain of the event store")
     verify.set_defaults(func=_cmd_verify_chain)

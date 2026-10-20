@@ -1,0 +1,18 @@
+# Universe rule (decision D-04, DATA_ARCHITECTURE §6). Used by `tsclaude data universe`.
+# Changing any value changes the universe; commit the resulting universe_snapshot_<date>.yaml.
+version: 1
+description: >-
+  Listed on Binance Spot and as a USD-M perpetual (same symbol) for >= 24 months before the
+  snapshot; USDT-quoted; TRADING on both; no stablecoin bases or leveraged tokens; ranked by the
+  90-day median daily quote volume (min of spot and USD-M); top 10.
+quote_asset: USDT
+min_listing_months: 24
+listing_probe_days: 7
+volume_window_days: 90
+min_volume_days: 85
+top_n: 10
+rank_by: min          # spot | usdm | min | sum  (min = must be liquid on both markets)
+leveraged_suffixes: [UP, DOWN, BULL, BEAR]
+stablecoin_bases:
+  [USDC, FDUSD, TUSD, BUSD, USDP, PAX, DAI, UST, USTC, USDD, PYUSD, USDE, USD1, EURI, AEUR,
+   EUR, BFUSD, XUSD, RLUSD, USDS, SUSD, GUSD, FRAX, LUSD]
