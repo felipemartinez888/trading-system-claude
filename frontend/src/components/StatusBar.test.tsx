@@ -257,6 +257,8 @@ describe("StatusBar", () => {
           since: null,
           start_allowed: false,
           blocked_reason: "event chain verification failed at seq 3: hash mismatch",
+          transition: null,
+          last_error: null,
         },
       },
       chain: {
