@@ -4,7 +4,12 @@ States (`contracts.market.StreamState`):
 
     CONNECTING --first message--> HEALTHY --budget exceeded--> STALE --fresh message--> HEALTHY
          any state --connection lost--> DISCONNECTED --connection open--> RECOVERING
-    RECOVERING --message received and repair complete--> HEALTHY
+    RECOVERING --message received--> HEALTHY
+
+  Every transition *into* HEALTHY (from CONNECTING, STALE or RECOVERING) also requires the repair
+  check to pass. If it does not yet, the qualifying message is remembered and `tick()` completes
+  the transition once repair is done (for STALE, only while that fresh message is still within
+  the budget).
 
 - "Fresh" depends on the stream: for 1m klines it is a *closed* bar (budget counted since the last
   closed bar, or since the stream became healthy if none has closed yet); for bookTicker and
@@ -42,6 +47,7 @@ class StreamHealth:
     healthy_since_ms: int | None = None
     opened_at_ms: int | None = None
     message_since_open: bool = False
+    pending_healthy: bool = False  # qualifying message seen, waiting for the repair check
     transitions: int = 0
     disconnects: int = 0
 
@@ -107,11 +113,11 @@ class FreshnessMonitor:
         if fresh:
             h.last_fresh_ms = now
         if h.state is StreamState.CONNECTING:
-            self._transition(h, StreamState.HEALTHY, "first_message")
+            self._try_healthy(h, "first_message")
         elif h.state is StreamState.STALE and fresh:
-            self._transition(h, StreamState.HEALTHY, "fresh_message")
-        elif h.state is StreamState.RECOVERING and self._repaired(key):
-            self._transition(h, StreamState.HEALTHY, "recovered")
+            self._try_healthy(h, "fresh_message")
+        elif h.state is StreamState.RECOVERING:
+            self._try_healthy(h, "recovered")
 
     def tick(self) -> None:
         """Evaluate time-based transitions. Call about once per second."""
@@ -121,19 +127,33 @@ class FreshnessMonitor:
                 ref = self._reference_ms(h)
                 if now - ref > h.budget_ms:
                     self._transition(h, StreamState.STALE, "freshness_budget_exceeded")
-            elif (
-                h.state is StreamState.RECOVERING and h.message_since_open and self._repaired(h.key)
-            ):
-                self._transition(h, StreamState.HEALTHY, "recovered")
+            elif not h.pending_healthy:
+                continue
+            elif h.state is StreamState.STALE:
+                if h.last_fresh_ms is None or now - h.last_fresh_ms > h.budget_ms:
+                    h.pending_healthy = False  # that fresh message is itself stale now
+                else:
+                    self._try_healthy(h, "fresh_message")
+            elif h.state is StreamState.CONNECTING:
+                self._try_healthy(h, "first_message")
+            elif h.state is StreamState.RECOVERING:
+                self._try_healthy(h, "recovered")
 
     # ------------------------------------------------------------------ internals
     def _reference_ms(self, h: StreamHealth) -> int:
         candidates = [v for v in (h.last_fresh_ms, h.healthy_since_ms) if v is not None]
         return max(candidates) if candidates else h.since_ms
 
+    def _try_healthy(self, h: StreamHealth, reason: str) -> None:
+        if self._repaired(h.key):
+            self._transition(h, StreamState.HEALTHY, reason)
+        else:
+            h.pending_healthy = True
+
     def _transition(self, h: StreamHealth, to: StreamState, reason: str) -> None:
         now = self._now()
         before = h.state
+        h.pending_healthy = False
         h.state = to
         h.since_ms = now
         h.transitions += 1

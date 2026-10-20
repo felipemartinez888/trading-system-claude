@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +39,10 @@ from tsclaude.marketdata.types import (
 # above 1e14 is therefore microseconds; at or above 1e17 it is not a timestamp we understand.
 _MICROS_THRESHOLD = 10**14
 _MAX_TIMESTAMP = 10**17
+# ASCII only: str.isdigit()/float() also accept other Unicode digits ("²", "١٢").
+_INT_TEXT = re.compile(r"-?[0-9]{1,19}")
+_FLOAT_TEXT = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]{1,3})?")
+_MAX_NUMBER_TEXT = 64
 
 
 class MalformedMessage(ValueError):
@@ -70,9 +75,11 @@ def _float(obj: Mapping[str, Any], key: str) -> float:
 def _to_float(raw: Any, key: str) -> float:
     if isinstance(raw, bool) or not isinstance(raw, str | int | float):
         raise MalformedMessage(f"field {key!r} is not numeric")
+    if isinstance(raw, str) and (len(raw) > _MAX_NUMBER_TEXT or _FLOAT_TEXT.fullmatch(raw) is None):
+        raise MalformedMessage(f"field {key!r} is not numeric")
     try:
         value = float(raw)
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:
         raise MalformedMessage(f"field {key!r} is not numeric") from exc
     if not math.isfinite(value):
         raise MalformedMessage(f"field {key!r} is not finite")
@@ -87,8 +94,10 @@ def _to_int(raw: Any, key: str) -> int:
     if isinstance(raw, bool):
         raise MalformedMessage(f"field {key!r} is not an integer")
     if isinstance(raw, int):
+        if abs(raw) >= 2**63:
+            raise MalformedMessage(f"field {key!r} is out of range")
         return raw
-    if isinstance(raw, str) and raw.lstrip("-").isdigit():
+    if isinstance(raw, str) and _INT_TEXT.fullmatch(raw) is not None:
         return int(raw)
     raise MalformedMessage(f"field {key!r} is not an integer")
 
@@ -138,13 +147,28 @@ def loads(raw: str | bytes) -> Any:
     try:
         text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
         return json.loads(text)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (ValueError, RecursionError) as exc:
+        # JSONDecodeError and UnicodeDecodeError are ValueErrors; so is Python's int-digit limit
+        # (> 4300 digits). Deeply nested arrays raise RecursionError.
         raise MalformedMessage("not valid JSON") from exc
 
 
 # ---------------------------------------------------------------------------- WebSocket
 def parse_ws_frame(raw: str | bytes, market: Market) -> Envelope:
-    """Parse one WebSocket text frame (raw or combined-stream mode)."""
+    """Parse one WebSocket text frame (raw or combined-stream mode).
+
+    Raises only `MalformedMessage`: any other error while interpreting an untrusted payload is
+    converted, so callers have a single, countable failure type.
+    """
+    try:
+        return _parse_ws_frame(raw, market)
+    except MalformedMessage:
+        raise
+    except Exception as exc:
+        raise MalformedMessage(f"unparseable frame ({type(exc).__name__})") from exc
+
+
+def _parse_ws_frame(raw: str | bytes, market: Market) -> Envelope:
     data = _obj(loads(raw), "frame")
     if "stream" in data and "data" in data:
         stream = data["stream"]

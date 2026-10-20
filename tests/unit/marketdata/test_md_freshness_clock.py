@@ -33,7 +33,7 @@ def test_budgets_from_config() -> None:
 
 
 def test_full_lifecycle_with_events(clock: ManualClock, sink: Sink) -> None:
-    repaired = {"ok": False}
+    repaired = {"ok": True}
     mon = FreshnessMonitor(
         [KL, BK, MK],
         FreshnessConfig().budget_ms,
@@ -61,6 +61,7 @@ def test_full_lifecycle_with_events(clock: ManualClock, sink: Sink) -> None:
     assert mon.state(KL) is StreamState.HEALTHY
 
     mon.on_close(KL, "connection_lost")
+    repaired["ok"] = False  # e.g. a minute missed while disconnected is being recovered
     assert mon.state(KL) is StreamState.DISCONNECTED
     mon.on_close(KL, "again")  # idempotent, no extra event
     mon.on_open(KL)
@@ -162,3 +163,54 @@ def test_clock_round_with_fetcher(clock: ManualClock, sink: Sink) -> None:
 def test_clock_rejects_bad_config(clock: ManualClock, sink: Sink) -> None:
     with pytest.raises(ValueError, match="samples"):
         ClockMonitor(clock, _never, sink, samples_per_round=0)
+
+
+def test_stale_to_healthy_requires_repair(clock: ManualClock, sink: Sink) -> None:
+    """Review N2: STALE -> HEALTHY passes the same repair check as RECOVERING -> HEALTHY."""
+    repaired = {"ok": True}
+    mon = FreshnessMonitor(
+        [KL], FreshnessConfig().budget_ms, sink, clock.now_ms, repaired=lambda _k: repaired["ok"]
+    )
+    mon.on_message(KL, fresh=True)
+    clock.advance(76_000)
+    mon.tick()
+    assert mon.state(KL) is StreamState.STALE
+    repaired["ok"] = False  # an overdue minute is not recovered yet
+    mon.on_message(KL, fresh=True)
+    assert mon.state(KL) is StreamState.STALE
+    clock.advance(1_000)
+    mon.tick()
+    assert mon.state(KL) is StreamState.STALE
+    repaired["ok"] = True
+    mon.tick()
+    assert mon.state(KL) is StreamState.HEALTHY
+    assert _states(sink)[-1] == (KL.id, "STALE", "HEALTHY")
+
+
+def test_pending_stale_recovery_expires_with_the_budget(clock: ManualClock, sink: Sink) -> None:
+    repaired = {"ok": False}
+    mon = FreshnessMonitor(
+        [KL], FreshnessConfig().budget_ms, sink, clock.now_ms, repaired=lambda _k: repaired["ok"]
+    )
+    repaired["ok"] = True
+    mon.on_message(KL, fresh=True)
+    clock.advance(76_000)
+    mon.tick()
+    repaired["ok"] = False
+    mon.on_message(KL, fresh=True)  # pending: repair not done
+    clock.advance(76_000)  # that fresh message is now itself older than the budget
+    repaired["ok"] = True
+    mon.tick()
+    assert mon.state(KL) is StreamState.STALE
+
+
+def test_connecting_to_healthy_requires_repair(clock: ManualClock, sink: Sink) -> None:
+    repaired = {"ok": False}
+    mon = FreshnessMonitor(
+        [KL], FreshnessConfig().budget_ms, sink, clock.now_ms, repaired=lambda _k: repaired["ok"]
+    )
+    mon.on_message(KL, fresh=False)
+    assert mon.state(KL) is StreamState.CONNECTING
+    repaired["ok"] = True
+    mon.tick()
+    assert mon.state(KL) is StreamState.HEALTHY

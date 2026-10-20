@@ -45,6 +45,16 @@ def current_minute_open(server_now_ms: int) -> int:
     return server_now_ms - server_now_ms % STEP
 
 
+def live_watch_from(server_now_ms: int, grace_ms: int) -> int:
+    """First minute owned by the live bar builder rather than startup backfill.
+
+    Backfill takes only minutes whose watermark deadline (`open + 60 s + grace`) has passed;
+    a minute that closed less than `grace` ago stays with the builder, which waits for its WS
+    close or recovers it at the deadline.
+    """
+    return current_minute_open(server_now_ms - grace_ms - 1)
+
+
 @dataclass(frozen=True, slots=True)
 class BackfillSettings:
     lookback_ms: int = 3 * MS_PER_DAY
@@ -74,18 +84,20 @@ class BackfillResult:
 
 
 class ObservationIndex:
-    """Which 1m minutes overlap an observation interval (the app was monitoring)?
+    """Which 1m minutes lie entirely inside an observation interval (the app was monitoring)?
 
-    Minute `[m, m+60 s)` is observed if it overlaps any interval `[start, end]`; the set is kept
-    as 1m-aligned ranges, so queries over long windows stay cheap.
+    Lead decision (M1-T1 review N1): minute `m` is observed only if
+    `start_ms <= m` and `close_time = m + 60 s - 1 < end_ms`. A minute only partly covered (the
+    monitoring started or stopped inside it) is not observed. An open interval ends at `now_ms`.
+    The set is kept as 1m-aligned ranges of open times, so long windows stay cheap.
     """
 
     def __init__(self, intervals: Sequence[ObservationInterval], now_ms: int) -> None:
         self._set = RangeSet()
         for iv in intervals:
-            end = (iv.end_ms if iv.end_ms is not None else now_ms) + 1  # inclusive end
-            lo = iv.start_ms - iv.start_ms % STEP
-            hi = end + (-end) % STEP
+            end = iv.end_ms if iv.end_ms is not None else now_ms
+            lo = iv.start_ms + (-iv.start_ms) % STEP  # first open time >= start
+            hi = end - end % STEP  # open times m with m + STEP <= end
             self._set.add(lo, hi)
 
     def observed(self, open_time_ms: int) -> bool:

@@ -185,6 +185,7 @@ class ConnectionStats:
     reconnects: int = 0
     recycles: int = 0
     recycle_failures: int = 0
+    crashes: int = 0  # connection task died unexpectedly and was restarted by the manager
     fallbacks: int = 0
     messages: int = 0
     malformed: int = 0
@@ -256,6 +257,14 @@ class StreamConnection:
     async def stop(self) -> None:
         self._stopping.set()
 
+    @property
+    def stopping(self) -> bool:
+        return self._stopping.is_set()
+
+    async def wait_or_stop(self, seconds: float) -> bool:
+        """Sleep up to `seconds`; True if stop was requested meanwhile."""
+        return await self._wait_or_stop(seconds)
+
     async def send_control(self, method: str, params: list[str] | None = None) -> int:
         """Send a control message (rate-limited). Returns its id."""
         live = self._active
@@ -280,7 +289,12 @@ class StreamConnection:
         return await self.send_control("LIST_SUBSCRIPTIONS")
 
     async def run(self) -> None:
-        """Connect, serve, reconnect, recycle — until `stop()`."""
+        """Connect, serve, reconnect, recycle — until `stop()`.
+
+        An unexpected exception propagates (after the streams are reported closed with reason
+        `internal_error: ...`) so that `WsManager` can log it and restart the connection.
+        """
+        reason = "stopped"
         try:
             while not self._stopping.is_set():
                 live = await self._open_with_retry()
@@ -296,8 +310,14 @@ class StreamConnection:
                 # growing if connections keep dropping right after opening (flapping).
                 if await self._wait_or_stop(self._backoff.next_delay()):
                     break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            reason = f"internal_error: {type(exc).__name__}: {exc}"[:200]
+            self.stats.last_error = reason
+            raise
         finally:
-            await self._close_active("stopped")
+            await self._close_active(reason)
 
     # ------------------------------------------------------------------ internals
     async def _wait_or_stop(self, seconds: float) -> bool:
@@ -363,14 +383,22 @@ class StreamConnection:
         if reconnect:
             self.stats.reconnects += 1
         log.info("websocket connected", extra={"group": self.group.name, "url": live.url})
-        if self._on_open is not None:
-            self._on_open(self.group.streams, "connected")
+        self._notify(self._on_open, "connected")
 
     def _deactivate(self, reason: str) -> None:
         self.stats.connected = False
         self._active = None
-        if self._on_close is not None:
-            self._on_close(self.group.streams, reason)
+        self._notify(self._on_close, reason)
+
+    def _notify(self, callback: StreamsCallback | None, reason: str) -> None:
+        """Run a health callback; its failure is logged and counted, never fatal."""
+        if callback is None:
+            return
+        try:
+            callback(self.group.streams, reason)
+        except Exception:
+            self.stats.handler_errors += 1
+            log.exception("stream callback failed", extra={"group": self.group.name})
 
     async def _serve(self) -> str:
         """Serve the active connection until it ends; perform planned recycles. Returns reason."""
@@ -473,20 +501,25 @@ class StreamConnection:
                 self.stats.last_error = reason
                 log.warning("websocket closed", extra={"group": self.group.name, "reason": reason})
                 return reason
-            self._dispatch(raw)
+            try:
+                self._dispatch(raw)
+            except Exception:  # last line of defence: one frame must never end the loop
+                self.stats.handler_errors += 1
+                log.exception("websocket frame dispatch failed", extra={"group": self.group.name})
             live.first_message.set()
 
     def _dispatch(self, raw: str | bytes) -> None:
         self.stats.messages += 1
         try:
             env: Envelope = parse_ws_frame(raw, self.group.market)
-        except MalformedMessage as exc:
+        except Exception as exc:  # MalformedMessage, or an unexpected parser failure
             self.stats.malformed += 1
+            reason = exc.reason if isinstance(exc, MalformedMessage) else repr(exc)
             log.error(
                 "malformed websocket message skipped",
                 extra={
                     "group": self.group.name,
-                    "reason": exc.reason,
+                    "reason": reason,
                     "sample": (raw[:200] if isinstance(raw, str) else repr(raw[:200])),
                 },
             )
@@ -530,6 +563,8 @@ class WsManager:
         self._budget = SlidingWindowLimiter(
             config.connect_budget, int(config.connect_budget_window_s * 1000), clock, sleep
         )
+        self._config = config
+        self._rng = rng
         connector = connect if connect is not None else default_connector(config)
         self.connections = [
             StreamConnection(
@@ -556,8 +591,39 @@ class WsManager:
         if self._tasks:
             raise RuntimeError("already started")
         self._tasks = [
-            asyncio.create_task(c.run(), name=f"ws-{c.group.name}") for c in self.connections
+            asyncio.create_task(self._supervise(c), name=f"ws-{c.group.name}")
+            for c in self.connections
         ]
+
+    async def _supervise(self, conn: StreamConnection) -> None:
+        """Keep `conn.run()` alive until stop: log, count and restart it if it ever dies."""
+        backoff = Backoff(
+            self._config.backoff_base_s,
+            self._config.backoff_cap_s,
+            self._rng if self._rng is not None else random.SystemRandom().uniform,
+        )
+        while True:
+            try:
+                await conn.run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                conn.stats.crashes += 1
+                conn.stats.last_error = f"internal_error: {type(exc).__name__}: {exc}"[:200]
+                log.exception(
+                    "websocket connection task crashed; restarting",
+                    extra={"group": conn.group.name, "crashes": conn.stats.crashes},
+                )
+            else:
+                if conn.stopping:
+                    return
+                conn.stats.crashes += 1
+                log.error(
+                    "websocket connection task ended without stop; restarting",
+                    extra={"group": conn.group.name},
+                )
+            if conn.stopping or await conn.wait_or_stop(backoff.next_delay()):
+                return
 
     async def stop(self, timeout_s: float = 5.0) -> None:
         """Ask every connection to stop; cancel those still busy after `timeout_s`."""
@@ -567,7 +633,13 @@ class WsManager:
             _, pending = await asyncio.wait(self._tasks, timeout=timeout_s)
             for t in pending:
                 t.cancel()
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            results = await asyncio.gather(*self._tasks, return_exceptions=True)
+            for task, result in zip(self._tasks, results, strict=True):
+                if isinstance(result, Exception):
+                    log.error(
+                        "websocket task failed during stop",
+                        extra={"task": task.get_name(), "error": repr(result)},
+                    )
         self._tasks = []
 
     def stats(self) -> list[ConnectionStats]:

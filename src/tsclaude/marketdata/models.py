@@ -1,12 +1,15 @@
 """Read models exposed by `MarketDataService.snapshot()` (every value wrapped in `Sourced`).
 
 Provenance rules (ADR-0010, DATA_ARCHITECTURE §3):
-- last closed bar: `ws_live` -> LIVE, `rest_recovered` -> RECOVERED, `rest_backfill`/`archive`
-  -> HISTORICAL; any of them -> STALE when the kline stream is not HEALTHY;
+- last closed bar: LIVE only if it is `ws_live`, seen in the current session (not before its
+  `watch_from`) and within the kline freshness budget while the stream is HEALTHY; a recent
+  `rest_recovered` bar -> RECOVERED; other recent bars -> HISTORICAL; an old bar, or any bar while
+  the kline stream is not HEALTHY -> STALE (always with `as_of_ms` = bar close time);
 - forming candle -> PARTIAL (STALE when the kline stream is not HEALTHY); never a `Bar`;
 - best bid/ask, mark price, funding -> LIVE while their stream is HEALTHY, else STALE with
   `as_of_ms`; UNAVAILABLE (with a reason) when nothing has been received or it does not apply;
-- stream state itself -> LIVE while the service runs (it is our own live observation).
+- stream state itself -> SYSTEM while the service runs (the app's own runtime state), STALE after
+  stop; exchange status -> HISTORICAL (an exchangeInfo snapshot taken at start, `as_of_ms` = load).
 """
 
 from __future__ import annotations
@@ -98,6 +101,8 @@ class ConnectionStatus(BaseModel):
     recycles: int
     malformed: int
     messages: int
+    crashes: int  # connection task died unexpectedly and was restarted
+    last_error: str | None
 
 
 class MarketSnapshot(BaseModel):

@@ -14,6 +14,7 @@ from tsclaude.marketdata.backfill import (
     BackfillSettings,
     ObservationIndex,
     current_minute_open,
+    live_watch_from,
 )
 from tsclaude.marketdata.convert import bar_from_ws
 from tsclaude.quality.gaps import GapRegistry
@@ -23,7 +24,7 @@ from tsclaude.store.livebars import LiveBarStore
 M, SYM = Market.USDM, "ETHUSDT"
 END = T0 + 60 * MIN  # 60-minute window [T0, END)
 SETTINGS = BackfillSettings(lookback_ms=60 * MIN, max_backfill_ms=120 * MIN)
-# observed from minute 20 (mid-minute start) to minute 40 (ends mid-minute 39)
+# observed from mid-minute 20 to mid-minute 39: only minutes 21..38 lie entirely inside
 OBS = [ObservationInterval(T0 + 20 * MIN + 30_000, T0 + 39 * MIN + 10_000, "MON1", "user")]
 
 
@@ -44,12 +45,23 @@ def _source(bars: LiveBarStore, i: int) -> BarSource | None:
 def test_observation_index() -> None:
     idx = ObservationIndex(OBS, now_ms=END)
     assert not idx.observed(T0 + 19 * MIN)
-    assert idx.observed(T0 + 20 * MIN)  # interval starts inside this minute
-    assert idx.observed(T0 + 39 * MIN)  # interval ends inside this minute
-    assert not idx.observed(T0 + 40 * MIN)
-    open_ended = ObservationIndex([ObservationInterval(T0, None, "M", None)], now_ms=T0 + 5 * MIN)
-    assert open_ended.observed(T0 + 5 * MIN)
-    assert not open_ended.observed(T0 + 6 * MIN)
+    assert not idx.observed(T0 + 20 * MIN)  # interval starts inside this minute
+    assert idx.observed(T0 + 21 * MIN)
+    assert idx.observed(T0 + 38 * MIN)
+    assert not idx.observed(T0 + 39 * MIN)  # interval ends inside this minute
+    exact = ObservationIndex([ObservationInterval(T0, T0 + 2 * MIN, "M", "user")], now_ms=END)
+    assert exact.observed(T0)  # start == open_time
+    assert exact.observed(T0 + MIN)  # close_time = T0 + 2 min - 1 < end
+    assert not exact.observed(T0 + 2 * MIN)
+    one_ms_short = ObservationIndex(
+        [ObservationInterval(T0, T0 + 2 * MIN - 1, "M", "user")], now_ms=END
+    )
+    assert not one_ms_short.observed(T0 + MIN)
+    open_ended = ObservationIndex(
+        [ObservationInterval(T0, None, "M", None)], now_ms=T0 + 5 * MIN + 30_000
+    )
+    assert open_ended.observed(T0 + 4 * MIN)
+    assert not open_ended.observed(T0 + 5 * MIN)  # still forming at now
     assert current_minute_open(T0 + 59_999) == T0
 
 
@@ -60,12 +72,12 @@ def test_initial_backfill_tags_by_observation(
     bf = Backfiller(bars, gaps, fetch, sink, clock.now_ms, SETTINGS)
     res = asyncio.run(bf.run(M, SYM, END, OBS))
     assert bars.count() == 60
-    assert _source(bars, 19) is BarSource.REST_BACKFILL
-    assert _source(bars, 20) is BarSource.REST_RECOVERED
-    assert _source(bars, 39) is BarSource.REST_RECOVERED
-    assert _source(bars, 40) is BarSource.REST_BACKFILL
+    assert _source(bars, 20) is BarSource.REST_BACKFILL  # only partly observed
+    assert _source(bars, 21) is BarSource.REST_RECOVERED
+    assert _source(bars, 38) is BarSource.REST_RECOVERED
+    assert _source(bars, 39) is BarSource.REST_BACKFILL  # only partly observed
     assert bars.get(M, SYM, END) is None  # the forming minute is never backfilled
-    assert (res.inserted_recovered, res.inserted_backfill) == (20, 40)
+    assert (res.inserted_recovered, res.inserted_backfill) == (18, 42)
     assert sink.of(EventType.GAP_DETECTED) == []  # initial load is not a gap
     done = sink.of(EventType.BACKFILL_COMPLETED)
     assert len(done) == 1
@@ -101,12 +113,11 @@ def test_hole_after_crash_is_gap_then_resolved(
         Backfiller(bars, gaps, fetch, sink, clock.now_ms, SETTINGS).run(M, SYM, END, crash_obs)
     )
     assert _source(bars, 9) is BarSource.WS_LIVE  # untouched
-    assert _source(bars, 10) is BarSource.REST_RECOVERED  # minute 10 overlaps the interval end
+    assert _source(bars, 10) is BarSource.REST_BACKFILL  # not observed: interval ended at T0+10m
     assert _source(bars, 11) is BarSource.REST_BACKFILL  # app was down
     detected = sink.of(EventType.GAP_DETECTED)
     assert [(e.payload["from_ms"], e.payload["to_ms"], e.payload["cause"]) for e in detected] == [
-        (T0 + 10 * MIN, T0 + 11 * MIN, "unknown"),
-        (T0 + 11 * MIN, END, "downtime"),
+        (T0 + 10 * MIN, END, "downtime"),
     ]
     assert res.gaps_resolved_minutes == 49
     # the unobserved interval minus what REST returned stays an open gap
@@ -168,3 +179,15 @@ def test_fetch_error_leaves_registered_gap(
     assert res.errors
     assert gaps.missing_ranges(M, SYM) == [(T0 + MIN, END)]
     assert sink.of(EventType.BACKFILL_COMPLETED)[0].payload["remaining_open_minutes"] == 59
+
+
+def test_live_watch_from_leaves_minutes_within_grace_to_the_builder() -> None:
+    """Review N3: backfill must not fetch a minute before its close + grace."""
+    grace = 5_000
+    # minute T0 closed 2 s ago: still within grace -> owned by the builder
+    assert live_watch_from(T0 + MIN + 2_000, grace) == T0
+    # exactly at the deadline (not past it) -> still the builder's
+    assert live_watch_from(T0 + MIN + grace, grace) == T0
+    # past the deadline -> backfill may take T0; the builder starts at the forming minute
+    assert live_watch_from(T0 + MIN + grace + 1, grace) == T0 + MIN
+    assert live_watch_from(T0 + 30_000, grace) == T0

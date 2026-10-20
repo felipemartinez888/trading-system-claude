@@ -193,3 +193,25 @@ def test_exchange_info_usdm_min_notional_naming() -> None:
     assert info.symbols["BTCUSDT"].min_notional == "100"
     assert info.symbols["BTCUSDT"].tick_size == "0.10"
     assert [r.limit for r in info.rate_limits if r.rate_limit_type == "REQUEST_WEIGHT"] == [2400]
+
+
+# ---------------------------------------------------------------- review B1: hostile inputs
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("n", "²"), ("n", "١٢"), ("t", "1" * 5000), ("o", "١٢"), ("o", 10**400)],
+    ids=["superscript", "arabic-int", "5000-digits", "arabic-float", "float-overflow"],
+)
+def test_non_ascii_digits_and_huge_numbers_are_malformed(field: str, value: object) -> None:
+    data = load_fixture("ws_spot_kline_closed.json")
+    data["k"][field] = value
+    with pytest.raises(MalformedMessage):
+        parse_ws_frame(json.dumps(data), Market.SPOT)
+
+
+def test_json_level_failures_are_malformed() -> None:
+    huge_int = '{"e": "kline", "E": ' + "9" * 5000 + "}"
+    with pytest.raises(MalformedMessage):
+        parse_ws_frame(huge_int, Market.SPOT)
+    deep = "[" * 100_000 + "]" * 100_000
+    with pytest.raises(MalformedMessage):
+        parse_ws_frame(deep, Market.SPOT)

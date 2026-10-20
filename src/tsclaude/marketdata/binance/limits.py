@@ -98,6 +98,15 @@ class WeightLimiter:
     `REQUEST_WEIGHT` window, the used weight in the current window; the authoritative value comes
     from the `X-MBX-USED-WEIGHT-*` header after every response. We only use `budget_fraction` of
     each declared limit, to stay well clear of it when other tools share the IP.
+
+    Known approximations (deliberate; absorbed by the default 50 % budget):
+    - A header value *overwrites* the local count. Weight reserved by requests that are still in
+      flight when an earlier response's header arrives is therefore dropped from the count until
+      their own responses report it. With requests serialized per client this is at most one
+      request's weight; it never makes us exceed Binance's limit, only our own budget fraction.
+    - Windows are aligned on the local clock, while Binance counts on server time. With clock
+      skew below the 1 s alarm threshold, the local window can roll over up to that much early or
+      late; the header after the next request corrects the count.
     """
 
     def __init__(self, clock: WallClock, sleep: Sleep, budget_fraction: float = 0.5) -> None:

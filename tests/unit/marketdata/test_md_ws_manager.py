@@ -387,3 +387,94 @@ def _budget():  # type: ignore[no-untyped-def]
     from tsclaude.marketdata.binance.limits import SlidingWindowLimiter
 
     return SlidingWindowLimiter(100, 300_000, SystemClock(), asyncio.sleep)
+
+
+# ---------------------------------------------------------------- review B1
+def test_hostile_frames_never_end_the_read_loop() -> None:
+    async def scenario() -> None:
+        ex = FakeExchange()
+        got: list[ParsedMessage] = []
+        conn = StreamConnection(GROUP, got.append, _cfg(), SystemClock(), ex.connect, _budget())
+        task = asyncio.create_task(conn.run())
+        c = await ex.wait_conn(1)
+        bad_trades = _kline_frame(T0)
+        bad_trades["data"]["k"]["n"] = "²"  # type: ignore[index]
+        c.push(bad_trades)
+        c.push('{"stream": "x", "data": {"e": "kline", "E": ' + "9" * 5000 + "}}")
+        c.push("[" * 100_000 + "]" * 100_000)
+        c.push(_kline_frame(T0))
+        await _until(lambda: len(got) == 1)
+        assert conn.stats.malformed == 3
+        assert len(ex.conns) == 1
+        assert conn.stats.connected
+        await conn.stop()
+        await task
+
+    _run(scenario)
+
+
+def test_unexpected_parser_crash_is_counted_not_fatal(monkeypatch: object) -> None:
+    import tsclaude.marketdata.binance.ws as ws_mod
+
+    real = ws_mod.parse_ws_frame
+    calls = {"n": 0}
+
+    def flaky(raw: str | bytes, market: Market) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TypeError("parser bug")
+        return real(raw, market)
+
+    async def scenario() -> None:
+        ex = FakeExchange()
+        got: list[ParsedMessage] = []
+        conn = StreamConnection(GROUP, got.append, _cfg(), SystemClock(), ex.connect, _budget())
+        task = asyncio.create_task(conn.run())
+        c = await ex.wait_conn(1)
+        c.push(_kline_frame(T0))
+        c.push(_kline_frame(T0 + MIN))
+        await _until(lambda: len(got) == 1)
+        assert conn.stats.malformed == 1
+        assert len(ex.conns) == 1
+        await conn.stop()
+        await task
+
+    monkeypatch.setattr(ws_mod, "parse_ws_frame", flaky)  # type: ignore[attr-defined]
+    _run(scenario)
+
+
+def test_manager_restarts_a_crashed_connection_task() -> None:
+    async def scenario() -> None:
+        ex = FakeExchange()
+        closes: list[str] = []
+        mgr = WsManager(
+            [GROUP],
+            lambda _m: None,
+            _cfg(),
+            SystemClock(),
+            ex.connect,
+            on_close=lambda _k, r: closes.append(r),
+        )
+        conn = mgr.connections[0]
+        real_serve = conn._serve
+        crashed = {"done": False}
+
+        async def crash_once() -> str:
+            if not crashed["done"]:
+                crashed["done"] = True
+                raise RuntimeError("internal bug")
+            return await real_serve()
+
+        conn._serve = crash_once  # type: ignore[method-assign]
+        mgr.start()
+        await ex.wait_conn(2)
+        await _until(lambda: conn.stats.connected)
+        assert conn.stats.crashes == 1
+        assert "internal bug" in (conn.stats.last_error or "")
+        assert closes[0].startswith("internal_error")  # surfaced to stream health
+        assert ex.conns[0].closed
+        assert mgr.running
+        await mgr.stop()
+        assert not mgr.running
+
+    _run(scenario)

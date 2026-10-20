@@ -34,7 +34,7 @@ from tsclaude.marketdata.backfill import (
     Backfiller,
     BackfillResult,
     BackfillSettings,
-    current_minute_open,
+    live_watch_from,
 )
 from tsclaude.marketdata.bars import BarBuilder, BarClosed, SymbolBarBuilder
 from tsclaude.marketdata.binance.ws import WsConnect, WsManager, plan_groups
@@ -171,6 +171,7 @@ class MarketDataService:
         self._marks: dict[str, _Mark] = {}
         self._funding: dict[str, _FundingState] = {}
         self._status: dict[tuple[Market, str], str] = {}
+        self._status_as_of: dict[Market, int] = {}
         self._watch_from: int | None = None
         self.backfill_results: list[BackfillResult] = []
         self._backfill_done = asyncio.Event()
@@ -212,6 +213,19 @@ class MarketDataService:
             raise RuntimeError("market data service already running")
         if self._closed:
             raise RuntimeError("market data service was closed; create a new one")
+        try:
+            await self._start()
+        except BaseException:
+            log.exception("market data service failed to start; cleaning up")
+            await self._shutdown()
+            # Reset per-start state so a later start() begins from scratch.
+            self.builder = BarBuilder()
+            self.freshness = None
+            self._ws = None
+            self._rest = {}
+            raise
+
+    async def _start(self) -> None:
         from tsclaude.marketdata.binance.rest import BinanceRest  # needs httpx
 
         q = self._cfg.quality
@@ -239,6 +253,7 @@ class MarketDataService:
                 continue
             try:
                 info = await self._rest[market].load_exchange_info(symbols)
+                self._status_as_of[market] = self._clock.now_ms()
                 for s in symbols:
                     sym = info.symbols.get(s)
                     self._status[(market, s)] = sym.status if sym else "NOT_LISTED"
@@ -254,7 +269,9 @@ class MarketDataService:
         )
         await self._clock_monitor.sample_round()
         server_now = self._clock_monitor.server_now_ms()
-        watch_from = current_minute_open(server_now)
+        # Minutes whose close + grace has not passed yet belong to the bar builder's watermark,
+        # not to startup backfill (REST may not have the final version of them yet).
+        watch_from = live_watch_from(server_now, int(q.watermark.grace_s * 1000))
         self._watch_from = watch_from
 
         keys: list[StreamKey] = []
@@ -316,6 +333,12 @@ class MarketDataService:
     async def stop(self) -> None:
         if not self._running:
             return
+        await self._shutdown()
+        for sub in list(self._subscribers):
+            sub.close()
+
+    async def _shutdown(self) -> None:
+        """Stop tasks, WebSockets and REST clients. Safe on a partially started service."""
         self._running = False
         for t in self._tasks:
             t.cancel()
@@ -324,9 +347,10 @@ class MarketDataService:
         if self._ws is not None:
             await self._ws.stop()
         for rest in self._rest.values():
-            await rest.aclose()
-        for sub in list(self._subscribers):
-            sub.close()
+            try:
+                await rest.aclose()
+            except Exception:
+                log.exception("closing REST client failed", extra={"market": str(rest.market)})
 
     def close(self) -> None:
         """Release the bar store (if owned). `snapshot()` stays usable after `stop()` until then."""
@@ -501,16 +525,42 @@ class MarketDataService:
         if stored is None:
             return Sourced[Bar].unavailable("no closed bar stored yet")
         bar = stored.bar
-        ok = self._stream_ok(StreamKey(market, symbol, StreamKind.KLINE_1M))
-        if not ok:
-            prov = Provenance.STALE
-        elif bar.source is BarSource.WS_LIVE:
-            prov = Provenance.LIVE
-        elif bar.source is BarSource.REST_RECOVERED:
-            prov = Provenance.RECOVERED
-        else:
-            prov = Provenance.HISTORICAL
-        return Sourced[Bar](value=bar, provenance=prov, as_of_ms=bar.close_time_ms)
+        return Sourced[Bar](
+            value=bar,
+            provenance=self._bar_provenance(stored.bar, stored.observed_session_id),
+            as_of_ms=bar.close_time_ms,
+        )
+
+    def _bar_provenance(self, bar: Bar, observed_session_id: str | None) -> Provenance:
+        """LIVE only for a bar seen live in *this* session that is still the current one.
+
+        - older than the kline freshness budget (by server time) -> STALE: it is a last-known
+          value, whatever its source or session;
+        - recent but the kline stream is not HEALTHY -> STALE;
+        - recent, stream HEALTHY: ws_live seen in this session -> LIVE; rest_recovered ->
+          RECOVERED; anything else (backfill, archive, ws_live of another session) -> HISTORICAL.
+        """
+        server_now = (
+            self._clock_monitor.server_now_ms()
+            if self._clock_monitor is not None
+            else self._clock.now_ms()
+        )
+        budget = self._cfg.quality.freshness.budget_ms(StreamKind.KLINE_1M)
+        recent = server_now - (bar.close_time_ms + 1) <= budget
+        healthy = self._stream_ok(StreamKey(bar.market, bar.symbol, StreamKind.KLINE_1M))
+        if not recent or not healthy:
+            return Provenance.STALE
+        if (
+            bar.source is BarSource.WS_LIVE
+            and self._session_id is not None
+            and observed_session_id == self._session_id
+            and self._watch_from is not None
+            and bar.open_time_ms >= self._watch_from
+        ):
+            return Provenance.LIVE
+        if bar.source is BarSource.REST_RECOVERED:
+            return Provenance.RECOVERED
+        return Provenance.HISTORICAL
 
     def _partial_sourced(self, market: Market, symbol: str) -> Sourced[PartialCandle]:
         b = self.builder.get(market, symbol)
@@ -541,7 +591,7 @@ class MarketDataService:
         if self.freshness is not None:
             for h in self.freshness.all():
                 state = (
-                    Sourced[StreamState](value=h.state, provenance=Provenance.LIVE, as_of_ms=now)
+                    Sourced[StreamState](value=h.state, provenance=Provenance.SYSTEM, as_of_ms=now)
                     if self._running
                     else Sourced[StreamState](
                         value=h.state, provenance=Provenance.STALE, as_of_ms=h.since_ms
@@ -599,8 +649,13 @@ class MarketDataService:
                 mark_s = Sourced[float].unavailable("spot has no mark price")
                 funding_s = Sourced[Funding].unavailable("spot has no funding")
             status = self._status.get((market, symbol))
+            # A startup snapshot of exchangeInfo, not a live observation.
             status_s = (
-                Sourced[str](value=status, provenance=Provenance.LIVE, as_of_ms=now)
+                Sourced[str](
+                    value=status,
+                    provenance=Provenance.HISTORICAL,
+                    as_of_ms=self._status_as_of.get(market, now),
+                )
                 if status is not None
                 else Sourced[str].unavailable("exchangeInfo not loaded")
             )
@@ -639,6 +694,8 @@ class MarketDataService:
                 recycles=s.recycles,
                 malformed=s.malformed,
                 messages=s.messages,
+                crashes=s.crashes,
+                last_error=s.last_error,
             )
             for s in (self._ws.stats() if self._ws is not None else [])
         ]

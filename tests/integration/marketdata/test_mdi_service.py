@@ -150,6 +150,10 @@ def test_service_end_to_end(tmp_path: Path) -> None:
         assert spot_snap.partial_candle.provenance is Provenance.UNAVAILABLE
         assert spot_snap.mark_price.provenance is Provenance.UNAVAILABLE
         assert spot_snap.exchange_status.value == "TRADING"
+        # review N4: a startup snapshot, not a live value
+        assert spot_snap.exchange_status.provenance is Provenance.HISTORICAL
+        assert spot_snap.exchange_status.as_of_ms == T0 + 30_000
+        assert all(st.state.provenance is Provenance.SYSTEM for st in snap.streams)
         assert snap.clock_offset_ms.value == 0
 
         # --- live: partial, book, mark
@@ -314,3 +318,122 @@ def test_restart_resumes_and_registers_unobserved_interval(tmp_path: Path) -> No
         store.close()
 
     asyncio.run(asyncio.wait_for(scenario(), 30))
+
+
+@pytest.mark.parametrize(
+    ("restart_at", "expected"),
+    [
+        (T0 + 3 * 1440 * MIN + 30_000, Provenance.STALE),  # three days later: old bar
+        (T0 + MIN + 20_000, Provenance.HISTORICAL),  # within budget, but another session's bar
+    ],
+    ids=["days-later", "immediately"],
+)
+def test_old_bar_is_never_labelled_live_after_restart(
+    tmp_path: Path, restart_at: int, expected: Provenance
+) -> None:
+    """Review B2: after a restart with failing backfill, a healthy stream must not make the
+    previous session's last ws_live bar LIVE."""
+
+    def failing_klines(clock: ManualClock) -> Callable[[Any], Any]:
+        ok = _exchange(clock)
+
+        def handler(request: Any) -> Any:
+            if request.url.path.endswith("/klines"):
+                return httpx.Response(400, json={"code": -1, "msg": "test: klines unavailable"})
+            return ok(request)
+
+        return handler
+
+    async def scenario() -> None:
+        clock = ManualClock(T0 + 30_000)
+        store = EventStore(tmp_path / "state.db")
+        ex1 = FakeExchange()
+        svc1 = MarketDataService(
+            CONFIG,
+            store,
+            clock,
+            http_transport=httpx.MockTransport(_exchange(clock)),
+            ws_connect=ex1.connect,
+            session_id="OLD",
+        )
+        await svc1.start()
+        await svc1.wait_backfill(5)
+        await _until(lambda: len(ex1.conns) == 3)
+        clock.set(T0 + MIN + 100)
+        ex1.latest("spot.test").push(ws_kline(T0), "btcusdt@kline_1m")
+        bars = LiveBarStore(store.path)
+        await _until(lambda: bars.get(SPOT, "BTCUSDT", T0) is not None)
+        await svc1.stop()
+        svc1.close()
+
+        clock.set(restart_at)
+        ex2 = FakeExchange()
+        svc2 = MarketDataService(
+            CONFIG,
+            store,
+            clock,
+            http_transport=httpx.MockTransport(failing_klines(clock)),
+            ws_connect=ex2.connect,
+            session_id="NEW",
+        )
+        await svc2.start()
+        await svc2.wait_backfill(5)
+        await _until(lambda: len(ex2.conns) == 3)
+        ex2.latest("spot.test").push(
+            ws_kline(clock.now_ms() - 30_000, closed=False), "btcusdt@kline_1m"
+        )
+        key = StreamKey(SPOT, "BTCUSDT", StreamKind.KLINE_1M)
+        assert svc2.freshness is not None
+        fresh = svc2.freshness
+        await _until(lambda: fresh.state(key) is StreamState.HEALTHY)
+        snap = next(s for s in svc2.snapshot().symbols if s.market is SPOT)
+        assert snap.last_closed_bar.value is not None
+        assert snap.last_closed_bar.value.open_time_ms == T0
+        assert snap.last_closed_bar.provenance is expected
+        assert snap.last_closed_bar.as_of_ms == T0 + MIN - 1
+        await svc2.stop()
+        svc2.close()
+        bars.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 30))
+
+
+def test_failed_start_closes_http_clients(tmp_path: Path) -> None:
+    """Review N5: an exception during start() must not leak httpx clients or tasks."""
+
+    async def scenario() -> None:
+        clock = ManualClock(T0 + 30_000)
+        store = EventStore(tmp_path / "state.db")
+        svc = MarketDataService(
+            CONFIG,
+            store,
+            clock,
+            http_transport=httpx.MockTransport(_exchange(clock)),
+            ws_connect=FakeExchange().connect,
+        )
+
+        async def boom(symbol: str) -> None:
+            raise RuntimeError("unexpected failure during start")
+
+        svc._load_premium_index = boom  # type: ignore[method-assign]
+        clients: list[Any] = []
+        real_start = svc._start
+
+        async def spy() -> None:
+            try:
+                await real_start()
+            finally:
+                clients.extend(r._client for r in svc._rest.values())
+
+        svc._start = spy  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            await svc.start()
+        assert len(clients) == 2
+        assert all(c.is_closed for c in clients)
+        assert not svc.running
+        assert svc.builder.all() == []
+        svc.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
