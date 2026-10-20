@@ -166,11 +166,13 @@ class DemoDetector:
             entry_conditions=(condition,),
             entry_rule=EntryRule(
                 kind=EntryRuleKind.MARKET_NEXT_OPEN,
-                valid_until_ms=bar.close_time_ms + 1 + self.config.valid_for_minutes * MS_PER_MINUTE,
+                valid_until_ms=(
+                    bar.close_time_ms + 1 + self.config.valid_for_minutes * MS_PER_MINUTE
+                ),
             ),
             ref_price=bar.close,
             stop_price=stop,
-            stop_basis="demo placeholder: opposite extreme of the trigger bar (not a risk decision)",
+            stop_basis="demo placeholder: opposite extreme of the trigger bar (no risk decision)",
             take_profit_price=None,
             exit_policy="none (demo detector: never routed to any book)",
             rr_gross=0.0,

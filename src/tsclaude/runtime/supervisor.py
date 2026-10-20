@@ -80,17 +80,26 @@ class MarketDataLike(Protocol):
 type ServiceFactory = Callable[[EventStore, WallClock], MarketDataLike]
 
 
-def default_service_factory(
-    universe_path: Path | str = Path("configs/universe.yaml"),
-    quality_path: Path | str = Path("configs/data_quality.yaml"),
-) -> ServiceFactory:
-    """Real Binance service from the YAML configs (paths relative to the working directory)."""
+def config_dir(env: dict[str, str] | None = None) -> Path:
+    """`TSC_CONFIG_DIR`, else `./configs`, else the repository's `configs/` (source checkout)."""
+    source = dict(os.environ) if env is None else env
+    if "TSC_CONFIG_DIR" in source:
+        return Path(source["TSC_CONFIG_DIR"])
+    local = Path("configs")
+    if local.is_dir():
+        return local
+    return Path(__file__).resolve().parents[3] / "configs"
+
+
+def default_service_factory(directory: Path | None = None) -> ServiceFactory:
+    """Real Binance service from `universe.yaml` and `data_quality.yaml` (read at first start)."""
 
     def factory(store: EventStore, clock: WallClock) -> MarketDataLike:
         from tsclaude.marketdata.config import load_config
         from tsclaude.marketdata.service import MarketDataService
 
-        config = load_config(universe_path, quality_path)
+        base = directory if directory is not None else config_dir()
+        config = load_config(base / "universe.yaml", base / "data_quality.yaml")
         service: MarketDataLike = MarketDataService(config, store, clock)
         return service
 
@@ -299,7 +308,8 @@ class MonitoringSupervisor:
         bad = [
             f"{s.kind}={s.state.value}"
             for s in streams
-            if s.state.value is not StreamState.HEALTHY or s.state.provenance is not Provenance.SYSTEM
+            if s.state.value is not StreamState.HEALTHY
+            or s.state.provenance is not Provenance.SYSTEM
         ]
         if bad:
             return False, "not HEALTHY: " + ", ".join(bad)

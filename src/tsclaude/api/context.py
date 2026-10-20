@@ -14,15 +14,18 @@ This module deliberately does not import FastAPI, so it is unit-testable everywh
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import threading
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 from tsclaude.api.live import LiveHub, LiveMessage
+from tsclaude.api.market_schemas import NotificationOut
 from tsclaude.api.schemas import (
     ChainInfo,
     CoverageGap,
@@ -49,14 +52,17 @@ from tsclaude.runtime.sessions import (
     SessionManager,
     observation_intervals,
 )
+from tsclaude.runtime.supervisor import MonitoringSupervisor, StartFailed, summarize_streams
 from tsclaude.store.eventstore import ChainReport, EventStore
+from tsclaude.store.livebars import LiveBarStore
 
 log = logging.getLogger(__name__)
 
 STALE_HEARTBEATS = 3  # heartbeat older than this many intervals -> STALE
-STREAMS_NOT_IMPLEMENTED = "not implemented until M1"
-STREAM_GROUPS = ("spot", "futures")
+NO_MARKET_DATA = "market data is not configured in this app instance"
 MAX_EVENTS_LIMIT = 500
+# monitoring_stopped reasons meaning "monitoring was still running when the app shut down"
+SHUTDOWN_STOP_REASONS = frozenset({"session_closing", "app_shutdown", "console_closed"})
 
 
 class TransitionRefused(StrEnum):
@@ -64,6 +70,7 @@ class TransitionRefused(StrEnum):
 
     INVALID = "invalid"  # 409: not allowed from the current state
     LOCKED = "locked"  # 423: blocked by a failed integrity check or a missing session
+    FAILED = "failed"  # 503: market data could not be started (monitoring stays STOPPED)
 
 
 class TransitionError(RuntimeError):
@@ -96,6 +103,7 @@ class AppContext:
         token: str | None = None,
         git_commit: str | None = None,
         config_hash: str | None = None,
+        supervisor: MonitoringSupervisor | None = None,
     ) -> None:
         self.store = store
         self.clock = clock
@@ -117,6 +125,13 @@ class AppContext:
         self._close_result: ShutdownInfo | None = None
         self._shutdown_callback: Callable[[], None] | None = None
         self.shutdown_reason: str | None = None
+        self.supervisor = supervisor
+        self._transition: str | None = None
+        self._last_start_error: str | None = None
+        self._transition_lock: asyncio.Lock | None = None
+        self._bars: LiveBarStore | None = None
+        self.transient_notifications: deque[NotificationOut] = deque(maxlen=200)
+        self.loop: asyncio.AbstractEventLoop | None = None  # set by the app lifespan
 
     # ------------------------------------------------------------------ startup / shutdown
     def start(self) -> None:
@@ -196,12 +211,12 @@ class AppContext:
     def set_shutdown_callback(self, callback: Callable[[], None]) -> None:
         self._shutdown_callback = callback
 
-    def request_shutdown(self, reason: str) -> QuitResponse:
-        """Close the session, then ask the hosting server to stop.
+    async def request_shutdown(self, reason: str) -> QuitResponse:
+        """Stop monitoring, close the session, then ask the hosting server to stop.
 
-        The session is closed *before* the server stops, so the HTTP response (and the push
-        message) can report truthfully whether `session_stopped` was recorded. Without an
-        attached server nothing is closed (the app would keep serving with no session).
+        Market data is stopped and the session closed *before* the server stops, so the HTTP
+        response (and the push message) report truthfully whether `session_stopped` was recorded.
+        Without an attached server nothing is closed (the app would keep serving with no session).
         """
         callback = self._shutdown_callback
         if callback is None:
@@ -212,6 +227,7 @@ class AppContext:
         if self.shutdown_reason is None:
             self.shutdown_reason = reason
         self.hub.publish({"type": "shutting_down", "data": {"reason": reason}})
+        await self.shutdown_monitoring("app_shutdown")
         result = self.close(reason)
         callback()
         return QuitResponse(
@@ -234,30 +250,102 @@ class AppContext:
         self._publish_status()
 
     # ------------------------------------------------------------------ commands
-    def start_monitoring(self) -> StatusResponse:
-        with self._lock:
-            self._require_running()
-            chain = self._chain
-            if chain is None or not chain.report.ok:
-                raise TransitionError(
-                    TransitionRefused.LOCKED, self._chain_block_reason() or "chain not verified"
-                )
+    def _lock_transitions(self) -> asyncio.Lock:
+        if self._transition_lock is None:
+            self._transition_lock = asyncio.Lock()
+        return self._transition_lock
+
+    async def start_monitoring(self) -> StatusResponse:
+        """Start market data, then record `monitoring_started`.
+
+        The monitoring interval (observation coverage) opens only once ingestion has actually
+        started; if it fails, monitoring stays STOPPED and `last_error` says why (HTTP 503).
+        """
+        async with self._lock_transitions():
+            with self._lock:
+                self._require_running()
+                chain = self._chain
+                if chain is None or not chain.report.ok:
+                    raise TransitionError(
+                        TransitionRefused.LOCKED, self._chain_block_reason() or "chain not verified"
+                    )
+                if self._sessions.monitoring_id is not None:
+                    raise TransitionError(TransitionRefused.INVALID, "monitoring already running")
+                session_id = self._session_id
+                if session_id is None:  # unreachable: _require_running checked it
+                    raise TransitionError(TransitionRefused.LOCKED, "no app session")
+                self._transition = "starting"
+            self._publish_status()
             try:
-                mid = self._sessions.start_monitoring()
-            except SessionError as exc:
-                raise TransitionError(TransitionRefused.INVALID, str(exc)) from exc
+                if self.supervisor is not None:
+                    await self.supervisor.start(session_id)
+                with self._lock:
+                    mid = self._sessions.start_monitoring()
+            except (StartFailed, SessionError, OSError) as exc:
+                if self.supervisor is not None and self.supervisor.running:
+                    await self.supervisor.stop()
+                with self._lock:
+                    self._transition = None
+                    self._last_start_error = str(exc)
+                log.error("monitoring could not be started", extra={"error": str(exc)})
+                self._publish_status()
+                raise TransitionError(TransitionRefused.FAILED, str(exc)) from exc
+            except BaseException:
+                with self._lock:
+                    self._transition = None
+                raise
+            with self._lock:
+                self._transition = None
+                self._last_start_error = None
             log.info("monitoring started", extra={"monitoring_id": mid})
         return self._publish_status()
 
-    def stop_monitoring(self) -> StatusResponse:
-        with self._lock:
-            self._require_running()
-            try:
-                self._sessions.stop_monitoring(reason="user")
-            except SessionError as exc:
-                raise TransitionError(TransitionRefused.INVALID, str(exc)) from exc
-            log.info("monitoring stopped")
+    async def stop_monitoring(self, reason: str = "user") -> StatusResponse:
+        async with self._lock_transitions():
+            with self._lock:
+                self._require_running()
+                if self._sessions.monitoring_id is None:
+                    raise TransitionError(TransitionRefused.INVALID, "monitoring is not running")
+            await self._stop_locked(reason)
         return self._publish_status()
+
+    async def shutdown_monitoring(self, reason: str = "app_shutdown") -> None:
+        """Stop market data and close the monitoring interval if open (never raises)."""
+        async with self._lock_transitions():
+            try:
+                await self._stop_locked(reason)
+            except Exception:
+                log.exception("stopping monitoring during shutdown failed")
+
+    async def _stop_locked(self, reason: str) -> None:
+        """Stop ingestion first, then end the interval (also if stopping ingestion failed)."""
+        with self._lock:
+            self._transition = "stopping"
+        self._publish_status()
+        try:
+            if self.supervisor is not None:
+                await self.supervisor.stop()
+        except Exception:
+            log.exception("market data did not stop cleanly")
+        finally:
+            with self._lock:
+                self._transition = None
+                if self._sessions.monitoring_id is not None and not self._closed:
+                    self._sessions.stop_monitoring(reason=reason)
+                    log.info("monitoring stopped", extra={"reason": reason})
+
+    def bar_store(self) -> LiveBarStore:
+        """Read connection to the live bar table (same SQLite file, separate connection)."""
+        with self._lock:
+            if self._bars is None:
+                self._bars = LiveBarStore(self.store.path)
+            return self._bars
+
+    def release_resources(self) -> None:
+        with self._lock:
+            if self._bars is not None:
+                self._bars.close()
+                self._bars = None
 
     def _require_running(self) -> None:
         if self._closed:
@@ -281,10 +369,11 @@ class AppContext:
                 chain=self._chain_sourced(),
                 previous_session=self._previous_sourced(now),
                 heartbeat=self._heartbeat_sourced(now),
-                streams={
-                    name: Sourced[str].unavailable(STREAMS_NOT_IMPLEMENTED)
-                    for name in STREAM_GROUPS
-                },
+                streams=(
+                    dict(self.supervisor.stream_summary)
+                    if self.supervisor is not None
+                    else summarize_streams(None, NO_MARKET_DATA)
+                ),
             )
 
     def coverage(self) -> CoverageResponse:
@@ -346,6 +435,9 @@ class AppContext:
     def status_message(self) -> LiveMessage:
         return {"type": "status", "data": self.status().model_dump(mode="json")}
 
+    def publish_status(self) -> StatusResponse:
+        return self._publish_status()
+
     def _publish_status(self) -> StatusResponse:
         # Under the lock so that snapshots are published in the order the state changed.
         with self._lock:
@@ -396,8 +488,12 @@ class AppContext:
                 state=state,
                 monitoring_id=mid,
                 since=None if mid is None else to_iso(ulid_timestamp_ms(mid)),
-                start_allowed=state is MonitoringState.STOPPED and block is None,
+                start_allowed=(
+                    state is MonitoringState.STOPPED and block is None and self._transition is None
+                ),
                 blocked_reason=block,
+                transition=self._transition,
+                last_error=self._last_start_error,
             ),
             provenance=Provenance.SYSTEM,
             as_of_ms=now,
@@ -535,7 +631,8 @@ def _describe(start: Event, events: list[Event], current_start_ms: int) -> Previ
     base: dict[str, Any] = {"session_id": sid, "started_at": to_iso(start.ts_ms)}
     if stop is not None:
         was_monitoring = any(
-            e.type is EventType.MONITORING_STOPPED and e.payload.get("reason") == "session_closing"
+            e.type is EventType.MONITORING_STOPPED
+            and e.payload.get("reason") in SHUTDOWN_STOP_REASONS
             for e in events
         )
         return PreviousSessionInfo(

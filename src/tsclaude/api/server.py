@@ -26,6 +26,7 @@ Exit codes: 0 clean, 1 unexpected error or session not closed cleanly, 2 event s
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import signal
@@ -35,19 +36,27 @@ import sys
 import threading
 import time
 import webbrowser
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Coroutine, Iterator
+from dataclasses import dataclass
 from types import FrameType
+from typing import Any, Protocol
 
 import uvicorn
 
 from tsclaude import __version__
 from tsclaude.api.app import create_app
-from tsclaude.api.context import AppContext
+from tsclaude.api.context import AppContext, TransitionError
 from tsclaude.api.process import InstanceLock, bind_loopback, dashboard_url
 from tsclaude.api.security import TokenRedactionFilter
 from tsclaude.contracts.timeutil import SystemClock
 from tsclaude.runtime.logging import configure_logging
 from tsclaude.runtime.settings import Settings
+from tsclaude.runtime.supervisor import (
+    MonitoringSupervisor,
+    ServiceFactory,
+    default_service_factory,
+    demo_config_from_env,
+)
 from tsclaude.store.eventstore import EventStore, EventStoreError
 
 log = logging.getLogger(__name__)
@@ -59,9 +68,30 @@ EXIT_REFUSED = 3
 GRACEFUL_SHUTDOWN_S = 5
 BROWSER_WAIT_S = 30.0
 LOCK_FILE = "tsclaude.lock"
+CONSOLE_CLOSE_STOP_S = 2.0  # Windows allows ~5 s after CTRL_CLOSE_EVENT
 
 
-def run(settings: Settings) -> int:
+class RunObserver(Protocol):
+    """Hooks for unattended runs (e.g. `scripts/verify_live.py`), called on the event loop."""
+
+    sample_interval_s: float
+
+    async def on_sample(self, context: AppContext) -> None: ...
+
+    async def on_finish(self, context: AppContext) -> None: ...
+
+    def on_start_error(self, detail: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class RunOptions:
+    autostart_monitoring: bool = False
+    run_for_s: float | None = None  # quit cleanly after this long (None: run until stopped)
+    observer: RunObserver | None = None
+    service_factory: ServiceFactory | None = None  # tests inject fake exchanges here
+
+
+def run(settings: Settings, options: RunOptions | None = None) -> int:
     # Lock before configuring logging: a refused second launch must not touch the running
     # instance's log file or event store.
     try:
@@ -74,12 +104,12 @@ def run(settings: Settings) -> int:
         return EXIT_REFUSED
     try:
         configure_logging(settings.log_level, settings.logs_dir)
-        return _run_locked(settings)
+        return _run_locked(settings, options or RunOptions())
     finally:
         lock.release()
 
 
-def _run_locked(settings: Settings) -> int:
+def _run_locked(settings: Settings, options: RunOptions) -> int:
     try:
         sock = bind_loopback(settings.host, settings.port)
     except OSError as exc:
@@ -100,25 +130,33 @@ def _run_locked(settings: Settings) -> int:
             _console(f"The event store {settings.state_db_path} cannot be opened: {exc}")
             return EXIT_STORE
         try:
-            return _serve(settings, store, sock)
+            return _serve(settings, store, sock, options)
         finally:
             store.close()
     finally:
         sock.close()
 
 
-def _serve(settings: Settings, store: EventStore, sock: socket.socket) -> int:
+def _serve(settings: Settings, store: EventStore, sock: socket.socket, options: RunOptions) -> int:
+    clock = SystemClock()
+    supervisor = MonitoringSupervisor(
+        store,
+        clock,
+        service_factory=options.service_factory or default_service_factory(),
+        demo=demo_config_from_env(),
+    )
     context = AppContext(
         store=store,
-        clock=SystemClock(),
+        clock=clock,
         app_version=__version__,
         port=settings.port,
         heartbeat_interval_s=settings.heartbeat_interval_s,
+        supervisor=supervisor,
     )
     _install_token_redaction(context.token)
     context.start()
 
-    app = create_app(context)
+    app = create_app(context, on_started=_unattended(context, options))
     config = uvicorn.Config(
         app,
         host=settings.host,
@@ -148,7 +186,7 @@ def _serve(settings: Settings, store: EventStore, sock: socket.socket) -> int:
     reason = "interrupted"  # overwritten below unless something escapes (e.g. KeyboardInterrupt)
     try:
         with (
-            _console_close_handler(lambda: context.close("console_closed")),
+            _console_close_handler(lambda: _close_from_console(context)),
             _signal_handlers(server) as received,
         ):
             try:
@@ -184,6 +222,54 @@ def _serve(settings: Settings, store: EventStore, sock: socket.socket) -> int:
 
 
 # ---------------------------------------------------------------------- helpers
+def _unattended(
+    context: AppContext, options: RunOptions
+) -> Callable[[], Coroutine[Any, Any, None]] | None:
+    if not options.autostart_monitoring and options.run_for_s is None:
+        return None
+
+    async def job() -> None:
+        observer = options.observer
+        if options.autostart_monitoring:
+            try:
+                await context.start_monitoring()
+            except TransitionError as exc:
+                log.error("auto-start of monitoring failed", extra={"error": exc.detail})
+                if observer is not None:
+                    observer.on_start_error(exc.detail)
+        if options.run_for_s is None:
+            return
+        deadline = time.monotonic() + options.run_for_s
+        interval = observer.sample_interval_s if observer is not None else options.run_for_s
+        while (left := deadline - time.monotonic()) > 0:
+            await asyncio.sleep(min(interval, left))
+            if observer is not None:
+                try:
+                    await observer.on_sample(context)
+                except Exception:
+                    log.exception("run observer sample failed")
+        if observer is not None:
+            try:
+                await observer.on_finish(context)
+            except Exception:
+                log.exception("run observer finish failed")
+        await context.request_shutdown("run_complete")
+
+    return job
+
+
+def _close_from_console(context: AppContext) -> None:
+    """Windows console closed: stop market data on its loop (bounded), then close the session."""
+    loop = context.loop
+    if loop is not None and loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(
+            context.shutdown_monitoring("console_closed"), loop
+        )
+        with contextlib.suppress(Exception):
+            future.result(timeout=CONSOLE_CLOSE_STOP_S)
+    context.close("console_closed")
+
+
 def _open_browser_when_ready(server: uvicorn.Server, url: str) -> None:
     deadline = time.monotonic() + BROWSER_WAIT_S
     while not server.started:

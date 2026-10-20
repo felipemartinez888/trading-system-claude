@@ -39,6 +39,10 @@ class MonitoringInfo(_Model):
     # Whether a Start request would currently be accepted, and why not (fail closed).
     start_allowed: bool
     blocked_reason: str | None
+    # "starting" / "stopping" while market data is being started or stopped, else None.
+    transition: str | None = None
+    # Why the last start attempt failed (cleared by a successful start).
+    last_error: str | None = None
 
 
 class ChainInfo(_Model):
@@ -80,7 +84,7 @@ class StatusResponse(_Model):
     chain: Sourced[ChainInfo]
     previous_session: Sourced[PreviousSessionInfo]
     heartbeat: Sourced[str]  # ISO time of the last persisted heartbeat
-    streams: dict[str, Sourced[str]]  # stream group -> state (UNAVAILABLE until M1)
+    streams: dict[str, Sourced[str]]  # stream group (spot, futures) -> summary of stream states
 
 
 class CoverageInterval(_Model):

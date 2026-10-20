@@ -87,11 +87,11 @@ def test_context_start_opens_session_and_verifies_chain(make_context: ContextFac
 def test_transitions_raise_typed_errors(make_context: ContextFactory) -> None:
     ctx = make_context()
     with pytest.raises(TransitionError) as info:
-        ctx.stop_monitoring()
+        asyncio.run(ctx.stop_monitoring())
     assert info.value.kind is TransitionRefused.INVALID
-    ctx.start_monitoring()
+    asyncio.run(ctx.start_monitoring())
     with pytest.raises(TransitionError) as info:
-        ctx.start_monitoring()
+        asyncio.run(ctx.start_monitoring())
     assert info.value.kind is TransitionRefused.INVALID
 
 
@@ -105,7 +105,7 @@ def test_tampered_chain_locks_monitoring(
     assert not chain.ok
     assert chain.first_bad_seq == 1
     with pytest.raises(TransitionError) as info:
-        ctx.start_monitoring()
+        asyncio.run(ctx.start_monitoring())
     assert info.value.kind is TransitionRefused.LOCKED
     # Session still opens (the UI must come up); derived projections are withheld.
     assert ctx.status().session.value is not None
@@ -115,7 +115,7 @@ def test_tampered_chain_locks_monitoring(
 
 def test_close_is_idempotent_and_stops_monitoring(make_context: ContextFactory) -> None:
     ctx = make_context()
-    ctx.start_monitoring()
+    asyncio.run(ctx.start_monitoring())
     ctx.close("user")
     ctx.close("user")
     types_ = [str(e.type) for e in ctx.store.read()]
@@ -123,7 +123,7 @@ def test_close_is_idempotent_and_stops_monitoring(make_context: ContextFactory) 
     assert types_.count("session_stopped") == 1
     assert ctx.status().session.provenance == "UNAVAILABLE"
     with pytest.raises(TransitionError):
-        ctx.start_monitoring()
+        asyncio.run(ctx.start_monitoring())
 
 
 def test_heartbeat_goes_stale_without_beats(
@@ -144,7 +144,7 @@ def test_previous_session_clean_and_crashed(
     clock: ManualClock, make_context: ContextFactory
 ) -> None:
     first = make_context()
-    first.start_monitoring()
+    asyncio.run(first.start_monitoring())
     clock.advance(5_000)
     first.close("user")
     clock.advance(5_000)
@@ -167,19 +167,19 @@ def test_previous_session_clean_and_crashed(
 
 def test_request_shutdown_without_server_closes_nothing(make_context: ContextFactory) -> None:
     ctx = make_context()
-    refused = ctx.request_shutdown("user_quit")
+    refused = asyncio.run(ctx.request_shutdown("user_quit"))
     assert refused.accepted is False
     assert refused.session.provenance == "UNAVAILABLE"
     assert not ctx.closed
     assert ctx.shutdown_reason is None
     calls: list[int] = []
     ctx.set_shutdown_callback(lambda: calls.append(1))
-    accepted = ctx.request_shutdown("user_quit")
+    accepted = asyncio.run(ctx.request_shutdown("user_quit"))
     assert accepted.accepted is True
     assert accepted.session.value is not None
     assert accepted.session.value.clean is True
     assert calls == [1]
-    again = ctx.request_shutdown("other")
+    again = asyncio.run(ctx.request_shutdown("other"))
     assert again.session.value == accepted.session.value  # first outcome wins
     assert ctx.shutdown_reason == "user_quit"
 
@@ -210,8 +210,8 @@ def test_shutdown_message_is_published_after_session_stopped(
 
 def test_events_paging(make_context: ContextFactory) -> None:
     ctx = make_context()
-    ctx.start_monitoring()
-    ctx.stop_monitoring()
+    asyncio.run(ctx.start_monitoring())
+    asyncio.run(ctx.stop_monitoring())
     page = ctx.events(after_seq=None, limit=500).events.value
     assert page is not None
     assert [e.type for e in page.items] == [

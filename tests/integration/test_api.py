@@ -97,7 +97,7 @@ def test_status_reflects_session(client: TestClient, ctx: AppContext) -> None:
             "value": None,
             "provenance": "UNAVAILABLE",
             "as_of_ms": None,
-            "reason": "not implemented until M1",
+            "reason": "market data is not configured in this app instance",
         }
 
 
@@ -320,9 +320,14 @@ def test_websocket_pushes_status_on_change(client: TestClient, ctx: AppContext) 
         assert first["type"] == "status"
         assert _monitoring(first["data"])["state"] == "STOPPED"
         assert client.post("/api/monitoring/start", headers=_auth(ctx)).status_code == 200
+        starting = ws.receive_json()  # the transition is visible while market data starts
+        assert starting["type"] == "status"
+        assert _monitoring(starting["data"])["transition"] == "starting"
+        assert _monitoring(starting["data"])["state"] == "STOPPED"
         pushed = ws.receive_json()
         assert pushed["type"] == "status"
         assert _monitoring(pushed["data"])["state"] == "RUNNING"
+        assert _monitoring(pushed["data"])["transition"] is None
 
 
 def test_websocket_pushes_on_heartbeat(make_context: ContextFactory, no_bundle: Path) -> None:
