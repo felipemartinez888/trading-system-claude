@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mdi_helpers import require
 
-httpx = pytest.importorskip("httpx")
+httpx = require("httpx")
 
 from mdi_helpers import MIN, T0, FakeExchange, kline_row, load_fixture, ws_kline  # noqa: E402
 

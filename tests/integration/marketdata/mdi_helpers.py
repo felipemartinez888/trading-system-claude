@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import os
 from pathlib import Path
+from types import ModuleType
 from typing import Any
+
+import pytest
 
 from tsclaude.contracts.timeutil import ManualClock
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "binance"
 T0 = 1_792_411_200_000  # 2026-10-19T12:00:00Z
 MIN = 60_000
+
+
+def require(module: str) -> ModuleType:
+    """Import a network library for integration tests.
+
+    Locally (no `CI` env var) a missing library skips the module. In CI it is a hard failure, so
+    a green CI run proves these tests actually executed instead of being skipped.
+    """
+    if os.environ.get("CI"):
+        return importlib.import_module(module)
+    return pytest.importorskip(module)
 
 
 def load_fixture(name: str) -> Any:

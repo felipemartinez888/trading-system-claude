@@ -7,8 +7,9 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from mdi_helpers import require
 
-httpx = pytest.importorskip("httpx")
+httpx = require("httpx")
 
 from mdi_helpers import MIN, T0, FakeSleep, kline_row, load_fixture  # noqa: E402
 

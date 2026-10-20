@@ -12,9 +12,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import pytest
+from mdi_helpers import require
 
-websockets = pytest.importorskip("websockets")
+websockets = require("websockets")
 
 from mdi_helpers import MIN, T0, ws_kline  # noqa: E402
 from websockets.asyncio.server import ServerConnection, serve  # noqa: E402
