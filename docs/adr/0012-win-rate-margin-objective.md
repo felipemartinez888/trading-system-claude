@@ -93,3 +93,15 @@ checked against realized payoffs (losses far beyond the stop certified 35 % at n
    never by hand, and every report shows it.
 4. Tests must kill these mutations: realized-p* floor lowered below 300; nominal instead of
    adjusted alpha in any bootstrap.
+
+## Amendment 3 (2026-10-20) — effective sample size and a single floor
+
+1. **Effective-sample-size gate.** `n_eff = n · min(1, binomial variance of the win rate ÷
+   block-bootstrap variance of the win rate)`; certification requires `n_eff ≥ max(n_min, N_FLOOR)`.
+   Strongly clustered outcomes therefore need proportionally more trades. (Measured: removes the
+   residual ≈ 4 % false certification of the persistent Markov case at n = 2000; no effect on
+   independent data.)
+2. **One floor: `N_FLOOR = 300` for both design and realized p*.** Losses beyond the planned stop
+   (gap risk) are invisible in samples that happen not to contain them; with 300 trades the chance of
+   missing a 1 %-frequency tail event is ≈ 5 %. Backtests on real data contain real gaps, and
+   reports must show the worst trade in R and the share of trades closed beyond −1R.
