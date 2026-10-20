@@ -1,15 +1,17 @@
 # Feed de agentes — Trading System Claude
 
-Actualizado: **2026-10-19 19:42** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
+Actualizado: **2026-10-19 19:45** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
 
 ## M0-T4 · API, dashboard y lanzador Windows
-Agente `platform-ui-engineer` · rama `task/m0-t4` · 33 acciones · última actividad 19:41 · commits 0 · archivos con cambios 2
+Agente `platform-ui-engineer` · rama `task/m0-t4` · 35 acciones · última actividad 19:44 · commits 0 · archivos con cambios 2
 
 **Archivos tocados (sin commit):**
 - `?? src/tsclaude/api/`
 - `?? src/tsclaude/web/`
 
 **Últimas acciones:**
+- `19:44` **Write** — src/tsclaude/api/pages.py
+- `19:43` **Bash** — Check TestClient websocket URL and Host handling
 - `19:41` **Write** — src/tsclaude/web/.gitignore
 - `19:41` **Write** — src/tsclaude/web/__init__.py
 - `19:41` **Write** — src/tsclaude/api/security.py
@@ -18,29 +20,29 @@ Agente `platform-ui-engineer` · rama `task/m0-t4` · 33 acciones · última act
 - `19:36` **Write** — src/tsclaude/api/live.py
 - `19:36` **Write** — src/tsclaude/api/schemas.py
 - `19:35` **Write** — src/tsclaude/api/__init__.py
-- `19:29` **Bash** — Create directories and check test package layout
-- `19:23` **Bash** — Read tamper test pattern and M1-T1 API expectations
 
 ## M1-T1 · Ingesta en vivo de Binance
-Agente `data-engineer` · rama `task/m1-t1` · 26 acciones · última actividad 19:40 · commits 0 · archivos con cambios 1
+Agente `data-engineer` · rama `task/m1-t1` · 30 acciones · última actividad 19:45 · commits 0 · archivos con cambios 3
 
 **Archivos tocados (sin commit):**
+- `M pyproject.toml`
+- `?? configs/`
 - `?? src/tsclaude/marketdata/`
 
 **Últimas acciones:**
+- `19:45` **Bash** — Add pyyaml and types-PyYAML to pyproject dependencies
+- `19:45` **Write** — configs/data_quality.yaml
+- `19:45` **Write** — configs/universe.yaml
+- `19:45` **Write** — src/tsclaude/marketdata/config.py
 - `19:40` **Write** — src/tsclaude/marketdata/binance/limits.py
 - `19:36` **Write** — src/tsclaude/marketdata/binance/parse.py
 - `19:35` **Write** — src/tsclaude/marketdata/binance/__init__.py
 - `19:35` **Edit** — src/tsclaude/marketdata/types.py
 - `19:31` **Write** — src/tsclaude/marketdata/types.py
 - `19:31` **Write** — src/tsclaude/marketdata/__init__.py
-- `19:24` **Bash** — Check test layout and lockfile presence
-- `19:14` **Bash** — Build scratch site dir with httpx from uv cache
-- `19:14` **Bash** — Look for websockets and pytest-asyncio anywhere on disk
-- `19:14` **Bash** — List cached distributions in uv cache and system site-packages
 
 ## M2-T2 · Simulador (órdenes, fills, ledger)
-Agente `sim-risk-engineer` · rama `task/m2-t2` · 13 acciones · última actividad 19:36 · commits 0 · archivos con cambios 0
+Agente `sim-risk-engineer` · rama `task/m2-t2` · 13 acciones · última actividad 19:45 · commits 0 · archivos con cambios 0
 
 **Últimas acciones:**
 - `19:36` **Bash** — Look up documented cost defaults and lifecycle notes
