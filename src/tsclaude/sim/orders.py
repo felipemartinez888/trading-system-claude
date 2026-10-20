@@ -254,3 +254,20 @@ class Order:
             "earliest_exec_ms": self.earliest_exec_ms,
             "valid_until_ms": self.valid_until_ms,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ExitRequest:
+    """Exit signal / invalidation from the signal source.
+
+    Closes an open position at market at the next eligible open, or cancels a pending entry.
+    """
+
+    request_id: str
+    market: Market
+    symbol: str
+    books: tuple[str, ...] | None = None  # None = every book
+
+    def __post_init__(self) -> None:
+        if not self.request_id:
+            raise ValueError("request_id is required")

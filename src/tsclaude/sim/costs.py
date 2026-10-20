@@ -25,7 +25,18 @@ from typing import Protocol
 
 from tsclaude.contracts.market import Market
 from tsclaude.contracts.provenance import Provenance
-from tsclaude.sim.money import BPS, ONE, SIM_CONTEXT, ZERO, ceil_to, dstr, floor_to, q8, q8_down, q8_up
+from tsclaude.sim.money import (
+    BPS,
+    ONE,
+    SIM_CONTEXT,
+    ZERO,
+    ceil_to,
+    dstr,
+    floor_to,
+    q8,
+    q8_down,
+    q8_up,
+)
 
 
 class Liquidity(StrEnum):
@@ -93,7 +104,7 @@ class SlippageEstimator(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class FixedSlippage:
-    """Constant half-spread and impact in bps (default 2 + 1 bps per side, pessimistic for majors)."""
+    """Constant half-spread and impact (default 2 + 1 bps per side; pessimistic for majors)."""
 
     half_spread_bps: Decimal = Decimal("2")
     impact_bps: Decimal = Decimal("1")
@@ -144,12 +155,14 @@ class FillCosts:
     liquidity: Liquidity
     half_spread_cost: Decimal
     impact_cost: Decimal
-    tick_rounding_cost: Decimal  # adverse rounding of the slipped price to the tick
+    #: realized slippage minus modelled half-spread and impact: adverse tick rounding of the slipped
+    #: price (>= 0), or a negative amount when a marketable limit was capped at its limit price.
+    rounding_adjustment: Decimal
     slippage_basis: str | None
 
     @property
     def slippage_cost(self) -> Decimal:
-        return self.half_spread_cost + self.impact_cost + self.tick_rounding_cost
+        return self.half_spread_cost + self.impact_cost + self.rounding_adjustment
 
     def to_payload(self) -> dict[str, str | None]:
         return {
@@ -159,7 +172,7 @@ class FillCosts:
             "liquidity": str(self.liquidity),
             "half_spread_cost": dstr(self.half_spread_cost),
             "impact_cost": dstr(self.impact_cost),
-            "tick_rounding_cost": dstr(self.tick_rounding_cost),
+            "rounding_adjustment": dstr(self.rounding_adjustment),
             "slippage_basis": self.slippage_basis,
         }
 
@@ -214,8 +227,12 @@ class CostModel:
         tick_size: Decimal,
         notional_hint: Decimal,
         bar_quote_volume: Decimal,
+        cap: Decimal | None = None,
     ) -> PricedExecution:
-        """Execution price: maker fills at the raw (limit) price; taker fills pay slippage."""
+        """Execution price: maker fills at the raw (limit) price; taker fills pay slippage.
+
+        `cap` (marketable limit orders): the execution price is never worse than this limit.
+        """
         with localcontext(SIM_CONTEXT):
             if liquidity is Liquidity.MAKER:
                 return PricedExecution(direction, liquidity, raw_price, raw_price, None)
@@ -225,6 +242,8 @@ class CostModel:
                 price = ceil_to(raw_price * (ONE + frac), tick_size)
             else:
                 price = floor_to(raw_price * (ONE - frac), tick_size)
+            if cap is not None:
+                price = min(price, cap) if direction is Direction.BUY else max(price, cap)
             if price <= 0:
                 raise ValueError("slippage drove the execution price to zero")
             return PricedExecution(direction, liquidity, raw_price, price, est)
@@ -238,7 +257,7 @@ class CostModel:
             fee = q8_up(notional * rate)
             est = execution.slippage
             if est is None:
-                spread = impact = rounding = ZERO
+                spread = impact = rounding = q8(ZERO)
                 basis = None
             else:
                 raw_notional = execution.raw_price * qty
@@ -254,6 +273,6 @@ class CostModel:
                 liquidity=execution.liquidity,
                 half_spread_cost=spread,
                 impact_cost=impact,
-                tick_rounding_cost=rounding,
+                rounding_adjustment=rounding,
                 slippage_basis=basis,
             )

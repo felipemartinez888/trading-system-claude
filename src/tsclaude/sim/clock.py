@@ -15,6 +15,7 @@ from __future__ import annotations
 import heapq
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Protocol, runtime_checkable
 
 from tsclaude.contracts.market import Bar, Interval, Market
@@ -72,7 +73,7 @@ class Clock(Protocol):
 def find_gaps(bars: Sequence[Bar]) -> list[Gap]:
     """Gaps inside one (market, symbol) series that is already sorted and duplicate-free."""
     gaps: list[Gap] = []
-    for prev, cur in zip(bars, bars[1:], strict=False):
+    for prev, cur in pairwise(bars):
         if cur.open_time_ms - prev.open_time_ms > MS_PER_MINUTE:
             gaps.append(Gap(cur.market, cur.symbol, prev.open_time_ms, cur.open_time_ms))
     return gaps
@@ -104,7 +105,9 @@ class HistoricalClock:
         self._series = series
         self._mode = mode
         self._gaps = tuple(
-            gap for key in sorted(series, key=lambda k: (str(k[0]), k[1])) for gap in find_gaps(series[key])
+            gap
+            for key in sorted(series, key=lambda k: (str(k[0]), k[1]))
+            for gap in find_gaps(series[key])
         )
 
     @classmethod
