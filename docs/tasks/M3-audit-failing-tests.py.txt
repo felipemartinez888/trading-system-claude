@@ -1,0 +1,83 @@
+"""Causality re-audit M2-T2 (after L-04 / N1-N6 fixes): two same-minute, cross-symbol leaks.
+
+Bars of one minute are delivered symbol by symbol (AAA before BBB). Both checks below use state
+that, within a minute, already reflects bars of *other* symbols processed earlier.
+
+R1 (funding timestamp guard, `Book.apply_funding`): "not in the future of the simulator" uses a
+global `_now_ms` (latest close + 1 over all symbols). After AAA's minute-2 bar, funding stamped at
+the minute-3 open is accepted for a BBB position whose minute-2 bar has not been processed; that
+position then stops out inside minute 2, before the funding timestamp, yet the funding flow stays
+in its net P&L. The guard must be per instrument (BBB's own last close + 1).
+
+R2 (risk hook input, `RiskCheck.open_positions` at stage "fill"): AAA is stopped out *intrabar* in
+minute 2; BBB's market entry executes at the minute-2 *open*, when AAA was still open. The hook is
+told 0 open positions, so a max-concurrent-positions rule (M3) would admit BBB using a slot that is
+freed only later in that minute. Sizing already guards this case for cash (`sizing_basis` takes
+min(cash at mark, cash now)); the position count needs the same treatment.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal as D
+
+import pytest
+
+from tsclaude.contracts.market import Market
+from tsclaude.contracts.signals import EntryRuleKind, Side
+from tsclaude.sim.book import Book, RiskCheck, RiskDecision
+from tsclaude.sim.clock import HistoricalClock
+from tsclaude.sim.costs import CostModel
+from tsclaude.sim.engine import Simulator
+from tsclaude.sim.orders import EntryRequest
+from tsclaude.sim.testing import T0, ScriptedSource, minute, series, spot_spec, usdm_spec
+
+FLAT = (1000, 1001, 999, 1000)
+
+
+def _market(rid: str, market: Market, symbol: str) -> EntryRequest:
+    return EntryRequest(
+        rid,
+        market,
+        symbol,
+        Side.LONG,
+        EntryRuleKind.MARKET_NEXT_OPEN,
+        stop_price=D("990"),
+        valid_until_ms=minute(30),
+    )
+
+
+def test_r1_funding_cannot_be_posted_past_the_instruments_own_last_close() -> None:
+    a = series([FLAT, FLAT, FLAT], symbol="AAA", market=Market.USDM)
+    b = series([FLAT, FLAT, (1000, 1001, 980, 990)], symbol="BBB", market=Market.USDM)
+    ordered = list(HistoricalClock(a + b))
+    book = Book("b", D(10_000), CostModel(), instruments=[usdm_spec("AAA"), usdm_spec("BBB")])
+    sim = Simulator(
+        HistoricalClock(a + b),
+        [book],
+        ScriptedSource({(T0, "BBB"): [_market("mb", Market.USDM, "BBB")]}),
+    )
+    sim.feed(ordered[:4])  # minutes 0 and 1 for both symbols; BBB long opened at minute-1 open
+    sim.feed(ordered[4:5])  # minute 2, AAA only: BBB's minute-2 bar is still unprocessed
+    with pytest.raises(ValueError):
+        sim.apply_funding_rate("b", Market.USDM, "BBB", minute(3), D("0.0001"), D("1000"))
+
+
+def test_r2_fill_stage_open_positions_excludes_exits_later_in_the_same_minute() -> None:
+    seen: list[tuple[str, str, int]] = []
+
+    def hook(check: RiskCheck) -> RiskDecision:
+        seen.append((check.stage, check.request.request_id, check.open_positions))
+        return RiskDecision(True)
+
+    a = series([FLAT, FLAT, (1000, 1001, 980, 990)], symbol="AAA")  # AAA stopped intrabar, min 2
+    b = series([FLAT, FLAT, FLAT], symbol="BBB")
+    book = Book(
+        "b", D(10_000), CostModel(), hook, instruments=[spot_spec("AAA"), spot_spec("BBB")]
+    )
+    script = {
+        (T0, "AAA"): [_market("A", Market.SPOT, "AAA")],
+        (minute(1), "BBB"): [_market("B", Market.SPOT, "BBB")],
+    }
+    Simulator(HistoricalClock(a + b), [book], ScriptedSource(script)).run()
+    (fill_b,) = [s for s in seen if s[:2] == ("fill", "B")]
+    assert fill_b[2] == 1, "AAA was still open at BBB's execution time (minute-2 open)"
