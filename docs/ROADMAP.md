@@ -9,7 +9,7 @@ sizes are relative (S/M/L).
 | Milestone | Status | Evidence |
 |---|---|---|
 | P — Planning documents | ✅ Done, approved by owner 2026-10-19 | `docs/`, [decision record](DECISIONS_PENDING.md) |
-| M0 — Foundations | 🔄 In progress — core + CI done; API/dashboard pending | CI run 39351055547 green on Ubuntu + Windows (core: 45 tests, ruff, mypy strict) |
+| M0 — Foundations | 🔄 Code complete; owner's Windows manual check + Binance spike pending | Core: CI 39351055547. API/dashboard/launcher (M0-T4, `ed0d5d7`): CI 39430972397, review approved after 1 blocking fix |
 | M1 — Live tape (walking skeleton) | 🔄 In progress (M1-T1 ingestion) | — |
 | M2 — Historical data + backtest core | 🔄 In progress (M2-T2 simulator, M2-T3 statistics) | — |
 | M3 — Paper trading + risk | ⏳ | — |
