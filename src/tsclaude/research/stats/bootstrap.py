@@ -44,6 +44,16 @@ sample autocorrelations are insignificant, ``|rho(m_hat + k)| < c sqrt(log10(n)/
 ``k = 1..K_N`` (``c = 2``, ``K_N = max(5, ceil(sqrt(log10 n)))``); ``m_hat`` and ``M`` are capped at
 ``m_max = ceil(sqrt(n)) + K_N``. As in Patton's reference implementation, ``b_opt`` is capped at
 ``ceil(min(3 sqrt(n), n/3))``; this module also floors it at 1.
+
+Block-sum evaluation
+--------------------
+For statistics that are functions of resample **sums** of per-observation columns (means, counts,
+sums of wins and of losses), ``stationary_bootstrap_sums`` evaluates the same stationary bootstrap
+without materializing indices: block lengths ``l_j ~ Geometric(q)`` and starts ``s_j ~
+Uniform{0..n-1}`` are drawn (the Politis-Romano construction), blocks are concatenated and the last
+one truncated so the total is exactly ``n``, and each block sum is a difference of circular prefix
+sums ``P[s_j + l_j] - P[s_j]`` over the doubled series. Cost is ``O(n / mean_block)`` per resample
+instead of ``O(n)``. For ``mean_block = 1`` (i.i.d. bootstrap) indices are drawn directly.
 """
 
 from __future__ import annotations
@@ -200,10 +210,20 @@ def bootstrap_distribution(
     return _check_replicates(out, allow_neg_inf=False)
 
 
-def replicates_degenerate(replicates: FloatArray) -> bool:
-    """True when every bootstrap replicate is identical (zero-width, uninformative bootstrap)."""
+def replicates_degenerate(replicates: FloatArray, rel_tol: float = 1e-12) -> bool:
+    """True when all bootstrap replicates are equal up to floating rounding (zero-width bootstrap).
+
+    "Equal" means ``max - min <= rel_tol * max(1, |max|, |min|)``; all ``-inf`` counts as equal.
+    """
     reps = np.asarray(replicates, dtype=np.float64)
-    return bool(reps.size == 0 or np.min(reps) == np.max(reps))
+    if reps.size == 0:
+        return True
+    lo, hi = float(np.min(reps)), float(np.max(reps))
+    if lo == hi:
+        return True
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return False
+    return hi - lo <= rel_tol * max(1.0, abs(lo), abs(hi))
 
 
 def _order_stat(sorted_reps: FloatArray, q: float, round_up: bool) -> float:
@@ -264,6 +284,85 @@ def bootstrap_ci(
 def row_mean(sample: FloatArray) -> FloatArray:
     """Vectorized mean per resample row (for ``vectorized=True``)."""
     out: FloatArray = np.mean(sample, axis=1)
+    return out
+
+
+def draw_stationary_blocks(
+    rng: np.random.Generator, rows: int, n: int, mean_block: float
+) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+    """Starts and truncated lengths of stationary-bootstrap blocks, each array ``(rows, K)``.
+
+    Lengths are ``Geometric(1 / mean_block)``; blocks are drawn until every row covers ``n``
+    observations, then truncated so each row's lengths sum to exactly ``n`` (unused blocks get
+    length 0). Deterministic for a given generator state.
+    """
+    q = 1.0 / _check_mean_block(mean_block, n)
+    k = math.ceil(n * q + 6.0 * math.sqrt(n * q) + 8.0)
+    log1mq = math.log1p(-q) if q < 1.0 else -math.inf
+
+    def geometric(shape: tuple[int, int]) -> NDArray[np.int32]:
+        # inverse CDF: P(floor(ln(1-U)/ln(1-q)) + 1 > j) = (1-q)^j, i.e. exactly Geometric(q)
+        if q >= 1.0:
+            return np.ones(shape, dtype=np.int32)
+        raw = np.floor(np.log1p(-rng.random(shape)) / log1mq) + 1.0
+        out: NDArray[np.int32] = np.minimum(raw, n).astype(np.int32)
+        return out
+
+    lengths = geometric((rows, k))
+    starts = rng.integers(0, n, size=(rows, k), dtype=np.int32)
+    while bool(np.any(lengths.sum(axis=1, dtype=np.int64) < n)):  # top up (rare)
+        lengths = np.concatenate([lengths, geometric((rows, k))], axis=1)
+        starts = np.concatenate([starts, rng.integers(0, n, size=(rows, k), dtype=np.int32)], 1)
+    before = np.cumsum(lengths, axis=1, dtype=np.int32) - lengths
+    eff: NDArray[np.int32] = np.clip(n - before, 0, lengths)
+    return starts, eff
+
+
+def stationary_bootstrap_sums(
+    columns: FloatArray,
+    *,
+    n_resamples: int,
+    mean_block: float | None,
+    seed: int,
+) -> FloatArray:
+    """Resample sums of each column of ``columns`` (shape ``(k, n)``) -> array ``(k, n_resamples)``.
+
+    Same resampling distribution as ``stationary_bootstrap_indices`` (see module docstring).
+    Lengths are capped at ``n`` before truncation, which does not change the truncated blocks.
+    """
+    cols = np.asarray(columns, dtype=np.float64)
+    if cols.ndim != 2 or cols.shape[1] == 0:
+        raise ValueError("columns must be a 2-D array (k, n) with n >= 1")
+    if not np.all(np.isfinite(cols)):
+        raise ValueError("columns must be finite")
+    ncol, n = cols.shape
+    nr = as_int(n_resamples, "n_resamples")
+    if nr < 1:
+        raise ValueError(f"n_resamples must be >= 1, got {nr}")
+    mb = 1.0 if mean_block is None else _check_mean_block(mean_block, n)
+    rng = np.random.Generator(np.random.PCG64(as_int(seed, "seed")))
+    out = np.empty((ncol, nr), dtype=np.float64)
+    done = 0
+    if mb <= 1.0:
+        rows = max(1, _CHUNK_ELEMENTS // n)
+        while done < nr:
+            r = min(rows, nr - done)
+            idx = rng.integers(0, n, size=(r, n), dtype=np.int32)
+            for c in range(ncol):
+                out[c, done : done + r] = cols[c][idx].sum(axis=1)
+            done += r
+        return out
+    prefix = np.zeros((ncol, 2 * n + 1), dtype=np.float64)
+    prefix[:, 1:] = np.cumsum(np.concatenate([cols, cols], axis=1), axis=1)
+    per_row = max(1, math.ceil(n / mb + 6.0 * math.sqrt(n / mb) + 8.0))
+    rows = max(1, _CHUNK_ELEMENTS // per_row)
+    while done < nr:
+        r = min(rows, nr - done)
+        starts, eff = draw_stationary_blocks(rng, r, n, mb)
+        ends = starts + eff
+        for c in range(ncol):
+            out[c, done : done + r] = (prefix[c][ends] - prefix[c][starts]).sum(axis=1)
+        done += r
     return out
 
 

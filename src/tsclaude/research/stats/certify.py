@@ -1,8 +1,10 @@
 """Certification of a strategy's win rate and expectancy from its net trade outcomes.
 
 Implements ADR-0012 including **Amendment 1** (sample floors, realized-payoff uncertainty,
-fail-closed degenerate samples, policy floors). Inputs are net trade returns ``r_i`` in R (after
-fees, slippage, funding). A win is ``r_i > 0``; zero outcomes count as non-wins (conservative).
+fail-closed degenerate samples, policy floors) and **Amendment 2** (dependence always accounted
+for, design p* checked against realized payoffs, trial counts from the registry). Inputs are net
+trade returns ``r_i`` in R (after fees, slippage, funding). A win is ``r_i > 0``; zero outcomes
+count as non-wins (conservative).
 
 Procedure (every step is conservative where a choice exists):
 
@@ -11,22 +13,27 @@ Procedure (every step is conservative where a choice exists):
 1. **Multiple testing.** ``alpha_adj = alpha / n_trials`` (Bonferroni). This is Holm's first-step
    threshold; with the other trials' p-values unknown at certification time it is the only level
    valid for *any* rank, so it is used for every candidate (``multiple_testing`` module).
-2. **Certified win rate.** ``p_lcb_exact`` = one-sided Clopper-Pearson lower bound at level
-   ``1 - alpha_adj``. If ``mean_block`` is given (overlapping or clustered trades), a stationary
-   block-bootstrap percentile lower bound of the win share at the same level is also computed and
-   ``p_lcb = min(p_lcb_exact, p_lcb_bootstrap)``.
+   **``n_trials`` must come from the trial registry** (Amendment 2.3; from M4 the registry
+   supplies it, never a hand-typed value): it is the number of configurations evaluated for the
+   hypothesis, and every report shows it next to the result.
+2. **Dependence and certified win rate** (Amendment 2.1). Independence is never assumed. The
+   block length is ``L = max(mean_block or 1, b(outcomes), b(win indicators))`` with ``b`` the
+   Politis-White / Patton estimate (``bootstrap.optimal_block_length``); every bootstrap below is
+   a stationary block bootstrap with mean block ``L``. ``p_lcb_exact`` = one-sided
+   Clopper-Pearson lower bound at level ``1 - alpha_adj``; ``p_lcb_bootstrap`` = block-bootstrap
+   percentile lower bound of the win share at the same level; ``p_lcb`` = the smaller.
 3. **Break-even.** ``p_star`` is the given design value (bracket exits: ``(1 + c)/(1 + b)``) or, if
    ``None``, ``L / (W + L)`` from the realized average win ``W`` and loss ``L``. When ``W`` or ``L``
    was not observed the realized ``p*`` is undefined, never assumed; the margin is then undefined
    and counts as not positive.
-4. **Certified margin.** Design ``p*``: ``margin_lcb = p_lcb - p*``. Realized ``p*``
-   (Amendment 1.2): ``margin_lcb = min(p_lcb - p*_hat, joint_lcb)`` where ``joint_lcb`` is the
-   one-sided ``alpha_adj`` percentile lower bound of the bootstrap distribution of
-   ``p_hat* - L*/(W* + L*)`` with win rate and payoffs resampled **together** (same resample).
-   Resamples with no win or no non-win (``W*`` or ``L*`` undefined) are scored ``-inf``, i.e.
-   they count against certification.
+4. **Certified margin.** ``margin_lcb = min(p_lcb - p*, joint_lcb)`` for both sources of
+   ``p*`` (Amendment 1.2; Amendment 2.2 extends it to a design ``p*``, so a declared break-even is
+   checked against realized payoffs). ``joint_lcb`` is the one-sided ``alpha_adj`` percentile
+   lower bound of the block-bootstrap distribution of ``p_hat* - L*/(W* + L*)`` with win rate
+   and payoffs resampled **together** (same resample). Resamples with no win or no non-win
+   (``W*`` or ``L*`` undefined) are scored ``-inf``: they count against certification.
 5. **Expectancy.** ``mean(r)`` with a two-sided percentile bootstrap interval at level
-   ``1 - alpha_adj`` (block bootstrap with ``mean_block`` if given, else i.i.d.). Its lower end is
+   ``1 - alpha_adj`` (block bootstrap with mean block ``L``). Its lower end is
    the one-sided bound at ``alpha_adj / 2``, stricter than the one-sided ``alpha_adj`` bound.
 6. **Sample size** (Amendment 1.1). ``n_required = max(n_min, n_floor)`` where
    ``n_min = max(normal-approximation n, exact n)`` for power ``min_power`` at the observed effect
@@ -35,7 +42,9 @@ Procedure (every step is conservative where a choice exists):
    A caller (preregistration) may raise ``n_floor`` but never lower it. ``n_min`` is undefined
    (gate fails) when ``p_hat <= p*``, ``p* >= 1``, or it exceeds ``N_MIN_SEARCH_LIMIT``.
 7. **Degenerate samples** (Amendment 1.3). Fewer than two distinct outcome values, or any
-   bootstrap whose replicates are all equal, fail closed.
+   bootstrap whose replicates are all equal (up to rounding), fail closed. Since Amendment 2.2 a
+   one-valued sample also has ``W*`` or ``L*`` undefined in every resample, so this gate is a
+   backstop that always coincides with ``margin_not_positive``; it is kept as defence in depth.
 8. **Bootstrap resolution.** A percentile at tail ``t`` needs at least ``MIN_TAIL_REPLICATES / t``
    replicates (``20 n_trials / alpha`` for the two-sided expectancy interval). The count is raised
    to that, capped at ``max_resamples``; if the cap binds, certification fails closed.
@@ -45,8 +54,9 @@ Procedure (every step is conservative where a choice exists):
 (``p_star_undefined`` is reported but is not a separate gate: it forces ``margin_not_positive``.)
 Holdout, drawdown and cost-stress conditions of ADR-0012 are checked by the caller.
 
-All bootstraps share one resample stream (``bootstrap_statistics``): each statistic is still a valid
-bootstrap, and the indices are generated once.
+All bootstraps share one resample stream and are evaluated from block sums of three columns (win
+indicator, positive part, negative part) with ``bootstrap.stationary_bootstrap_sums``; this is
+the same stationary bootstrap at ``O(n / L)`` cost per resample.
 
 Limitations: ``n_min`` at the observed effect is post-hoc power and optimistic after selection; the
 hard floors are the safeguard. The percentile bootstrap of a mean is anti-conservative for heavily
@@ -67,11 +77,10 @@ from tsclaude.research.stats._validate import as_float, as_int, check_open_prob
 from tsclaude.research.stats.binomial import Interval, clopper_pearson
 from tsclaude.research.stats.bootstrap import (
     FloatArray,
-    VectorizedStatistic,
-    bootstrap_statistics,
+    optimal_block_length,
     percentile_bounds,
     replicates_degenerate,
-    row_mean,
+    stationary_bootstrap_sums,
 )
 from tsclaude.research.stats.breakeven import break_even_win_rate, realized_payoffs
 from tsclaude.research.stats.multiple_testing import bonferroni_alpha
@@ -103,14 +112,14 @@ class Certification:
     n_trials: int
     alpha_adj: float
     p_lcb_exact: float
-    p_lcb_bootstrap: float | None
+    p_lcb_bootstrap: float
     p_lcb: float
     p_star: float | None
     p_star_source: Literal["given", "realized"] | None
     avg_win: float | None
     avg_loss: float | None
     margin_lcb_cp: float | None  # p_lcb - p*
-    margin_lcb_joint: float | None  # joint bootstrap bound (realized p* only)
+    margin_lcb_joint: float | None  # joint bootstrap bound of p_hat* - L*/(W*+L*)
     margin_lcb: float | None
     expectancy: float
     expectancy_ci: Interval  # two-sided bootstrap at 1 - alpha_adj
@@ -128,7 +137,8 @@ class Certification:
     degenerate: bool
     bootstrap_unresolved: bool
     certified: bool
-    mean_block: float | None
+    mean_block: float | None  # caller's value
+    block_length: float  # mean block actually used (Amendment 2.1)
     seed: int
     n_resamples: int
     reasons: tuple[str, ...] = field(default_factory=tuple)
@@ -140,19 +150,13 @@ def _resamples_for(tail: float, requested: int, cap: int) -> tuple[int, bool]:
     return min(needed, cap), needed <= cap
 
 
-def _win_share(sample: FloatArray) -> FloatArray:
-    out: FloatArray = np.mean(sample > 0.0, axis=1)
-    return out
+def _joint_margin(wins: FloatArray, sum_w: FloatArray, sum_l: FloatArray, n: int) -> FloatArray:
+    """Per resample: ``p_hat* - L*/(W* + L*)``; ``-inf`` where ``W*`` or ``L*`` is undefined.
 
-
-def _joint_margin(sample: FloatArray) -> FloatArray:
-    """Per resample: ``p_hat* - L*/(W* + L*)``; ``-inf`` where ``W*`` or ``L*`` is undefined."""
-    n = sample.shape[1]
-    win = sample > 0.0
-    wins = win.sum(axis=1)
+    Inputs are resample sums: win count, sum of positive outcomes, sum of |non-positive outcomes|.
+    """
+    wins = np.rint(wins)  # integer counts (prefix-sum differences of 0/1 are exact anyway)
     losses = n - wins
-    sum_w = np.where(win, sample, 0.0).sum(axis=1)
-    sum_l = -np.where(win, 0.0, sample).sum(axis=1)
     ok = (wins > 0) & (losses > 0)
     w = np.divide(sum_w, wins, out=np.zeros_like(sum_w), where=ok)
     loss = np.divide(sum_l, losses, out=np.zeros_like(sum_l), where=ok)
@@ -248,38 +252,27 @@ def certify(
             + " not observed"
         )
 
-    # one shared resample stream for every bootstrap statistic
-    b_count, resolved = _resamples_for(alpha_adj / 2.0, nr, cap)
-    stats: dict[str, VectorizedStatistic] = {"expectancy": row_mean}
-    if mb is not None:
-        stats["win_share"] = _win_share
-    if ps_given is None:
-        stats["joint_margin"] = _joint_margin
-    reps = bootstrap_statistics(
-        r,
-        stats,
-        n_resamples=b_count,
-        mean_block=mb,
-        seed=sd,
-        allow_neg_inf=("joint_margin",),
-    )
+    # 2. dependence: block length never below the data-driven estimates (Amendment 2.1)
+    win_ind = (r > 0.0).astype(np.float64)
+    block = max(1.0 if mb is None else mb, optimal_block_length(r), optimal_block_length(win_ind))
+    block = min(block, float(n))
 
-    p_lcb_boot: float | None = None
-    if mb is not None:
-        p_lcb_boot = percentile_bounds(reps["win_share"], alpha_adj, "lower").lower
-    p_lcb = p_lcb_exact if p_lcb_boot is None else min(p_lcb_exact, p_lcb_boot)
+    # one shared stationary-bootstrap stream; statistics from block sums of three columns
+    b_count, resolved = _resamples_for(alpha_adj / 2.0, nr, cap)
+    columns = np.vstack([win_ind, np.where(r > 0.0, r, 0.0), np.where(r > 0.0, 0.0, -r)])
+    sums = stationary_bootstrap_sums(columns, n_resamples=b_count, mean_block=block, seed=sd)
+    reps: dict[str, FloatArray] = {
+        "win_share": np.sort(sums[0] / n),
+        "expectancy": np.sort((sums[1] - sums[2]) / n),
+        "joint_margin": np.sort(_joint_margin(sums[0], sums[1], sums[2], n)),
+    }
+    p_lcb_boot = percentile_bounds(reps["win_share"], alpha_adj, "lower").lower
+    p_lcb = min(p_lcb_exact, p_lcb_boot)
 
     # 4. margin
     margin_cp = None if ps is None else p_lcb - ps
-    margin_joint: float | None = None
-    if ps_given is None:
-        margin_joint = percentile_bounds(reps["joint_margin"], alpha_adj, "lower").lower
-    if margin_cp is None:
-        margin_lcb = None
-    elif margin_joint is None:
-        margin_lcb = margin_cp
-    else:
-        margin_lcb = min(margin_cp, margin_joint)
+    margin_joint = percentile_bounds(reps["joint_margin"], alpha_adj, "lower").lower
+    margin_lcb = None if margin_cp is None else min(margin_cp, margin_joint)
     margin_not_positive = margin_lcb is None or margin_lcb <= 0.0
     if margin_lcb is not None and margin_not_positive:
         reasons.append(f"certified margin = {margin_lcb:.6f} <= 0")
@@ -376,6 +369,7 @@ def certify(
         bootstrap_unresolved=bootstrap_unresolved,
         certified=certified,
         mean_block=mb,
+        block_length=block,
         seed=sd,
         n_resamples=b_count,
         reasons=tuple(reasons),

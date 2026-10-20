@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from stats_exact_ref import exact_tail_ge
 
+from tsclaude.research.stats.bootstrap import optimal_block_length
 from tsclaude.research.stats.certify import (
     N_FLOOR_DESIGN,
     N_FLOOR_REALIZED,
@@ -154,21 +155,58 @@ def test_gate_margin_only_via_undefined_payoff_resamples() -> None:
     assert not c.certified
 
 
+def mixed(parts: list[tuple[float, int]], seed: int = 7) -> np.ndarray:
+    """Shuffled sample with ``count`` copies of each ``value``."""
+    r = np.concatenate([np.full(k, v) for v, k in parts])
+    np.random.default_rng(seed).shuffle(r)
+    return r
+
+
 def test_gate_expectancy_only() -> None:
-    """Realized wins of 0.6R vs design p* = 0.525 (wins assumed 0.95R): p_hat = 0.6 passes the
-    margin and n gates, but E = 0.6 * 0.6 - 0.4 * 1.05 = -0.06 R."""
-    c = run(outcomes(2000, 1200, 0.6, -1.05), p_star=0.525)
+    """E only just positive, win rate far above p*.
+
+    1400 x +0.5R, 500 x -1R, 100 x -1.4R: E = (700 - 500 - 140)/2000 = 0.03, sd 0.7225,
+    t = 0.03 / (0.7225/sqrt(2000)) = 1.86. About Phi(-1.86) = 3.2 % of resamples have E* <= 0:
+    the two-sided expectancy bound (2.5 % tail) fails, the one-sided joint margin (5 % tail)
+    passes (same sign as E* on every resample), and the win rate 0.7 >> p* = 0.5.
+    """
+    c = run(mixed([(0.5, 1400), (-1.0, 500), (-1.4, 100)]), p_star=0.5)
     assert failing_gates(c) == {"expectancy_not_positive"}
-    assert math.isclose(c.expectancy, -0.06, rel_tol=1e-9)
+    assert math.isclose(c.expectancy, 0.03, rel_tol=1e-9)
+    assert c.margin_lcb_joint is not None
+    assert c.margin_lcb_joint > 0
     assert not c.certified
 
 
-def test_gate_degenerate_only() -> None:
-    """200 identical outcomes: every other gate passes; the zero-width bootstrap must not."""
+def test_design_p_star_is_checked_against_realized_payoffs() -> None:
+    """Amendment 2.2: realized wins of 0.6R vs design p* = 0.525 (wins assumed 0.95R).
+
+    p_hat = 0.6 clears the design break-even, but realized p* = 1.05/1.65 = 0.636 > 0.6, so the
+    joint margin is negative and the margin gate fails (E = 0.36 - 0.42 = -0.06R as well).
+    """
+    c = run(outcomes(2000, 1200, 0.6, -1.05), p_star=0.525)
+    assert c.margin_lcb_cp is not None
+    assert c.margin_lcb_cp > 0  # the design-only margin would have passed
+    assert c.margin_lcb_joint is not None
+    assert c.margin_lcb_joint < 0
+    assert c.margin_lcb == c.margin_lcb_joint
+    assert c.margin_not_positive
+    assert not c.certified
+
+
+def test_gate_degenerate_backstop() -> None:
+    """200 identical outcomes: zero-width bootstrap, flagged degenerate.
+
+    Since Amendment 2.2 the joint margin is computed for every sample, and a one-valued sample
+    has W* or L* undefined in every resample, so the margin gate fails too: the degenerate gate
+    can never be the *only* failing gate (it is an equivalent backstop, kept as defence in depth).
+    """
     c = run(np.full(200, 0.95), p_star=0.525)
-    assert failing_gates(c) == {"degenerate"}
+    assert c.degenerate
     assert c.distinct_values == 1
-    assert c.expectancy_ci.lower == c.expectancy_ci.upper  # the zero-width interval
+    # zero-width up to prefix-sum rounding (~1e-14)
+    assert math.isclose(c.expectancy_ci.lower, c.expectancy_ci.upper, abs_tol=1e-12)
+    assert failing_gates(c) == {"degenerate", "margin_not_positive"}
     assert not c.certified
 
 
@@ -356,3 +394,159 @@ def test_certify_is_deterministic_and_validates_inputs() -> None:
         run(r, p_star=0.5, alpha=1.5)
     with pytest.raises(ValueError, match=r"mean_block must be >= 1"):
         run(r, p_star=0.5, mean_block=0.5)
+
+
+# --------------------------------------------------------------------------------------------
+# Re-review N1-N3 (ADR-0012 Amendment 2)
+# --------------------------------------------------------------------------------------------
+
+
+def test_realized_floor_is_300_for_samples_between_100_and_300() -> None:
+    """Kills M8 (N_FLOOR_REALIZED lowered): n = 200, 75 % wins, realized p* = 0.525.
+
+    Every other gate passes, and the same sample with the design p* (floor 100) certifies.
+    """
+    r = bracket_outcomes(200, 150, 1.0, 0.05)
+    realized = run(r, p_star=None)
+    assert N_FLOOR_REALIZED == 300
+    assert realized.n_floor == 300
+    assert failing_gates(realized) == {"insufficient_n"}
+    assert run(r, p_star=0.525).certified
+
+
+def test_expectancy_bound_uses_adjusted_alpha() -> None:
+    """Kills M12 (nominal alpha in the expectancy bootstrap).
+
+    1400 x +0.5R, 560 x -1R, 40 x -1.4R: E = 0.042, t ~ 2.7. With n_trials = 10
+    (alpha_adj = 0.005) the two-sided expectancy bound (0.25 % tail, z = 2.81) fails while the
+    one-sided joint margin (0.5 % tail, z = 2.58) passes; at nominal alpha (2.5 % tail) E passes.
+    """
+    r = mixed([(0.5, 1400), (-1.0, 560), (-1.4, 40)])
+    adjusted = run(r, p_star=0.5, n_trials=10, n_resamples=100_000)
+    assert failing_gates(adjusted) == {"expectancy_not_positive"}
+    assert run(r, p_star=0.5, n_trials=1).certified
+
+
+def test_joint_margin_uses_adjusted_alpha() -> None:
+    """Kills M11 (nominal alpha in the joint-margin bootstrap).
+
+    296 wins, 4 losses: P(resample has no loss) ~ e^-4 = 1.8 %, which lies between
+    alpha_adj = 0.5 % (n_trials = 10 -> bound -inf, margin fails) and alpha = 5 % (passes).
+    """
+    r = mixed([(1.0, 296), (-1.0, 4)])
+    adjusted = run(r, p_star=0.5, n_trials=10, n_resamples=100_000)
+    assert failing_gates(adjusted) == {"margin_not_positive"}
+    assert adjusted.margin_lcb_joint == -math.inf
+    assert run(r, p_star=0.5, n_trials=1).certified
+
+
+def _two_state_chain(rng: np.random.Generator, n: int, pi: float, stay_win: float) -> np.ndarray:
+    """Win/loss Markov chain: P(win -> win) = stay_win, stationary win rate pi.
+
+    P(win -> loss) = a = 1 - stay_win, P(loss -> win) = b = a pi / (1 - pi) so pi = b/(a + b);
+    lag-1 autocorrelation of the win indicator is 1 - a - b.
+    """
+    a = 1.0 - stay_win
+    b = a * pi / (1.0 - pi)
+    u = rng.random(n)
+    s = np.empty(n, dtype=bool)
+    s[0] = u[0] < pi
+    for t in range(1, n):
+        s[t] = (u[t] >= a) if s[t - 1] else (u[t] < b)
+    return s
+
+
+def test_win_rate_bound_uses_block_bootstrap_at_adjusted_alpha() -> None:
+    """Kills nominal alpha in the win-share bootstrap and "no block bootstrap for the win rate".
+
+    Clustered wins (P(win -> win) chosen for lag-1 correlation 0.85), +1.5R / -1R, design
+    p* = 0.5 (realized p* = 0.4, so the joint margin has slack), n = 3000, n_trials = 10.
+    The exact CP bound (i.i.d.) is 0.541 > 0.5, but the block-bootstrap bound at alpha_adj is
+    0.494 < 0.5: only the margin gate fails. At nominal alpha the block bound is 0.521.
+    """
+    pi, rho = 0.56, 0.85
+    stay = 1.0 - (1.0 - rho) * (1.0 - pi)
+    s = _two_state_chain(np.random.default_rng(0), 3000, pi, stay)
+    r = np.where(s, 1.5, -1.0)
+    c = run(r, p_star=0.5, n_trials=10, seed=0)
+    assert failing_gates(c) == {"margin_not_positive"}
+    assert c.p_lcb_exact > 0.5 > c.p_lcb_bootstrap
+    assert c.p_lcb == c.p_lcb_bootstrap
+    assert c.block_length > 20
+    assert run(r, p_star=0.5, n_trials=1, seed=0).certified
+
+
+def test_block_length_never_below_estimates_or_caller_value() -> None:
+    s = _two_state_chain(np.random.default_rng(3), 2000, 0.51, 0.98)
+    r = np.where(s, 0.95, -1.05)
+    auto = run(r, p_star=0.525)
+    est = max(optimal_block_length(r), optimal_block_length(s.astype(np.float64)))
+    assert auto.block_length == est
+    assert auto.block_length > 30  # dependence detected without being told
+    assert run(r, p_star=0.525, mean_block=500.0).block_length == 500.0
+    iid = run(bracket_outcomes(2000, 1200, 1.0, 0.05), p_star=0.525, mean_block=None)
+    assert iid.block_length >= 1.0
+    assert iid.mean_block is None
+
+
+_N1_RUNS = 300
+
+
+@pytest.fixture(scope="module")
+def n1_markov_rate() -> tuple[int, int]:
+    """N1: losing strategy with clustered outcomes, nothing declared by the caller.
+
+    Two-state chain, stationary win rate 0.51 (< p* = 0.525: E = 0.51*0.95 - 0.49*1.05 < 0),
+    P(win -> win) = 0.98, n = 2000, mean_block=None, alpha = 0.05, one trial. Before Amendment 2
+    (independence assumed): 30 % certified. Seeded.
+    """
+    rng = np.random.default_rng(20261020)
+    hits = 0
+    for i in range(_N1_RUNS):
+        r = np.where(_two_state_chain(rng, 2000, 0.51, 0.98), 0.95, -1.05)
+        hits += run(r, p_star=0.525, seed=i).certified
+    return hits, _N1_RUNS
+
+
+def test_n1_markov_false_certification_not_above_alpha(n1_markov_rate: tuple[int, int]) -> None:
+    """Rate is not significantly above alpha_adj = 0.05: rate <= 0.05 + 2 SE(0.05).
+
+    Measured (1000 runs each, outside the suite): 0.042 +- 0.006 for P(win -> win) = 0.98 and
+    0.049 +- 0.007 for lag-1 correlation 0.98, versus 0.30 before Amendment 2.
+    """
+    hits, runs = n1_markov_rate
+    assert hits / runs <= 0.05 + 2 * math.sqrt(0.05 * 0.95 / runs), hits
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Escalated (M2-T3 re-review): with the ADR-0012 Amendment 2 block length the "
+    "near-unit-root case sits at ~alpha (0.042 +- 0.006); an effective-sample-size gate is "
+    "proposed as Amendment 3. Strict xfail: turns into an error once the gap is closed.",
+)
+def test_n1_markov_false_certification_clearly_below_alpha(
+    n1_markov_rate: tuple[int, int],
+) -> None:
+    """The bar used for the fat-tail case: estimate + 2 SE <= alpha_adj."""
+    hits, runs = n1_markov_rate
+    rate = hits / runs
+    assert rate + 2 * math.sqrt(max(rate * (1 - rate), 1e-12) / runs) <= 0.05, hits
+
+
+def test_n2_tail_losses_beyond_the_stop_certify_only_when_unobserved() -> None:
+    """N2 repro: design p* = 0.4 (TP 1.5R / SL 1R), but 1 % of trades gap to -44.5R
+    (+1.5R 56.6 %, -1R 42.4 %, -44.5R 1 %: E = 0.849 - 0.424 - 0.445 = -0.02R), n = 100.
+
+    Every certification happens on a sample that contains **no** -44.5R trade (probability
+    0.99^100 = 37 %): the data carry no evidence of the tail, so no outcome-based test can
+    reject it. Whenever the tail is observed, certification fails. The residual rate is an
+    escalated open issue (needs a cost-model / gap-risk control, not a statistic).
+    """
+    rng = np.random.default_rng(2)
+    certified_with_tail = 0
+    for i in range(150):
+        u = rng.random(100)
+        r = np.where(u < 0.566, 1.5, np.where(u < 0.99, -1.0, -44.5))
+        if run(r, p_star=0.4, seed=i).certified and bool(np.any(r == -44.5)):
+            certified_with_tail += 1
+    assert certified_with_tail == 0

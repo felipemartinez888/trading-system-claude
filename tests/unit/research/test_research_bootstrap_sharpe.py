@@ -13,11 +13,13 @@ from tsclaude.research.stats.bootstrap import (
     bootstrap_ci,
     bootstrap_distribution,
     bootstrap_statistics,
+    draw_stationary_blocks,
     optimal_block_length,
     percentile_bounds,
     replicates_degenerate,
     row_mean,
     stationary_bootstrap_indices,
+    stationary_bootstrap_sums,
 )
 from tsclaude.research.stats.sharpe import (
     EULER_MASCHERONI,
@@ -240,3 +242,60 @@ def test_bootstrap_statistics_share_one_stream_and_allow_marked_neg_inf() -> Non
 def test_replicates_degenerate() -> None:
     assert replicates_degenerate(np.full(10, 0.3))
     assert not replicates_degenerate(np.array([0.3, 0.3, 0.31]))
+
+
+def test_block_sums_equal_sums_over_materialized_blocks() -> None:
+    """Exactness of the prefix-sum evaluation: rebuild each resample's indices from its blocks."""
+    n, x = 37, np.random.default_rng(0).standard_normal(37)
+    starts, eff = draw_stationary_blocks(np.random.default_rng(5), 60, n, 4.0)
+    assert np.all(eff.sum(axis=1) == n)
+    prefix = np.concatenate([[0.0], np.cumsum(np.concatenate([x, x]))])
+    for s_row, l_row in zip(starts, eff, strict=True):
+        idx = np.concatenate([(s + np.arange(ln)) % n for s, ln in zip(s_row, l_row, strict=True)])
+        assert idx.size == n
+        by_prefix = float((prefix[s_row + l_row] - prefix[s_row]).sum())
+        assert math.isclose(by_prefix, float(x[idx].sum()), rel_tol=1e-12, abs_tol=1e-12)
+
+
+def test_block_lengths_are_geometric() -> None:
+    """Untruncated lengths: mean 1/q = mean_block and P(L > j) = (1 - q)^j (inverse-CDF draw)."""
+    starts, eff = draw_stationary_blocks(np.random.default_rng(1), 400, 100_000, 8.0)
+    lengths = eff[:, :-60][eff[:, :-60] > 0]  # interior blocks of long rows are untruncated
+    assert abs(lengths.mean() - 8.0) < 0.05
+    assert abs(np.mean(lengths > 8) - (7 / 8) ** 8) < 0.005
+    assert starts.min() >= 0
+    assert starts.max() < 100_000
+
+
+def test_block_sum_bootstrap_matches_index_bootstrap_in_distribution() -> None:
+    """Same resampling law as ``stationary_bootstrap_indices``: resample-mean sd agrees to 3 %."""
+    gen = np.random.default_rng(2)
+    y = np.cumsum(gen.standard_normal(400)) * 0.05 + gen.standard_normal(400)
+    for mb in (1.0, 5.0, 30.0):
+        a = bootstrap_distribution(
+            y, row_mean, n_resamples=20_000, mean_block=mb, seed=3, vectorized=True
+        )
+        sums = stationary_bootstrap_sums(y[None, :], n_resamples=20_000, mean_block=mb, seed=4)
+        b = sums[0] / 400
+        assert abs(b.std() / a.std() - 1) < 0.03
+        # difference of two Monte Carlo averages: sd = sqrt(2) * sd(T*) / sqrt(B); allow 4 sd
+        assert abs(b.mean() - a.mean()) < 4 * math.sqrt(2) * a.std() / math.sqrt(20_000)
+
+
+def test_block_sum_bootstrap_is_deterministic_and_validates() -> None:
+    cols = np.random.default_rng(0).standard_normal((3, 50))
+    a = stationary_bootstrap_sums(cols, n_resamples=500, mean_block=6.0, seed=1)
+    b = stationary_bootstrap_sums(cols, n_resamples=500, mean_block=6.0, seed=1)
+    assert a.shape == (3, 500)
+    assert np.array_equal(a, b)
+    with pytest.raises(ValueError, match=r"finite"):
+        stationary_bootstrap_sums(
+            np.array([[1.0, math.nan]]), n_resamples=5, mean_block=None, seed=0
+        )
+
+
+def test_replicates_degenerate_tolerates_rounding_only() -> None:
+    assert replicates_degenerate(np.array([0.95, 0.95 + 1e-15, 0.95 - 1e-15]))
+    assert not replicates_degenerate(np.array([0.95, 0.95 + 1e-9]))
+    assert replicates_degenerate(np.full(4, -math.inf))
+    assert not replicates_degenerate(np.array([-math.inf, 0.1]))
