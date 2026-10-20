@@ -33,7 +33,7 @@ Master Prompt (§10) maps to exactly one place.
 Every number, chart series and table row carries one badge, driven by a `provenance` field in the
 API response, never inferred by the frontend:
 
-`LIVE` · `PARTIAL` · `RECOVERED` · `HISTORICAL` · `REPLAY` · `BACKTEST` · `SIMULATED` · `ESTIMATED` ·
+`SYSTEM` · `LIVE` · `PARTIAL` · `RECOVERED` · `HISTORICAL` · `REPLAY` · `BACKTEST` · `SIMULATED` · `ESTIMATED` ·
 `DEMO` · `STALE` · `UNAVAILABLE`
 
 `DEMO` data (used while the backend is being built) renders with a diagonal-hatch watermark and a
