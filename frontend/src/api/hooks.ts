@@ -13,14 +13,13 @@ export const queryKeys = {
 };
 
 /** Polling is a fallback; the WebSocket pushes every change and heartbeat. */
-const STATUS_POLL_MS = 10_000;
+export const STATUS_POLL_MS = 10_000;
 
 export function useStatus() {
   return useQuery({
     queryKey: queryKeys.status,
     queryFn: ({ signal }) => api.status(signal),
     refetchInterval: STATUS_POLL_MS,
-    retry: 1,
   });
 }
 

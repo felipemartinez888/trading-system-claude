@@ -7,6 +7,7 @@ import { ApiError } from "../api/client";
 import {
   type LinkState,
   type MonitoringAction,
+  STATUS_POLL_MS,
   useMonitoringMutation,
   useQuitMutation,
   useStatus,
@@ -63,7 +64,11 @@ export function StatusBar({ link }: StatusBarProps) {
   const now = useNow();
 
   const data: StatusResponse | undefined = status.data;
-  const budgetMs = (data?.heartbeat_interval_s ?? 5) * 1000 * CLIENT_STALE_HEARTBEATS;
+  // Fresh = pushed within a few heartbeats or polled within two polling periods (push may be down).
+  const budgetMs = Math.max(
+    (data?.heartbeat_interval_s ?? 5) * 1000 * CLIENT_STALE_HEARTBEATS,
+    2 * STATUS_POLL_MS + 5_000,
+  );
   const stale = data !== undefined && now - status.dataUpdatedAt > budgetMs;
   const quitDone = quit.isSuccess || link === "shutdown";
 
@@ -201,15 +206,17 @@ export function StatusBar({ link }: StatusBarProps) {
 
       {stale || status.isError ? (
         <div className="statusbar__notice statusbar__notice--warn" role="alert">
-          Backend not responding — showing the last known state from{" "}
-          {formatUtc(new Date(status.dataUpdatedAt).toISOString())}.
-          {status.isError ? ` ${errorText(status.error)}` : ""}
+          <span>
+            Backend not responding — showing the last known state from{" "}
+            {formatUtc(new Date(status.dataUpdatedAt).toISOString())}.
+            {status.isError ? ` ${errorText(status.error)}` : ""}
+          </span>
         </div>
       ) : null}
 
       {monitoring.isError ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
-          {errorText(monitoring.error)}
+          <span>{errorText(monitoring.error)}</span>
           <button type="button" className="btn btn--ghost" onClick={() => monitoring.reset()}>
             Dismiss
           </button>
@@ -218,22 +225,24 @@ export function StatusBar({ link }: StatusBarProps) {
 
       {quit.isError ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
-          Quit failed: {errorText(quit.error)}
+          <span>Quit failed: {errorText(quit.error)}</span>
         </div>
       ) : null}
 
       {mon !== null && !mon.start_allowed && mon.blocked_reason ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
-          Monitoring is locked: {mon.blocked_reason}. See System › Health.
+          <span>Monitoring is locked: {mon.blocked_reason}. See System › Health.</span>
         </div>
       ) : null}
 
       {prev !== null && prev.outcome === "CRASHED" ? (
         <div className="statusbar__notice statusbar__notice--warn" role="status" data-testid="crash-notice">
-          The previous session ({prev.session_id}) did not shut down cleanly
-          {prev.monitoring_was_active ? " while monitoring was running" : ""}. Not observed from{" "}
-          <time dateTime={prev.unobserved_from ?? undefined}>{formatUtc(prev.unobserved_from)}</time> to{" "}
-          <time dateTime={prev.unobserved_to ?? undefined}>{formatUtc(prev.unobserved_to)}</time>.
+          <span>
+            The previous session ({prev.session_id}) did not shut down cleanly
+            {prev.monitoring_was_active ? " while monitoring was running" : ""}. Not observed from{" "}
+            <time dateTime={prev.unobserved_from ?? undefined}>{formatUtc(prev.unobserved_from)}</time>{" "}
+            to <time dateTime={prev.unobserved_to ?? undefined}>{formatUtc(prev.unobserved_to)}</time>.
+          </span>
         </div>
       ) : null}
     </header>
