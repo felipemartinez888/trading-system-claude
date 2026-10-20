@@ -443,3 +443,45 @@ def test_unc_and_absolute_paths_are_refused_before_filesystem_access(
         assert calls == []
         assert c.get("/assets/app.js").status_code == 200
         assert calls == ["assets/app.js"]
+
+
+@pytest.mark.parametrize("probe", ["/INDEX.HTML", "/Index.Html", "/index.html/"])
+def test_index_any_case_is_served_with_token_and_headers(
+    ctx: AppContext, bundle: Path, probe: str
+) -> None:
+    # N2: on case-insensitive filesystems "/INDEX.HTML" would otherwise be the raw file
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        r = c.get(BASE_URL + probe)
+        assert r.status_code == 200
+        assert f'content="{ctx.token}"' in r.text
+        assert r.headers["cache-control"] == "no-store"
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        "/index.html.",
+        "/index.html%20",
+        "/assets/app.js.",
+        "/con",
+        "/CON",
+        "/assets/nul.js",
+        "/assets/NUL",
+        "/com1.txt",
+        "/lpt9",
+        "/aux.tar.gz",
+        "/assets/conin$",
+    ],
+)
+def test_trailing_dot_space_and_device_names_are_refused(
+    ctx: AppContext, bundle: Path, probe: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    real = pages.resolve_static_file
+    monkeypatch.setattr(pages, "resolve_static_file", lambda d, p: calls.append(p) or real(d, p))
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        r = c.get(BASE_URL + probe)
+        assert r.status_code == 404, probe
+        assert ctx.token not in r.text
+    assert calls == []  # refused before any filesystem access

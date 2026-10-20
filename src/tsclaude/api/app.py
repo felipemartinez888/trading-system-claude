@@ -203,7 +203,11 @@ def create_app(
         return HealthResponse(ok=True, app=APP_NAME, version=context.app_version)
 
     @app.get("/api/status", response_model=StatusResponse)
-    def get_status() -> StatusResponse:
+    async def get_status() -> StatusResponse:
+        # On the event loop: refresh the Spot/Futures summary from the live service first, so the
+        # status never lags the market-data state (threads only read the cached summary).
+        if context.supervisor is not None:
+            context.supervisor.refresh()
         return context.status()
 
     @app.get("/api/coverage", response_model=CoverageResponse)

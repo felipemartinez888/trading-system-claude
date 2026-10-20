@@ -14,7 +14,7 @@ import pytest
 from api_testkit import TOKEN, ContextFactory, make_tampered_db
 from pydantic import BaseModel
 
-from tsclaude.api import schemas
+from tsclaude.api import market_schemas, schemas
 from tsclaude.api.context import (
     TransitionError,
     TransitionRefused,
@@ -41,14 +41,43 @@ from tsclaude.contracts.timeutil import ManualClock
 from tsclaude.runtime.sessions import ObservationInterval
 
 # ---------------------------------------------------------------------- ADR-0010 contract
-# Plain (non-Sourced) fields allowed on top-level read models: identity and metadata only.
+# Plain (non-Sourced) fields allowed on read models: identity and metadata only. Fields that are
+# lists of models (e.g. MarketsResponse.rows) are checked recursively against this table.
 _PLAIN_ALLOWED = {
     "StatusResponse": {"app_version", "server_time", "heartbeat_interval_s"},
     "CoverageResponse": {"generated_at"},
     "EventsResponse": {"generated_at"},
     "HealthResponse": {"ok", "app", "version"},  # liveness only, no metrics
     "QuitResponse": {"accepted"},
+    "MarketsResponse": {"generated_at"},
+    "MarketRow": {"market", "symbol"},
+    "StreamsHealthResponse": {"generated_at"},
+    "GapsResponse": {"generated_at"},
+    "BarsResponse": {
+        "generated_at",
+        "market",
+        "symbol",
+        "interval",
+        "from_ms",
+        "to_ms",
+        "truncated",
+    },
+    "SignalsResponse": {"generated_at"},
+    "NotificationsResponse": {"generated_at", "head_seq"},
 }
+_TOP_LEVEL = [
+    "StatusResponse",
+    "CoverageResponse",
+    "EventsResponse",
+    "HealthResponse",
+    "QuitResponse",
+    "MarketsResponse",
+    "StreamsHealthResponse",
+    "GapsResponse",
+    "BarsResponse",
+    "SignalsResponse",
+    "NotificationsResponse",
+]
 
 
 def _is_sourced(annotation: Any) -> bool:
@@ -62,13 +91,28 @@ def _is_sourced(annotation: Any) -> bool:
     return False
 
 
-@pytest.mark.parametrize("model_name", sorted(_PLAIN_ALLOWED))
-def test_every_read_model_field_carries_provenance(model_name: str) -> None:
-    model: type[BaseModel] = getattr(schemas, model_name)
+def _model(name: str) -> type[BaseModel]:
+    found = getattr(schemas, name, None) or getattr(market_schemas, name)
+    assert isinstance(found, type)
+    return found
+
+
+def _check(model: type[BaseModel]) -> None:
+    allowed = _PLAIN_ALLOWED.get(model.__name__, set())
     for name, field in model.model_fields.items():
-        if name in _PLAIN_ALLOWED[model_name]:
+        if name in allowed or _is_sourced(field.annotation):
             continue
-        assert _is_sourced(field.annotation), f"{model_name}.{name} lacks provenance (ADR-0010)"
+        if get_origin(field.annotation) is list:
+            (item,) = get_args(field.annotation)
+            if isinstance(item, type) and issubclass(item, BaseModel):
+                _check(item)
+                continue
+        raise AssertionError(f"{model.__name__}.{name} lacks provenance (ADR-0010)")
+
+
+@pytest.mark.parametrize("model_name", _TOP_LEVEL)
+def test_every_read_model_field_carries_provenance(model_name: str) -> None:
+    _check(_model(model_name))
 
 
 # ---------------------------------------------------------------------- context lifecycle

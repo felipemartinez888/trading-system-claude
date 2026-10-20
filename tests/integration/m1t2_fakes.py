@@ -235,9 +235,11 @@ class FakeMarketData:
 class FakeFactory:
     """`ServiceFactory` that remembers the instance it created."""
 
-    def __init__(self) -> None:
+    def __init__(self, fail_start: str | None = None) -> None:
         self.instance: FakeMarketData | None = None
+        self.fail_start = fail_start
 
     def __call__(self, store: EventStore, clock: WallClock) -> Any:
         self.instance = FakeMarketData(store, clock)
+        self.instance.fail_start = self.fail_start
         return self.instance
