@@ -36,6 +36,7 @@ export const WORKSPACES: WorkspaceDef[] = [
         arrives:
           "M1 — Live tape: Binance spot and USDⓈ-M public streams for the configured symbols, " +
           "shown only while monitoring is running.",
+        implemented: true,
       },
       {
         id: "scanner",
@@ -56,6 +57,7 @@ export const WORKSPACES: WorkspaceDef[] = [
         arrives:
           "M1 — a clearly labeled demo detector emits WATCH events; real strategy signals in M4; " +
           "agent review in M5.",
+        implemented: true,
       },
     ],
   },
@@ -159,8 +161,8 @@ export const WORKSPACES: WorkspaceDef[] = [
         title: "Health",
         path: "/system/health",
         willShow:
-          "Session, event-chain integrity and observation coverage now; stream table, " +
-          "freshness, gaps and clock offset from M1.",
+          "Session, event-chain integrity, stream table, connections, clock offset, REST " +
+          "weight, data gaps and observation coverage.",
         arrives: "M0 (session, chain, coverage); streams and data quality in M1.",
         implemented: true,
       },
@@ -194,8 +196,8 @@ export const WORKSPACES: WorkspaceDef[] = [
 
 export const ALL_PAGES: PageDef[] = WORKSPACES.flatMap((w) => w.pages);
 
-/** In M0 the useful content lives in System › Health, so the shell opens there. */
-export const DEFAULT_PATH = "/system/health";
+/** The shell opens on the live watchlist (M1). */
+export const DEFAULT_PATH = "/live/markets";
 
 export function findPage(path: string): PageDef | undefined {
   const normalized = path.replace(/\/+$/, "") || "/";

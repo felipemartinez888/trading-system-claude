@@ -33,6 +33,8 @@ class EventType(StrEnum):
     # signals (M1+)
     SIGNAL_CREATED = "signal_created"
     SIGNAL_TRANSITIONED = "signal_transitioned"
+    # research (M2+)
+    HOLDOUT_UNLOCKED = "holdout_unlocked"
 
 
 class AggregateType(StrEnum):
@@ -41,6 +43,7 @@ class AggregateType(StrEnum):
     STREAM = "stream"
     MARKET_DATA = "market_data"
     SIGNAL = "signal"
+    RESEARCH = "research"
 
 
 class NewEvent(BaseModel):

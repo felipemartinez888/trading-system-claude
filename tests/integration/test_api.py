@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -97,7 +98,7 @@ def test_status_reflects_session(client: TestClient, ctx: AppContext) -> None:
             "value": None,
             "provenance": "UNAVAILABLE",
             "as_of_ms": None,
-            "reason": "not implemented until M1",
+            "reason": "market data is not configured in this app instance",
         }
 
 
@@ -320,9 +321,14 @@ def test_websocket_pushes_status_on_change(client: TestClient, ctx: AppContext) 
         assert first["type"] == "status"
         assert _monitoring(first["data"])["state"] == "STOPPED"
         assert client.post("/api/monitoring/start", headers=_auth(ctx)).status_code == 200
+        starting = ws.receive_json()  # the transition is visible while market data starts
+        assert starting["type"] == "status"
+        assert _monitoring(starting["data"])["transition"] == "starting"
+        assert _monitoring(starting["data"])["state"] == "STOPPED"
         pushed = ws.receive_json()
         assert pushed["type"] == "status"
         assert _monitoring(pushed["data"])["state"] == "RUNNING"
+        assert _monitoring(pushed["data"])["transition"] is None
 
 
 def test_websocket_pushes_on_heartbeat(make_context: ContextFactory, no_bundle: Path) -> None:
@@ -438,3 +444,57 @@ def test_unc_and_absolute_paths_are_refused_before_filesystem_access(
         assert calls == []
         assert c.get("/assets/app.js").status_code == 200
         assert calls == ["assets/app.js"]
+
+
+@pytest.mark.parametrize("probe", ["/INDEX.HTML", "/Index.Html", "/index.html/"])
+def test_index_any_case_is_served_with_token_and_headers(
+    ctx: AppContext, bundle: Path, probe: str
+) -> None:
+    # N2: on case-insensitive filesystems "/INDEX.HTML" would otherwise be the raw file
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        r = c.get(BASE_URL + probe)
+        assert r.status_code == 200
+        assert f'content="{ctx.token}"' in r.text
+        assert r.headers["cache-control"] == "no-store"
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        "/index.html.",
+        "/index.html%20",
+        "/assets/app.js.",
+        "/con",
+        "/CON",
+        "/assets/nul.js",
+        "/assets/NUL",
+        "/com1.txt",
+        "/lpt9",
+        "/aux.tar.gz",
+        "/assets/conin$",
+    ],
+)
+def test_trailing_dot_space_and_device_names_are_refused(
+    ctx: AppContext, bundle: Path, probe: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    real = pages.resolve_static_file
+    monkeypatch.setattr(pages, "resolve_static_file", lambda d, p: calls.append(p) or real(d, p))
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        r = c.get(BASE_URL + probe)
+        assert r.status_code == 404, probe
+        assert ctx.token not in r.text
+    assert calls == []  # refused before any filesystem access
+
+
+def test_any_alias_of_index_is_served_with_token(ctx: AppContext, bundle: Path) -> None:
+    # Review #7: another name for the same file (Windows 8.3 short name INDEX~1.HTM, or a link)
+    # must never be served raw, without the token, CSP and no-store.
+    os.link(bundle / "index.html", bundle / "alias.htm")
+    with _client(create_app(ctx, static_dir=bundle, heartbeat=False)) as c:
+        r = c.get(BASE_URL + "/alias.htm")
+        assert r.status_code == 200
+        assert f'content="{ctx.token}"' in r.text
+        assert r.headers["cache-control"] == "no-store"
+        assert "content-security-policy" in r.headers

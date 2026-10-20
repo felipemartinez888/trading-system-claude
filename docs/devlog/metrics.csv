@@ -4,3 +4,4 @@ M0-core,M0,lead,2026-10-20T00:40Z,2026-10-20T01:00Z,1,,,,,0,0,1,0,,contracts/eve
 M0-T4,M0,platform-ui-engineer,2026-10-20T00:58Z,2026-10-20T14:10Z,4,,,,,1,8,0,1,,UNC/SMB path leak on Windows found in review; 3 sessions cut by usage limits; subagent tokens reported ~577k over 2 runs
 M1-T1,M1,data-engineer,2026-10-20T00:58Z,2026-10-20T14:40Z,5,,,,,3,7,1,2,,bad-frame kills WS; old bar labelled LIVE; recycle-stop leak — all found in review; ~1.1M subagent tokens reported across runs
 M2-T2,M2,sim-risk-engineer,2026-10-20T00:58Z,2026-10-20T19:10Z,5,,,,,1,8,0,1,,same-bar TP bias found by causality audit (L-04); R1/R2 latent issues deferred to M3 with failing tests
+M1-T2,M1,platform-ui-engineer,2026-10-20T15:00Z,2026-10-21T00:30Z,4,,,,,2,9,1,1,,stopped-but-running on DB error; verify_live false PASS — found in review

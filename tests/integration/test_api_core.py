@@ -14,7 +14,7 @@ import pytest
 from api_testkit import TOKEN, ContextFactory, make_tampered_db
 from pydantic import BaseModel
 
-from tsclaude.api import schemas
+from tsclaude.api import market_schemas, schemas
 from tsclaude.api.context import (
     TransitionError,
     TransitionRefused,
@@ -41,14 +41,43 @@ from tsclaude.contracts.timeutil import ManualClock
 from tsclaude.runtime.sessions import ObservationInterval
 
 # ---------------------------------------------------------------------- ADR-0010 contract
-# Plain (non-Sourced) fields allowed on top-level read models: identity and metadata only.
+# Plain (non-Sourced) fields allowed on read models: identity and metadata only. Fields that are
+# lists of models (e.g. MarketsResponse.rows) are checked recursively against this table.
 _PLAIN_ALLOWED = {
     "StatusResponse": {"app_version", "server_time", "heartbeat_interval_s"},
     "CoverageResponse": {"generated_at"},
     "EventsResponse": {"generated_at"},
     "HealthResponse": {"ok", "app", "version"},  # liveness only, no metrics
     "QuitResponse": {"accepted"},
+    "MarketsResponse": {"generated_at"},
+    "MarketRow": {"market", "symbol"},
+    "StreamsHealthResponse": {"generated_at"},
+    "GapsResponse": {"generated_at"},
+    "BarsResponse": {
+        "generated_at",
+        "market",
+        "symbol",
+        "interval",
+        "from_ms",
+        "to_ms",
+        "truncated",
+    },
+    "SignalsResponse": {"generated_at"},
+    "NotificationsResponse": {"generated_at", "head_seq"},
 }
+_TOP_LEVEL = [
+    "StatusResponse",
+    "CoverageResponse",
+    "EventsResponse",
+    "HealthResponse",
+    "QuitResponse",
+    "MarketsResponse",
+    "StreamsHealthResponse",
+    "GapsResponse",
+    "BarsResponse",
+    "SignalsResponse",
+    "NotificationsResponse",
+]
 
 
 def _is_sourced(annotation: Any) -> bool:
@@ -62,13 +91,28 @@ def _is_sourced(annotation: Any) -> bool:
     return False
 
 
-@pytest.mark.parametrize("model_name", sorted(_PLAIN_ALLOWED))
-def test_every_read_model_field_carries_provenance(model_name: str) -> None:
-    model: type[BaseModel] = getattr(schemas, model_name)
+def _model(name: str) -> type[BaseModel]:
+    found = getattr(schemas, name, None) or getattr(market_schemas, name)
+    assert isinstance(found, type)
+    return found
+
+
+def _check(model: type[BaseModel]) -> None:
+    allowed = _PLAIN_ALLOWED.get(model.__name__, set())
     for name, field in model.model_fields.items():
-        if name in _PLAIN_ALLOWED[model_name]:
+        if name in allowed or _is_sourced(field.annotation):
             continue
-        assert _is_sourced(field.annotation), f"{model_name}.{name} lacks provenance (ADR-0010)"
+        if get_origin(field.annotation) is list:
+            (item,) = get_args(field.annotation)
+            if isinstance(item, type) and issubclass(item, BaseModel):
+                _check(item)
+                continue
+        raise AssertionError(f"{model.__name__}.{name} lacks provenance (ADR-0010)")
+
+
+@pytest.mark.parametrize("model_name", _TOP_LEVEL)
+def test_every_read_model_field_carries_provenance(model_name: str) -> None:
+    _check(_model(model_name))
 
 
 # ---------------------------------------------------------------------- context lifecycle
@@ -87,11 +131,11 @@ def test_context_start_opens_session_and_verifies_chain(make_context: ContextFac
 def test_transitions_raise_typed_errors(make_context: ContextFactory) -> None:
     ctx = make_context()
     with pytest.raises(TransitionError) as info:
-        ctx.stop_monitoring()
+        asyncio.run(ctx.stop_monitoring())
     assert info.value.kind is TransitionRefused.INVALID
-    ctx.start_monitoring()
+    asyncio.run(ctx.start_monitoring())
     with pytest.raises(TransitionError) as info:
-        ctx.start_monitoring()
+        asyncio.run(ctx.start_monitoring())
     assert info.value.kind is TransitionRefused.INVALID
 
 
@@ -105,7 +149,7 @@ def test_tampered_chain_locks_monitoring(
     assert not chain.ok
     assert chain.first_bad_seq == 1
     with pytest.raises(TransitionError) as info:
-        ctx.start_monitoring()
+        asyncio.run(ctx.start_monitoring())
     assert info.value.kind is TransitionRefused.LOCKED
     # Session still opens (the UI must come up); derived projections are withheld.
     assert ctx.status().session.value is not None
@@ -115,7 +159,7 @@ def test_tampered_chain_locks_monitoring(
 
 def test_close_is_idempotent_and_stops_monitoring(make_context: ContextFactory) -> None:
     ctx = make_context()
-    ctx.start_monitoring()
+    asyncio.run(ctx.start_monitoring())
     ctx.close("user")
     ctx.close("user")
     types_ = [str(e.type) for e in ctx.store.read()]
@@ -123,7 +167,7 @@ def test_close_is_idempotent_and_stops_monitoring(make_context: ContextFactory) 
     assert types_.count("session_stopped") == 1
     assert ctx.status().session.provenance == "UNAVAILABLE"
     with pytest.raises(TransitionError):
-        ctx.start_monitoring()
+        asyncio.run(ctx.start_monitoring())
 
 
 def test_heartbeat_goes_stale_without_beats(
@@ -144,7 +188,7 @@ def test_previous_session_clean_and_crashed(
     clock: ManualClock, make_context: ContextFactory
 ) -> None:
     first = make_context()
-    first.start_monitoring()
+    asyncio.run(first.start_monitoring())
     clock.advance(5_000)
     first.close("user")
     clock.advance(5_000)
@@ -167,19 +211,19 @@ def test_previous_session_clean_and_crashed(
 
 def test_request_shutdown_without_server_closes_nothing(make_context: ContextFactory) -> None:
     ctx = make_context()
-    refused = ctx.request_shutdown("user_quit")
+    refused = asyncio.run(ctx.request_shutdown("user_quit"))
     assert refused.accepted is False
     assert refused.session.provenance == "UNAVAILABLE"
     assert not ctx.closed
     assert ctx.shutdown_reason is None
     calls: list[int] = []
     ctx.set_shutdown_callback(lambda: calls.append(1))
-    accepted = ctx.request_shutdown("user_quit")
+    accepted = asyncio.run(ctx.request_shutdown("user_quit"))
     assert accepted.accepted is True
     assert accepted.session.value is not None
     assert accepted.session.value.clean is True
     assert calls == [1]
-    again = ctx.request_shutdown("other")
+    again = asyncio.run(ctx.request_shutdown("other"))
     assert again.session.value == accepted.session.value  # first outcome wins
     assert ctx.shutdown_reason == "user_quit"
 
@@ -210,8 +254,8 @@ def test_shutdown_message_is_published_after_session_stopped(
 
 def test_events_paging(make_context: ContextFactory) -> None:
     ctx = make_context()
-    ctx.start_monitoring()
-    ctx.stop_monitoring()
+    asyncio.run(ctx.start_monitoring())
+    asyncio.run(ctx.stop_monitoring())
     page = ctx.events(after_seq=None, limit=500).events.value
     assert page is not None
     assert [e.type for e in page.items] == [

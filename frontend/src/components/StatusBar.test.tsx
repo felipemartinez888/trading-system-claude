@@ -81,14 +81,118 @@ describe("StatusBar", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
-  it("never shows streams as healthy before M1", async () => {
+  it("shows the stream groups' real state from the API", async () => {
     installBackend(statusFixture("RUNNING"));
     renderBar();
-    for (const name of ["spot", "futures"]) {
-      const stream = await screen.findByTestId(`stream-${name}`);
-      expect(stream).toHaveTextContent("UNAVAILABLE");
-      expect(stream).toHaveTextContent("not implemented until M1");
-    }
+    const spot = await screen.findByTestId("stream-spot");
+    expect(spot).toHaveTextContent("HEALTHY 6/6");
+    expect(spot).toHaveTextContent("SYSTEM");
+    expect(spot.querySelector(".stream-ok")).not.toBeNull();
+    expect(screen.getByTestId("stream-futures")).toHaveTextContent("HEALTHY 9/9");
+  });
+
+  it("never shows a degraded or stopped stream group as healthy", async () => {
+    const base = statusFixture("RUNNING");
+    installBackend({
+      ...base,
+      streams: {
+        spot: system("DISCONNECTED (4/6 healthy)"),
+        futures: {
+          value: "HEALTHY 9/9",
+          provenance: "STALE",
+          as_of_ms: Date.parse("2026-10-20T11:00:00.000Z"),
+          reason: "monitoring stopped",
+        },
+      },
+    });
+    renderBar();
+    const spot = await screen.findByTestId("stream-spot");
+    expect(spot).toHaveTextContent("DISCONNECTED (4/6 healthy)");
+    expect(spot.querySelector(".stream-bad")).not.toBeNull();
+    const futures = screen.getByTestId("stream-futures");
+    expect(futures).toHaveTextContent("STALE");
+    expect(futures.querySelector(".stream-ok")).toBeNull(); // last-known HEALTHY is not green
+  });
+
+  it("before monitoring starts, stream groups are UNAVAILABLE with the reason", async () => {
+    installBackend(statusFixture("STOPPED"));
+    renderBar();
+    const spot = await screen.findByTestId("stream-spot");
+    expect(spot).toHaveTextContent("UNAVAILABLE");
+    expect(spot).toHaveTextContent("monitoring has not been started");
+  });
+
+  it("keeps Stop available while values are STALE but the backend answers (N1)", async () => {
+    setToken();
+    const base = statusFixture("RUNNING");
+    const mock = installBackend({
+      ...base,
+      heartbeat: {
+        value: "2026-10-20T11:59:00.000Z",
+        provenance: "STALE",
+        as_of_ms: Date.parse("2026-10-20T11:59:00.000Z"),
+        reason: null,
+      },
+    });
+    renderBar();
+    const stop = await screen.findByRole("button", { name: "Stop" });
+    expect(screen.getByTestId("stream-spot")).toHaveTextContent("STALE"); // downgraded display
+    expect(stop).toBeEnabled();
+    await userEvent.click(stop);
+    await waitFor(() => expect(postCalls(mock)).toHaveLength(1));
+    expect(String(postCalls(mock)[0]![0])).toBe("/api/monitoring/stop");
+  });
+
+  it("shows why a start failed and stays STOPPED", async () => {
+    const base = statusFixture("STOPPED");
+    installBackend({
+      ...base,
+      monitoring: {
+        ...base.monitoring,
+        value: {
+          state: "STOPPED",
+          monitoring_id: null,
+          since: null,
+          start_allowed: true,
+          blocked_reason: null,
+          transition: null,
+          last_error: "market data failed to start: ConnectError: api.binance.com unreachable",
+        },
+      },
+    });
+    renderBar();
+    expect(await screen.findByTestId("start-error")).toHaveTextContent("api.binance.com unreachable");
+    expect(screen.getByTestId("monitoring-state")).toHaveTextContent("STOPPED");
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled(); // retry allowed
+  });
+
+  it("shows a server-side start (no second Start) and lets it be cancelled", async () => {
+    const base = statusFixture("STOPPED");
+    setToken();
+    const mock = installBackend({
+      ...base,
+      monitoring: {
+        ...base.monitoring,
+        value: {
+          state: "STOPPED",
+          monitoring_id: null,
+          since: null,
+          start_allowed: false,
+          blocked_reason: null,
+          transition: "starting",
+          last_error: null,
+        },
+      },
+    });
+    renderBar();
+    expect(await screen.findByTestId("starting")).toHaveTextContent("Starting…");
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    // review #10: a slow start can be cancelled
+    const cancel = screen.getByRole("button", { name: "Cancel start" });
+    expect(cancel).toBeEnabled();
+    await userEvent.click(cancel);
+    await waitFor(() => expect(postCalls(mock)).toHaveLength(1));
+    expect(String(postCalls(mock)[0]![0])).toBe("/api/monitoring/stop");
   });
 
   it("sends the token header on mutations and reflects the new state", async () => {
@@ -106,7 +210,7 @@ describe("StatusBar", () => {
     expect(new Headers(init?.headers).get(TOKEN_HEADER)).toBe(TOKEN);
   });
 
-  it("disables the button while the request is pending", async () => {
+  it("prevents a second start while the request is pending", async () => {
     setToken();
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -120,8 +224,10 @@ describe("StatusBar", () => {
     });
     renderBar();
     await userEvent.click(await screen.findByRole("button", { name: "Start" }));
-    const pending = await screen.findByRole("button", { name: "Starting…" });
-    expect(pending).toBeDisabled();
+    // while the start is pending: no second Start, a "Starting…" label and only "Cancel start"
+    expect(await screen.findByTestId("starting")).toHaveTextContent("Starting…");
+    expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel start" })).toBeEnabled();
     release();
     expect(await screen.findByRole("button", { name: "Stop" })).toBeEnabled();
   });
@@ -161,6 +267,8 @@ describe("StatusBar", () => {
           since: null,
           start_allowed: false,
           blocked_reason: "event chain verification failed at seq 3: hash mismatch",
+          transition: null,
+          last_error: null,
         },
       },
       chain: {

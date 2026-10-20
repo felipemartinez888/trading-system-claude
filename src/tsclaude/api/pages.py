@@ -49,7 +49,40 @@ def is_safe_relative_path(rel_path: str) -> bool:
         if any(part in ("..", ".") for part in flavour.parts):
             return False
     segments = rel_path.split("/")
-    return all(segment not in ("", ".", "..") for segment in segments)
+    return all(_safe_segment(segment) for segment in segments)
+
+
+# Windows device names: refused on every platform, case-insensitively, with or without an
+# extension ("nul.js" also opens the NUL device on Windows).
+_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"}
+    | {f"{dev}{n}" for dev in ("COM", "LPT") for n in (*"0123456789", "¹", "²", "³")}
+)
+
+
+def _safe_segment(segment: str) -> bool:
+    if segment in ("", ".", ".."):
+        return False
+    # Windows strips trailing dots and spaces, so "index.html." / "app.js " would alias real
+    # files and bypass exact-name checks; refuse them everywhere.
+    if segment.endswith((".", " ")):
+        return False
+    stem = segment.split(".", 1)[0].rstrip(" ").upper()
+    return stem not in _RESERVED_NAMES
+
+
+def is_index_file(static_dir: Path, file: Path) -> bool:
+    """True if `file` is the same file as `static_dir/index.html` (any alias of it)."""
+    index = static_dir / "index.html"
+    try:
+        return index.is_file() and file.samefile(index)
+    except OSError:
+        return False
+
+
+def is_index_path(rel_path: str) -> bool:
+    """`index.html` in any letter case (case-insensitive filesystems would serve the same file)."""
+    return rel_path.lower() == "index.html"
 
 
 def resolve_static_file(static_dir: Path, rel_path: str) -> Path | None:

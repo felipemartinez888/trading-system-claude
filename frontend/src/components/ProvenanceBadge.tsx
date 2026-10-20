@@ -69,11 +69,17 @@ export function ProvenanceBadge({ provenance, reason, asOfMs, compact = false }:
 }
 
 /** Wraps demo content with the diagonal-hatch watermark and a banner (DASHBOARD §2). */
-export function DemoWatermark({ children }: { children: ReactNode }) {
+export function DemoWatermark({
+  children,
+  banner = "DEMO — fabricated demonstration data, not market observations",
+}: {
+  children: ReactNode;
+  banner?: string;
+}) {
   return (
     <div className="demo-watermark" data-testid="demo-watermark">
       <div className="demo-watermark__banner" role="note">
-        DEMO — fabricated demonstration data, not market observations
+        {banner}
       </div>
       {children}
     </div>
