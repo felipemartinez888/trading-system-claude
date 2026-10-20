@@ -108,7 +108,7 @@ def test_golden_fingerprint_is_pinned() -> None:
     assert res.fingerprint == PINNED_FINGERPRINT_SEED0
 
 
-PINNED_FINGERPRINT_SEED0 = "03040c483c1ab8ee842e59991ea1dc9d5862b4996f0ff1c94288a1f00a8c4b18"
+PINNED_FINGERPRINT_SEED0 = "80e89bb359935e92175598d43314dd4f02092121087226eafaa88d94e8af4bfd"
 
 
 @pytest.mark.parametrize("seed", range(40))

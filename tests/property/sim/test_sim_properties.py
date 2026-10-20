@@ -18,7 +18,13 @@ from tsclaude.sim.book import Book, BookConfig
 from tsclaude.sim.clock import HistoricalClock
 from tsclaude.sim.costs import CostModel, Direction, Liquidity
 from tsclaude.sim.engine import Simulator
-from tsclaude.sim.fills import BarPrices, ExitReason, resolve_entry, resolve_exit
+from tsclaude.sim.fills import (
+    BarPrices,
+    ExitReason,
+    resolve_entry,
+    resolve_exit,
+    resolve_fill_bar_exit,
+)
 from tsclaude.sim.orders import OrderType
 from tsclaude.sim.testing import (
     InvariantSource,
@@ -162,5 +168,30 @@ def test_sl_and_tp_reachable_in_one_bar_is_always_sl_first(
     elif tp_hit:
         assert fill is not None
         assert fill.reason is ExitReason.TAKE_PROFIT
+    else:
+        assert fill is None
+
+
+@SETTINGS
+@given(
+    t=ohlc_ticks,
+    stop_off=st.integers(min_value=-80, max_value=80),
+    long=st.booleans(),
+)
+def test_fill_bar_exit_is_only_ever_a_flagged_stop(
+    t: tuple[int, int, int, int], stop_off: int, long: bool
+) -> None:
+    """L-04: an intrabar entry's fill bar can only stop it out (flagged), never take profit."""
+    prices = _bar(t)
+    side = Side.LONG if long else Side.SHORT
+    entry = prices.close
+    stop = entry - (stop_off * TICK if long else -stop_off * TICK)
+    fill = resolve_fill_bar_exit(side, entry, stop, prices.low, prices.high)
+    in_range = prices.low <= stop if long else prices.high >= stop
+    if in_range:
+        assert fill is not None
+        assert fill.reason is ExitReason.STOP_LOSS
+        assert fill.ambiguous
+        assert fill.raw_price == stop
     else:
         assert fill is None

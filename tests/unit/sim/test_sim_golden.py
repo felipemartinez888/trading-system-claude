@@ -72,7 +72,7 @@ def test_g1_market_long_take_profit() -> None:
         gross = 4951.08 - 4855.4562 = 95.6238;    fees = 4.8554562 + 4.95108 = 9.8065362
         net   = 95.6238 - 9.8065362 = 85.8172638; R = 85.8172638 / 49.9962 = 1.71647573
         MAE = (1000.3 - 998) / 10.3 = 0.22330097 R
-        MFE = (1020.1 - 1000.3) / 10.3 = 1.92233010 R (path up to the TP trigger level 1020.1)
+        MFE = (1020 - 1000.3) / 10.3 = 1.91262136 R (up to the TP price, not the +1 tick trigger)
         final equity = 10000 + 85.8172638 = 10085.8172638
     """
     bars = series([*ENTRY_BARS, (1002, 1021, 1001, 1019)])
@@ -89,7 +89,7 @@ def test_g1_market_long_take_profit() -> None:
     assert t.net_pnl == D("85.8172638")
     assert t.r_multiple == D("1.71647573")
     assert t.mae_r == D("0.22330097")
-    assert t.mfe_r == D("1.92233010")
+    assert t.mfe_r == D("1.91262136")
     assert not t.ambiguous_bar
     assert not t.gap_fill
     assert book.equity() == D("10085.81726380")

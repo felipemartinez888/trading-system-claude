@@ -19,6 +19,7 @@ from tsclaude.sim.book import Book, BookConfig, RiskHook, SimEventType, allow_al
 from tsclaude.sim.clock import HistoricalClock
 from tsclaude.sim.costs import CostModel
 from tsclaude.sim.engine import SimResult, Simulator, SimView
+from tsclaude.sim.fills import ExitReason
 from tsclaude.sim.money import q8
 from tsclaude.sim.orders import EntryRequest, ExitRequest, InstrumentSpec
 
@@ -281,6 +282,11 @@ def check_book_invariants(book: Book, result: SimResult) -> list[str]:
             problems.append(f"{t.trade_id}: r_multiple inconsistent")
         if t.mae_r < 0 or t.mfe_r < 0:
             problems.append(f"{t.trade_id}: negative MAE/MFE")
+        same_bar = t.entry_bar_open_ms == t.exit_bar_open_ms and not t.entry_at_open
+        if same_bar and (t.exit_reason is not ExitReason.STOP_LOSS or not t.ambiguous_bar):
+            problems.append(
+                f"{t.trade_id}: intrabar entry exited in its fill bar other than flagged SL"
+            )
     return problems
 
 

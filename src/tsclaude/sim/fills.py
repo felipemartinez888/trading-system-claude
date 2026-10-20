@@ -7,8 +7,9 @@ Assumed intrabar path
 ---------------------
 ``O -> (H or L, whichever is nearer to O) -> (the other) -> C``, moving monotonically between those
 points. On a tie (|H - O| == |O - L|) the low is assumed first. The path is used only to decide what
-happens *after* an intrabar entry (which part of the bar the position experiences) and to measure
-excursions; it never decides SL-versus-TP order, which is fixed by the ambiguity rule.
+happens to a position held from the open (stop and take-profit trigger points, excursions); it
+never decides SL-versus-TP order, which is fixed by the ambiguity rule, and it never grants an
+intrabar entry a same-bar take-profit (L-04).
 
 The open is the first trade of the bar. A position held from before the bar therefore resolves
 gap-throughs at the open first (stop-loss before take-profit before a due time/market exit) and only
@@ -16,8 +17,15 @@ then looks at the rest of the bar.
 
 Intrabar ambiguity rule
 -----------------------
-If the stop-loss and the take-profit are both reachable inside the remaining part of one 1m bar, the
-outcome is **stop-loss first** and the exit is flagged ``ambiguous_bar=True``.
+If the stop-loss and the take-profit are both reachable inside one 1m bar, the outcome is
+**stop-loss first** and the exit is flagged ``ambiguous_bar=True``.
+
+Same-bar rule for intrabar entries (Lead decision L-04)
+-------------------------------------------------------
+An entry filled *inside* a bar may be stopped out in that bar (any stop inside the bar's range
+counts as hit, flagged ``ambiguous_bar=True``) but can **never** book its take-profit in that bar;
+the take-profit is eligible from the next 1m bar. Entries filled *at the open* hold the position
+from the first trade of the bar and follow the normal rules.
 
 Trigger levels (``tick`` = instrument tick size)
 ------------------------------------------------
@@ -175,19 +183,15 @@ def resolve_exit(
     held_at_open: bool,
     market_exit_due: ExitReason | None,
     tp_liquidity: Liquidity,
-    bar_low: Decimal | None = None,
-    bar_high: Decimal | None = None,
 ) -> ExitFill | None:
-    """Decide whether an open position exits on the given (remaining) path of one bar.
+    """Exit of a position that holds from the start of `path` (bar open, or a fill at the open).
 
-    `held_at_open`: the position existed before this bar, so ``path[0]`` is the bar open and the
-    open-gap rules apply. `market_exit_due`: a time exit or exit signal executes at this open.
+    `held_at_open`: ``path[0]`` is the bar open and the open-gap rules apply. `market_exit_due`:
+    a time exit or exit signal executes at this open. Positions entered *inside* the bar use
+    `resolve_fill_bar_exit` instead (Lead decision L-04).
 
-    `bar_low` / `bar_high` (same-bar entries only): the assumed path cannot prove that the bar's
-    extreme beyond the stop came *before* an intrabar entry, so if the stop lies anywhere inside
-    the bar's range it is treated as reachable after the entry (stop-loss, ``ambiguous_bar=True``
-    when the remaining path alone would not have reached it). This only matters for stop entries;
-    for limit entries the extreme always lies on the remaining path.
+    The excursion of a take-profit exit ends at the take-profit price, not at the trade-through
+    level (limit + 1 tick) used to decide that the limit filled.
     """
     long = side is Side.LONG
     o = path[0]
@@ -196,6 +200,7 @@ def resolve_exit(
         if _beyond(o, stop, down=long):
             return ExitFill(ExitReason.STOP_LOSS, o, Liquidity.TAKER, True, o != stop, False, (o,))
         if take_profit is not None and tp_level is not None and _beyond(o, tp_level, down=not long):
+            # Gapped through the TP: fills at the TP price, never at the better open.
             return ExitFill(
                 ExitReason.TAKE_PROFIT, take_profit, tp_liquidity, True, False, False, (o,)
             )
@@ -203,11 +208,7 @@ def resolve_exit(
             return ExitFill(market_exit_due, o, Liquidity.TAKER, True, False, False, (o,))
     sl_split = split_at(path, stop, down=long)
     tp_split = None if tp_level is None else split_at(path, tp_level, down=not long)
-    sl_in_range = False
-    if not held_at_open and sl_split is None:
-        extreme = bar_low if long else bar_high
-        sl_in_range = extreme is not None and _beyond(extreme, stop, down=long)
-    if (sl_split is not None and tp_split is not None) or sl_in_range:
+    if sl_split is not None and tp_split is not None:
         return ExitFill(
             ExitReason.STOP_LOSS,
             stop,
@@ -216,14 +217,40 @@ def resolve_exit(
             False,
             True,
             (o, stop),  # SL-first: assume a direct move from the start to the stop
-            alt_tp_raw_price=take_profit if tp_split is not None else None,
+            alt_tp_raw_price=take_profit,
         )
     if sl_split is not None:
         return ExitFill(
             ExitReason.STOP_LOSS, stop, Liquidity.TAKER, False, False, False, sl_split[0]
         )
     if tp_split is not None and take_profit is not None:
+        excursion = (*tp_split[0][:-1], take_profit)
         return ExitFill(
-            ExitReason.TAKE_PROFIT, take_profit, tp_liquidity, False, False, False, tp_split[0]
+            ExitReason.TAKE_PROFIT, take_profit, tp_liquidity, False, False, False, excursion
         )
     return None
+
+
+def resolve_fill_bar_exit(
+    side: Side, entry_raw_price: Decimal, stop: Decimal, bar_low: Decimal, bar_high: Decimal
+) -> ExitFill | None:
+    """Exit in the fill bar of an entry filled *inside* that bar (Lead decision L-04).
+
+    OHLC cannot tell whether the bar's extremes came before or after an intrabar fill, so:
+    - the stop-loss counts as hit if the stop lies anywhere inside the bar's range; the exit is
+      flagged ``ambiguous_bar=True`` (it rests on an assumed ordering);
+    - the take-profit is **never** eligible in the fill bar; it is eligible from the next 1m bar.
+    """
+    long = side is Side.LONG
+    extreme = bar_low if long else bar_high
+    if not _beyond(extreme, stop, down=long):
+        return None
+    return ExitFill(
+        ExitReason.STOP_LOSS,
+        stop,
+        Liquidity.TAKER,
+        False,
+        False,
+        True,
+        (entry_raw_price, stop),
+    )

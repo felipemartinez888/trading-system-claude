@@ -19,6 +19,11 @@ R-multiple: ``1R = qty x |entry_fill_price - stop_price|`` (the planned risk at 
 price). ``r_multiple = net_pnl / 1R`` where ``net_pnl`` includes slippage (embedded in fill prices),
 entry and exit fees and funding. MAE/MFE are gross price excursions over the bars the position
 experienced, in R, both reported as non-negative numbers.
+In the fill bar of an intrabar entry (ordering unknown, L-04) MAE counts the bar's adverse extreme
+and MFE only the close; a take-profit's excursion ends at the take-profit price.
+
+Trades are flagged ``ambiguous_bar`` (SL-first resolution or a fill-bar stop-out) and
+``spans_gap`` (the position lived through missing 1m bars); both are counted in `summary`.
 """
 
 from __future__ import annotations
@@ -31,8 +36,16 @@ from typing import Any
 
 from tsclaude.contracts.market import Bar, Market
 from tsclaude.contracts.signals import Side
+from tsclaude.contracts.timeutil import MS_PER_MINUTE
 from tsclaude.sim.costs import CostModel, FillCosts, Liquidity, PricedExecution
-from tsclaude.sim.fills import BarPrices, ExitFill, ExitReason, resolve_entry, resolve_exit
+from tsclaude.sim.fills import (
+    BarPrices,
+    ExitFill,
+    ExitReason,
+    resolve_entry,
+    resolve_exit,
+    resolve_fill_bar_exit,
+)
 from tsclaude.sim.ledger import (
     CAPITAL,
     CASH,
@@ -43,7 +56,7 @@ from tsclaude.sim.ledger import (
     margin_account,
     position_account,
 )
-from tsclaude.sim.money import ONE, SIM_CONTEXT, ZERO, dstr, q8, to_decimal
+from tsclaude.sim.money import ONE, SIM_CONTEXT, ZERO, dstr, q8, q8_down, to_decimal
 from tsclaude.sim.orders import (
     ENTRY_ORDER_TYPE,
     EntryRequest,
@@ -59,6 +72,16 @@ from tsclaude.sim.orders import (
 
 type SymbolKey = tuple[Market, str]
 type Payload = dict[str, Any]
+
+
+class RejectReason(StrEnum):
+    """Stable reason codes on ORDER_REJECTED events at fill time (reports count them)."""
+
+    STOP_BREACHED_AT_ENTRY = "stop_breached_at_entry"  # execution price already beyond the stop
+    TAKE_PROFIT_BREACHED_AT_ENTRY = "take_profit_breached_at_entry"
+    BELOW_MIN_NOTIONAL = "below_min_notional"
+    NON_POSITIVE_EQUITY = "non_positive_equity"
+    SIZE_ZERO = "size_zero"  # suffixed with the binding constraint, e.g. size_zero:cash
 
 
 class SimEventType(StrEnum):
@@ -84,7 +107,17 @@ class SimEventType(StrEnum):
 # ---------------------------------------------------------------- risk hook
 @dataclass(frozen=True, slots=True)
 class RiskCheck:
-    stage: str  # "submit" (order acceptance) or "fill" (just before execution)
+    """Input to the risk hook.
+
+    ``stage="submit"``: order acceptance; ``ts_ms`` is the decision time (the bar close the signal
+    was computed from) and ``equity`` the mark-to-market equity at that close.
+    ``stage="fill"``: just before execution; ``ts_ms`` is the **execution time**, the open of the
+    bar the order executes on (for intrabar fills the earliest possible fill time), and ``equity``
+    the sizing equity at the previous 1m close. The hook may only use data with
+    ``close_time_ms < ts_ms`` -- i.e. up to the previous close -- never the executing bar.
+    """
+
+    stage: str  # "submit" or "fill"
     book: str
     ts_ms: int
     request: EntryRequest
@@ -145,6 +178,7 @@ class TradeRecord:
     exit_reason: ExitReason
     gap_fill: bool
     ambiguous_bar: bool
+    spans_gap: bool  # the position lived through missing 1m bars (L-04)
     gross_pnl: Decimal  # price P&L incl. slippage, before fees and funding
     fees: Decimal
     funding: Decimal  # received (+) / paid (-)
@@ -182,6 +216,7 @@ class TradeRecord:
             "exit_reason": str(self.exit_reason),
             "gap_fill": self.gap_fill,
             "ambiguous_bar": self.ambiguous_bar,
+            "spans_gap": self.spans_gap,
             "gross_pnl": dstr(self.gross_pnl),
             "fees": dstr(self.fees),
             "funding": dstr(self.funding),
@@ -245,6 +280,19 @@ def drawdown_stats(points: Sequence[EquityPoint]) -> DrawdownStats:
     return DrawdownStats(max_dd, peak_ts, trough_ts, longest)
 
 
+def funding_cash_flow(rate: Decimal, side: Side, qty: Decimal, mark_price: Decimal) -> Decimal:
+    """Signed funding cash flow for the book (+ received, - paid), quantized to 1e-8.
+
+    ``amount = -side_sign x rate x qty x mark_price``: with a positive rate longs pay and shorts
+    receive; with a negative rate the reverse. Rounded toward -infinity, i.e. adverse to the book
+    (payments round up, receipts round down).
+    """
+    if qty <= 0 or mark_price <= 0:
+        raise ValueError("funding needs a positive quantity and mark price")
+    with localcontext(SIM_CONTEXT):
+        return q8_down(-side_sign(side) * rate * qty * mark_price)
+
+
 # ---------------------------------------------------------------- internal state
 @dataclass(slots=True)
 class _PendingEntry:
@@ -272,8 +320,13 @@ class _Position:
     sl_order_id: str
     tp_order_id: str | None
     time_exit_due_ms: int | None
+    #: held strictly after this time: the bar open for at-open fills, the bar close for intrabar
+    #: fills (the fill time inside the bar is unknown)
+    entry_time_ms: int = 0
     exit_due_ms: int | None = None  # exit signal / invalidation: market at this open or later
     funding: Decimal = ZERO
+    last_funding_ms: int | None = None
+    spans_gap: bool = False
     best: Decimal = ZERO
     worst: Decimal = ZERO
     last_mark: Decimal = ZERO
@@ -320,6 +373,9 @@ class Book:
         self._pending: dict[SymbolKey, _PendingEntry] = {}
         self._positions: dict[SymbolKey, _Position] = {}
         self._seen_requests: set[str] = set()
+        self._rejections: dict[str, int] = {}  # fill-time rejection counts by reason
+        self._last_open: dict[SymbolKey, int] = {}  # last bar open seen per instrument (gaps)
+        self._now_ms = 0  # end of the latest bar processed (latest close + 1 ms)
         self._outbox: list[tuple[SimEventType, int, Payload]] = []
         self._opened = False
         # Causal sizing inputs: values as of the previous 1m close (see `sizing_basis`).
@@ -507,9 +563,13 @@ class Book:
         else:
             self._emit(SimEventType.EXIT_REQUESTED, decision_time_ms, {**payload, "action": "none"})
 
-    def _risk_allows(self, stage: str, req: EntryRequest, ts: int) -> bool:
+    def _risk_allows(
+        self, stage: str, req: EntryRequest, ts: int, event_ts: int | None = None
+    ) -> bool:
+        """Ask the risk hook; `ts` goes to the hook, `event_ts` (default `ts`) stamps rejections."""
         equity = self.equity() if stage == "submit" else self.sizing_basis()[0]
         check = RiskCheck(stage, self.name, ts, req, equity, len(self._positions))
+        ts = ts if event_ts is None else event_ts
         try:
             decision = self.risk_hook(check)
             allowed = isinstance(decision, RiskDecision) and decision.allow is True
@@ -532,13 +592,22 @@ class Book:
             OrderStatus.EXPIRED: SimEventType.ORDER_EXPIRED,
             OrderStatus.REJECTED: SimEventType.ORDER_REJECTED,
         }[status]
+        reason = str(reason)
+        if status is OrderStatus.REJECTED:
+            self._rejections[reason] = self._rejections.get(reason, 0) + 1
         self._emit(kind, ts, {"order_id": pending.order.order_id, "reason": reason})
 
     # ------------------------------------------------------------ bar processing
     def on_bar(self, bar: Bar) -> None:
         key = (bar.market, bar.symbol)
+        self._now_ms = max(self._now_ms, bar.close_time_ms + 1)
         spec = self.instruments.get(key)
         if spec is not None:
+            prev = self._last_open.get(key)
+            self._last_open[key] = bar.open_time_ms
+            held = self._positions.get(key)
+            if held is not None and prev is not None and bar.open_time_ms - prev > MS_PER_MINUTE:
+                held.spans_gap = True  # L-04: the position lived through missing 1m bars
             prices = BarPrices.from_bar(bar)
             quote_volume = to_decimal(bar.quote_volume)
             with localcontext(SIM_CONTEXT):
@@ -693,11 +762,11 @@ class Book:
         req = pending.request
         key = spec.key
         ts = prices.close_time_ms
-        if not self._risk_allows("fill", req, ts):
+        if not self._risk_allows("fill", req, prices.open_time_ms, event_ts=ts):
             return
         equity, cash = self.sizing_basis()
         if equity <= 0:
-            self._finish_pending(key, OrderStatus.REJECTED, ts, "non_positive_equity")
+            self._finish_pending(key, OrderStatus.REJECTED, ts, RejectReason.NON_POSITIVE_EQUITY)
             return
         hint = self._hint_qty(spec, raw_price, pending.stop, equity)
         execution = self.cost_model.price(
@@ -713,18 +782,22 @@ class Book:
         )
         sign = side_sign(req.side)
         if sign * (raw_price - pending.stop) <= 0 or sign * (execution.price - pending.stop) <= 0:
-            self._finish_pending(key, OrderStatus.REJECTED, ts, "stop_breached_at_entry")
+            self._finish_pending(key, OrderStatus.REJECTED, ts, RejectReason.STOP_BREACHED_AT_ENTRY)
             return
         if pending.take_profit is not None and sign * (pending.take_profit - execution.price) <= 0:
-            self._finish_pending(key, OrderStatus.REJECTED, ts, "take_profit_breached_at_entry")
+            self._finish_pending(
+                key, OrderStatus.REJECTED, ts, RejectReason.TAKE_PROFIT_BREACHED_AT_ENTRY
+            )
             return
         qty, binding = self._size(spec, execution, pending.stop, equity, cash)
         if qty <= 0:
-            self._finish_pending(key, OrderStatus.REJECTED, ts, f"size_zero:{binding}")
+            self._finish_pending(
+                key, OrderStatus.REJECTED, ts, f"{RejectReason.SIZE_ZERO}:{binding}"
+            )
             return
         costs = self.cost_model.fill_costs(spec.market, execution, qty)
         if costs.notional < spec.min_notional:
-            self._finish_pending(key, OrderStatus.REJECTED, ts, "below_min_notional")
+            self._finish_pending(key, OrderStatus.REJECTED, ts, RejectReason.BELOW_MIN_NOTIONAL)
             return
         del self._pending[key]
         order = pending.order
@@ -761,6 +834,7 @@ class Book:
             sl_order_id=f"{self.name}:{req.request_id}:sl",
             tp_order_id=None if pending.take_profit is None else f"{self.name}:{req.request_id}:tp",
             time_exit_due_ms=time_due,
+            entry_time_ms=prices.open_time_ms if at_open else prices.close_time_ms,
             best=execution.price,
             worst=execution.price,
             last_mark=execution.price,
@@ -788,24 +862,32 @@ class Book:
                 "take_profit_price": None if pos.take_profit is None else dstr(pos.take_profit),
             },
         )
-        # The new position experiences the remainder of this bar (conservative same-bar rules).
-        # An entry filled at the open holds the position from the open, so the open-gap rules apply
-        # (e.g. a resting limit filled at its price on a bar that opened beyond the stop is stopped
-        # at that open, not at the more favourable stop price).
-        fill = resolve_exit(
-            remaining,
-            pos.side,
-            pos.stop,
-            pos.take_profit,
-            spec.tick_size,
-            held_at_open=at_open,
-            market_exit_due=None,
-            tp_liquidity=self._tp_liquidity(),
-            bar_low=prices.low,
-            bar_high=prices.high,
-        )
+        # Same-bar rules (L-04). An entry filled at the open holds the position from the first trade
+        # of the bar: normal rules, including open gaps (a resting limit filled at its price on a
+        # bar that opened beyond the stop is stopped at that open). An entry filled inside the bar
+        # may be stopped out in it (flagged ambiguous) but never books its take-profit in it.
+        fill: ExitFill | None
+        if at_open:
+            fill = resolve_exit(
+                remaining,
+                pos.side,
+                pos.stop,
+                pos.take_profit,
+                spec.tick_size,
+                held_at_open=True,
+                market_exit_due=None,
+                tp_liquidity=self._tp_liquidity(),
+            )
+        else:
+            fill = resolve_fill_bar_exit(pos.side, raw_price, pos.stop, prices.low, prices.high)
         if fill is None:
-            pos.observe(remaining)
+            if at_open:
+                pos.observe(remaining)
+            else:
+                # Ordering inside the bar is unknown: count the bar's adverse extreme in MAE and
+                # only the close in MFE (never a favourable extreme that may predate the fill).
+                adverse = prices.low if pos.side is Side.LONG else prices.high
+                pos.observe((adverse, prices.close))
             return
         pos.observe(fill.excursion)
         self._close(pos, fill, prices, quote_volume)
@@ -946,6 +1028,7 @@ class Book:
             exit_reason=fill.reason,
             gap_fill=fill.gap,
             ambiguous_bar=fill.ambiguous,
+            spans_gap=pos.spans_gap,
             gross_pnl=gross,
             fees=fees,
             funding=pos.funding,
@@ -961,15 +1044,28 @@ class Book:
         self.trades.append(trade)
         self._emit(SimEventType.POSITION_CLOSED, ts, trade.to_payload())
 
-    # ------------------------------------------------------------ funding (interface)
+    # ------------------------------------------------------------ funding
     def apply_funding(self, market: Market, symbol: str, ts_ms: int, amount: Decimal) -> None:
         """Post a funding cash flow (+ received, - paid) for an open USD-M position.
 
-        The caller computes the amount from the funding rate at the funding timestamp.
+        Fails (ValueError) unless the timestamp lies within the open position: strictly after the
+        entry time (a position opened at a funding timestamp is not charged or credited for it),
+        strictly after the previous funding of this position, and not in the future of the
+        simulator (at most the end of the latest processed bar). Use `funding_cash_flow` (or
+        `apply_funding_rate`) to derive the amount from a funding rate.
         """
         pos = self._positions.get((market, symbol))
         if pos is None or market is not Market.USDM:
             raise ValueError(f"no open USD-M position for {market}:{symbol}")
+        if ts_ms <= pos.entry_time_ms:
+            raise ValueError(f"funding at {ts_ms} does not follow the entry {pos.entry_time_ms}")
+        if pos.last_funding_ms is not None and ts_ms <= pos.last_funding_ms:
+            raise ValueError(f"funding at {ts_ms} not after previous funding {pos.last_funding_ms}")
+        if ts_ms > self._now_ms:
+            raise ValueError(
+                f"funding at {ts_ms} is in the future of the simulator ({self._now_ms})"
+            )
+        pos.last_funding_ms = ts_ms
         amount = q8(amount)
         if amount == 0:
             return
@@ -984,6 +1080,17 @@ class Book:
             ts_ms,
             {"market": str(market), "symbol": symbol, "amount": dstr(amount)},
         )
+
+    def apply_funding_rate(
+        self, market: Market, symbol: str, ts_ms: int, rate: Decimal, mark_price: Decimal
+    ) -> Decimal:
+        """Funding from a rate at a funding timestamp; returns the signed amount posted."""
+        pos = self._positions.get((market, symbol))
+        if pos is None:
+            raise ValueError(f"no open USD-M position for {market}:{symbol}")
+        amount = funding_cash_flow(rate, pos.side, pos.qty, mark_price)
+        self.apply_funding(market, symbol, ts_ms, amount)
+        return amount
 
     # ------------------------------------------------------------ end of run
     def finish(self, ts_ms: int) -> None:
@@ -1010,6 +1117,9 @@ class Book:
             "ledger_transactions": report.transactions,
             "trades": len(self.trades),
             "ambiguous_trades": sum(1 for t in self.trades if t.ambiguous_bar),
+            "gap_trades": sum(1 for t in self.trades if t.spans_gap),
+            "flagged_trades": sum(1 for t in self.trades if t.ambiguous_bar or t.spans_gap),
+            "rejections_by_reason": dict(sorted(self._rejections.items())),
             "open_positions": len(self._positions),
             "max_drawdown": dstr(dd.max_drawdown),
             "max_drawdown_peak_ts_ms": dd.peak_ts_ms,
@@ -1038,6 +1148,7 @@ __all__ = [
     "BookConfig",
     "DrawdownStats",
     "EquityPoint",
+    "RejectReason",
     "RiskCheck",
     "RiskDecision",
     "RiskHook",
@@ -1046,4 +1157,5 @@ __all__ = [
     "allow_all",
     "drawdown_series",
     "drawdown_stats",
+    "funding_cash_flow",
 ]

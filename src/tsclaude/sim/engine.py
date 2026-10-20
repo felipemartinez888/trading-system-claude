@@ -272,6 +272,14 @@ class Simulator:
         self.books[book].apply_funding(market, symbol, ts_ms, amount)
         self._drain_books()
 
+    def apply_funding_rate(
+        self, book: str, market: Market, symbol: str, ts_ms: int, rate: Decimal, mark_price: Decimal
+    ) -> Decimal:
+        """Funding from a rate (longs pay when rate > 0); returns the signed amount posted."""
+        amount = self.books[book].apply_funding_rate(market, symbol, ts_ms, rate, mark_price)
+        self._drain_books()
+        return amount
+
     def finish(self) -> SimResult:
         if not self._finished:
             self._flush_minute()
