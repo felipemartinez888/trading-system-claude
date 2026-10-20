@@ -1,0 +1,2 @@
+task_id,milestone,role,started_utc,finished_utc,agent_sessions,tokens_in,tokens_out,est_cost_usd,human_minutes,review_findings_blocking,review_findings_nonblocking,ci_failures,rework_cycles,defects_escaped_later,notes
+P-001,P,lead,2026-10-20T00:22Z,2026-10-20T00:45Z,1,,,,,0,0,0,0,,Repository inspection and planning documents; no subagents used; token counts not exposed by tooling
