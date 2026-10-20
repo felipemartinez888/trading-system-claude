@@ -1,6 +1,6 @@
 # Feed de agentes — Trading System Claude
 
-Actualizado: **2026-10-20 00:37** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
+Actualizado: **2026-10-20 00:40** (hora de Costa Rica). Se refresca cada ~3 minutos mientras los agentes trabajan. Solo muestra acciones (herramienta + descripción), nunca contenido de archivos ni secretos. El historial de commits de esta rama es el registro.
 
 ## M0-T4 · API, dashboard y lanzador Windows
 Agente `platform-ui-engineer` · rama `task/m0-t4` · 131 acciones · última actividad 00:26 · commits 5 · archivos con cambios 0
@@ -25,7 +25,7 @@ Agente `platform-ui-engineer` · rama `task/m0-t4` · 131 acciones · última ac
 - `00:18` **Bash** — Withhold projections on failed chain; rerun tests
 
 ## M1-T1 · Ingesta en vivo de Binance
-Agente `data-engineer` · rama `task/m1-t1` · 109 acciones · última actividad 00:36 · commits 4 · archivos con cambios 0
+Agente `data-engineer` · rama `task/m1-t1` · 110 acciones · última actividad 00:39 · commits 4 · archivos con cambios 0
 
 **Commits:**
 - `b322e01 test(data): fail instead of skip when network libraries are missing in CI`
@@ -34,6 +34,7 @@ Agente `data-engineer` · rama `task/m1-t1` · 109 acciones · última actividad
 - `dad0bb7 wip(m1-t1): checkpoint before usage-limit pause (unreviewed, untested)`
 
 **Últimas acciones:**
+- `00:38` **Bash** — Final local verification summary
 - `00:36` **Bash** — Commit, push and wait for CI
 - `00:36` **Bash** — Make integration imports mandatory under CI; verify both modes
 - `00:36` **Bash** — Inspect log access and job ids
@@ -43,10 +44,9 @@ Agente `data-engineer` · rama `task/m1-t1` · 109 acciones · última actividad
 - `00:34` **Bash** — Commit integration tests and fixes, push branch
 - `00:34` **Bash** — Check push approval decision and pending changes
 - `00:33` **Bash** — Avoid version-specific websockets API in fake server test
-- `00:33` **Bash** — Run strict mypy on all src and the CI private-endpoint guard
 
 ## M2-T2 · Simulador (órdenes, fills, ledger)
-Agente `sim-risk-engineer` · rama `task/m2-t2` · 43 acciones · última actividad 00:36 · commits 1 · archivos con cambios 9
+Agente `sim-risk-engineer` · rama `task/m2-t2` · 45 acciones · última actividad 00:39 · commits 1 · archivos con cambios 9
 
 **Commits:**
 - `1758a26 wip(m2-t2): checkpoint before usage-limit pause (unreviewed, untested)`
@@ -63,6 +63,8 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 43 acciones · última activi
 - `?? src/tsclaude/sim/testing.py`
 
 **Últimas acciones:**
+- `00:39` **Bash** — Add unrealized_pnl view; compute G5 drawdown values
+- `00:37` **Bash** — Cross-check remaining golden arithmetic
 - `00:36` **Bash** — Verify hand-computed golden values with Decimal
 - `00:34` **Bash** — Tally rejection reasons across random scenarios
 - `00:34` **Bash** — Run random scenarios as a smoke check
@@ -71,8 +73,6 @@ Agente `sim-risk-engineer` · rama `task/m2-t2` · 43 acciones · última activi
 - `00:30` **Bash** — Record sizing basis in position-opened events
 - `00:29` **Bash** — Fix drawdown zero and end-of-data expiry
 - `00:27` **Bash** — Fix zero formatting and add equity curve origin
-- `00:26` **Bash** — Smoke-run a market long TP scenario
-- `00:25` **Bash** — Add test bar factories; causal risk equity; recheck
 
 ## M2-T3 · Estadística: win rate certificado
 Agente `quant-engineer` · rama `task/m2-t3` · 110 acciones · última actividad 00:33 · commits 5 · archivos con cambios 0
