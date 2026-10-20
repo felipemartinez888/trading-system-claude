@@ -75,3 +75,33 @@ admission constraints. They make certification strictly harder, never easier.
    input.
 5. **Every admission gate must be individually tested**: for each gate a case where it is the only
    failing condition, so that deleting the gate fails a test (mutation check in review).
+
+## Amendment 2 (2026-10-20) — dependence and payoff consistency
+
+The re-review of M2-T3 showed that independence was silently assumed when no block length was
+given: autocorrelated outcomes from a losing strategy (stationary win rate 0.51 vs p* 0.525,
+persistence 0.98, n = 2000) were certified in 30 % of runs. A declared design p* was also never
+checked against realized payoffs (losses far beyond the stop certified 35 % at n = 100).
+
+1. **Dependence is always accounted for.** The block length used is
+   `max(caller value or 1, estimated block length of the outcomes, estimated block length of the
+   win indicators)`. The win-rate lower bound is the minimum of the Clopper–Pearson bound and the
+   block-bootstrap bound at that length. Independence is never assumed by default.
+2. **Design p* is checked against reality.** When p* is given, the realized joint margin
+   (Amendment 1, item 2) is computed as well, and the certified margin is the minimum of both.
+3. **Trial counts come from the registry.** From M4, `n_trials` is supplied by the trial registry,
+   never by hand, and every report shows it.
+4. Tests must kill these mutations: realized-p* floor lowered below 300; nominal instead of
+   adjusted alpha in any bootstrap.
+
+## Amendment 3 (2026-10-20) — effective sample size and a single floor
+
+1. **Effective-sample-size gate.** `n_eff = n · min(1, binomial variance of the win rate ÷
+   block-bootstrap variance of the win rate)`; certification requires `n_eff ≥ max(n_min, N_FLOOR)`.
+   Strongly clustered outcomes therefore need proportionally more trades. (Measured: removes the
+   residual ≈ 4 % false certification of the persistent Markov case at n = 2000; no effect on
+   independent data.)
+2. **One floor: `N_FLOOR = 300` for both design and realized p*.** Losses beyond the planned stop
+   (gap risk) are invisible in samples that happen not to contain them; with 300 trades the chance of
+   missing a 1 %-frequency tail event is ≈ 5 %. Backtests on real data contain real gaps, and
+   reports must show the worst trade in R and the share of trades closed beyond −1R.
