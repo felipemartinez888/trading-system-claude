@@ -1,7 +1,13 @@
 // Test fixtures shaped like real /api responses (replay of what the backend returns; not shown in
 // the app).
 
-import type { MonitoringState, Sourced, StatusResponse } from "../api/types";
+import type {
+  MarketRow,
+  MonitoringState,
+  Provenance,
+  Sourced,
+  StatusResponse,
+} from "../api/types";
 
 export const TOKEN = "test-token-abcdefghijklmnopqrstuvwxyz0123456789";
 const AS_OF = Date.parse("2026-10-20T12:00:00.000Z");
@@ -34,6 +40,8 @@ export function statusFixture(
       since: state === "RUNNING" ? "2026-10-20T11:30:00.000Z" : null,
       start_allowed: state === "STOPPED",
       blocked_reason: null,
+      transition: null,
+      last_error: null,
     }),
     chain: system({
       ok: true,
@@ -55,10 +63,13 @@ export function statusFixture(
       unobserved_to: null,
     }),
     heartbeat: system("2026-10-20T12:00:00.000Z"),
-    streams: {
-      spot: unavailable("not implemented until M1"),
-      futures: unavailable("not implemented until M1"),
-    },
+    streams:
+      state === "RUNNING"
+        ? { spot: system("HEALTHY 6/6"), futures: system("HEALTHY 9/9") }
+        : {
+            spot: unavailable("monitoring has not been started in this app session"),
+            futures: unavailable("monitoring has not been started in this app session"),
+          },
     ...overrides,
   };
 }
@@ -75,4 +86,72 @@ export function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+export function sourced<T>(value: T | null, provenance: Provenance, reason: string | null = null): Sourced<T> {
+  if (provenance === "UNAVAILABLE") return { value: null, provenance, as_of_ms: null, reason };
+  return { value, provenance, as_of_ms: AS_OF, reason };
+}
+
+/** A market row whose market-data values all carry `provenance` (as the API would send them). */
+export function marketRow(
+  symbol: string,
+  provenance: Provenance,
+  market: "spot" | "usdm" = "spot",
+): MarketRow {
+  const unavailable = provenance === "UNAVAILABLE";
+  return {
+    market,
+    symbol,
+    last_closed_bar: sourced(
+      {
+        market,
+        symbol,
+        interval: "1m",
+        open_time_ms: AS_OF - 60_000,
+        close_time_ms: AS_OF - 1,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100.5,
+        volume: 1,
+        quote_volume: 100,
+        trades: 3,
+        source: "ws_live",
+      },
+      provenance,
+      unavailable ? "no closed bar stored yet" : null,
+    ),
+    partial_candle: sourced(
+      {
+        market,
+        symbol,
+        open_time_ms: AS_OF,
+        close_time_ms: AS_OF + 59_999,
+        open: 100.5,
+        high: 100.7,
+        low: 100.4,
+        close: 100.6,
+        volume: 0.5,
+        event_time_ms: AS_OF + 10_000,
+      },
+      provenance === "LIVE" ? "PARTIAL" : provenance,
+      unavailable ? "no forming candle received" : null,
+    ),
+    best_bid_ask: sourced(
+      { bid_price: 100.5, bid_qty: 1, ask_price: 100.6, ask_qty: 2, received_at_ms: AS_OF },
+      provenance,
+      unavailable ? "no bookTicker received" : null,
+    ),
+    mark_price: sourced(100.55, provenance, unavailable ? "no markPrice received" : null),
+    funding: sourced(
+      { rate: 0.0001, next_funding_time_ms: AS_OF + 3_600_000, source: "ws_mark_price" },
+      provenance,
+      unavailable ? "no funding data received" : null,
+    ),
+    change_24h: sourced(0.0123, provenance, unavailable ? "no stored 1m bar 24 h before" : null),
+    freshness: sourced("HEALTHY", "SYSTEM"),
+    open_gap_minutes: sourced(0, "SYSTEM"),
+    exchange_status: sourced("TRADING", "HISTORICAL"),
+  };
 }

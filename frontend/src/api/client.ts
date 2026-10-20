@@ -2,10 +2,17 @@
 // injected into index.html as <meta name="tsc-token">; the browser adds the Origin header itself.
 
 import type {
+  BarsResponse,
   CoverageResponse,
   EventsResponse,
+  GapsResponse,
+  Market,
+  MarketsResponse,
+  NotificationsResponse,
   QuitResponse,
+  SignalsResponse,
   StatusResponse,
+  StreamsHealthResponse,
 } from "./types";
 
 export const TOKEN_HEADER = "X-TSC-Token";
@@ -73,6 +80,18 @@ export const api = {
   coverage: (signal?: AbortSignal) => get<CoverageResponse>("/api/coverage", signal),
   events: (limit = 200, signal?: AbortSignal) =>
     get<EventsResponse>(`/api/events?limit=${encodeURIComponent(String(limit))}`, signal),
+  markets: (signal?: AbortSignal) => get<MarketsResponse>("/api/markets", signal),
+  streamsHealth: (signal?: AbortSignal) =>
+    get<StreamsHealthResponse>("/api/health/streams", signal),
+  gaps: (signal?: AbortSignal) => get<GapsResponse>("/api/gaps", signal),
+  bars: (market: Market, symbol: string, fromIso: string, toIso: string, signal?: AbortSignal) =>
+    get<BarsResponse>(
+      `/api/bars?${new URLSearchParams({ market, symbol, interval: "1m", from: fromIso, to: toIso }).toString()}`,
+      signal,
+    ),
+  signals: (signal?: AbortSignal) => get<SignalsResponse>("/api/signals", signal),
+  notifications: (signal?: AbortSignal) =>
+    get<NotificationsResponse>("/api/notifications", signal),
   startMonitoring: () => post<StatusResponse>("/api/monitoring/start"),
   stopMonitoring: () => post<StatusResponse>("/api/monitoring/stop"),
   quit: () => post<QuitResponse>("/api/app/quit"),

@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -38,7 +38,32 @@ from tsclaude.api.context import (
     TransitionRefused,
 )
 from tsclaude.api.live import LiveMessage
-from tsclaude.api.pages import fallback_page, inject_token, is_safe_relative_path, load_index
+from tsclaude.api.market_schemas import (
+    BarsResponse,
+    GapsResponse,
+    MarketsResponse,
+    NotificationsResponse,
+    SignalsResponse,
+    StreamsHealthResponse,
+)
+from tsclaude.api.market_views import (
+    DEFAULT_BARS_WINDOW_MS,
+    bars_response,
+    gap_registry,
+    gaps_response,
+    markets_response,
+    notifications_response,
+    signals_response,
+    streams_health,
+)
+from tsclaude.api.pages import (
+    fallback_page,
+    inject_token,
+    is_index_path,
+    is_safe_relative_path,
+    load_index,
+)
+from tsclaude.api.push import PUSH_INTERVAL_S, MarketPusher
 from tsclaude.api.schemas import (
     CoverageResponse,
     ErrorResponse,
@@ -55,11 +80,15 @@ from tsclaude.api.security import (
     allowed_origins,
     token_matches,
 )
+from tsclaude.contracts.market import Market
+from tsclaude.contracts.provenance import Provenance, Sourced
+from tsclaude.contracts.timeutil import from_iso, to_iso
 from tsclaude.web import STATIC_DIR
 
 log = logging.getLogger(__name__)
 
 APP_NAME = "tsclaude"
+MAX_GAPS_LIMIT = 500
 
 # Explicit types: on Windows `mimetypes` reads the registry, which can map .js to text/plain and
 # make browsers refuse to execute module scripts.
@@ -81,8 +110,12 @@ _MEDIA_TYPES = {
 _ERRORS: dict[int | str, dict[str, Any]] = {
     403: {"model": ErrorResponse, "description": "missing/invalid token, foreign Origin or Host"},
 }
+_BAD_REQUEST: dict[int | str, dict[str, Any]] = {
+    400: {"model": ErrorResponse, "description": "invalid time range"},
+}
 _TRANSITION_ERRORS: dict[int | str, dict[str, Any]] = {
     **_ERRORS,
+    503: {"model": ErrorResponse, "description": "market data could not be started"},
     409: {"model": ErrorResponse, "description": "invalid transition for the current state"},
     423: {"model": ErrorResponse, "description": "locked: chain verification failed or no session"},
 }
@@ -104,23 +137,44 @@ def create_app(
     *,
     static_dir: Path = STATIC_DIR,
     heartbeat: bool = True,
+    push_interval_s: float | None = PUSH_INTERVAL_S,
+    on_started: Callable[[], Coroutine[Any, Any, None]] | None = None,
 ) -> FastAPI:
     """Build the API around an already-started `AppContext`.
 
-    `heartbeat=True` runs the heartbeat loop for the app's lifespan (uvicorn, or a `TestClient`
-    used as a context manager).
+    For the app's lifespan (uvicorn, or a `TestClient` used as a context manager):
+    - `heartbeat=True` runs the heartbeat loop;
+    - `push_interval_s` runs the market-data push loop (None disables it);
+    - `on_started` runs as a background task once serving (e.g. auto-start for verification runs).
+    On shutdown, market data is stopped and the monitoring interval closed *inside* the event loop
+    (the service is async), before the server process records `session_stopped`.
     """
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        task = asyncio.create_task(_heartbeat_loop(context)) if heartbeat else None
+        context.loop = asyncio.get_running_loop()
+        tasks: list[asyncio.Task[None]] = []
+        if heartbeat:
+            tasks.append(asyncio.create_task(_heartbeat_loop(context), name="heartbeat"))
+        if push_interval_s is not None and context.supervisor is not None:
+            pusher = MarketPusher(context)
+            app.state.pusher = pusher
+            tasks.append(asyncio.create_task(pusher.run(push_interval_s), name="market-push"))
+        if on_started is not None:
+            tasks.append(asyncio.create_task(on_started(), name="on-started"))
         try:
             yield
         finally:
-            if task is not None:
+            for task in tasks:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+            await context.shutdown_monitoring("app_shutdown")
+            if context.supervisor is not None:
+                await context.supervisor.close()
+            context.release_resources()
+            context.loop = None
 
     app = FastAPI(
         title="Trading System Claude — local API",
@@ -149,7 +203,11 @@ def create_app(
         return HealthResponse(ok=True, app=APP_NAME, version=context.app_version)
 
     @app.get("/api/status", response_model=StatusResponse)
-    def get_status() -> StatusResponse:
+    async def get_status() -> StatusResponse:
+        # On the event loop: refresh the Spot/Futures summary from the live service first, so the
+        # status never lags the market-data state (threads only read the cached summary).
+        if context.supervisor is not None:
+            context.supervisor.refresh()
         return context.status()
 
     @app.get("/api/coverage", response_model=CoverageResponse)
@@ -163,16 +221,79 @@ def create_app(
     ) -> EventsResponse:
         return context.events(after_seq=after_seq, limit=limit)
 
-    # ------------------------------------------------------------------ commands
-    def _transition(action: Callable[[], StatusResponse]) -> StatusResponse:
-        try:
-            return action()
-        except TransitionError as exc:
-            code = (
-                status.HTTP_423_LOCKED
-                if exc.kind is TransitionRefused.LOCKED
-                else status.HTTP_409_CONFLICT
+    # ------------------------------------------------------------------ market data reads
+    # Async: the market-data service lives on the event loop; reading its snapshot from a worker
+    # thread could race with ingestion. Store-only reads run in a thread.
+    @app.get("/api/markets", response_model=MarketsResponse)
+    async def get_markets() -> MarketsResponse:
+        now = context.clock.now_ms()
+        if context.supervisor is None:
+            return MarketsResponse(
+                generated_at=to_iso(now),
+                running=Sourced[bool](value=False, provenance=Provenance.SYSTEM, as_of_ms=now),
+                rows=[],
             )
+        return markets_response(context.supervisor, context.bar_store(), now)
+
+    @app.get("/api/health/streams", response_model=StreamsHealthResponse)
+    async def get_streams_health() -> StreamsHealthResponse:
+        now = context.clock.now_ms()
+        registry = await asyncio.to_thread(gap_registry, context.store, now)
+        return streams_health(context.supervisor, registry, now)
+
+    @app.get("/api/gaps", response_model=GapsResponse)
+    async def get_gaps(
+        limit: Annotated[int, Query(ge=1, le=MAX_GAPS_LIMIT)] = 200,
+    ) -> GapsResponse:
+        now = context.clock.now_ms()
+        registry = await asyncio.to_thread(gap_registry, context.store, now)
+        return gaps_response(registry, now, limit)
+
+    @app.get("/api/bars", response_model=BarsResponse, responses=_BAD_REQUEST)
+    async def get_bars(
+        market: Annotated[Market, Query()],
+        symbol: Annotated[str, Query(pattern=r"^[A-Z0-9]{2,20}$")],
+        interval: Annotated[str, Query(pattern=r"^1m$")] = "1m",
+        from_: Annotated[str | None, Query(alias="from")] = None,
+        to: Annotated[str | None, Query()] = None,
+    ) -> BarsResponse:
+        now = context.clock.now_ms()
+        try:
+            end = from_iso(to) if to else now
+            start = from_iso(from_) if from_ else end - DEFAULT_BARS_WINDOW_MS
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if start >= end:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="'from' must be before 'to'")
+        del interval  # only 1m bars are stored (validated by the pattern)
+        return await asyncio.to_thread(
+            bars_response, context.bar_store(), market, symbol, start, end, now
+        )
+
+    @app.get("/api/signals", response_model=SignalsResponse)
+    async def get_signals(
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ) -> SignalsResponse:
+        now = context.clock.now_ms()
+        return await asyncio.to_thread(signals_response, context.store, now, limit)
+
+    @app.get("/api/notifications", response_model=NotificationsResponse)
+    async def get_notifications(
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ) -> NotificationsResponse:
+        now = context.clock.now_ms()
+        extra = list(context.transient_notifications)
+        return await asyncio.to_thread(notifications_response, context.store, now, limit, extra)
+
+    # ------------------------------------------------------------------ commands
+    async def _transition(action: Callable[[], Awaitable[StatusResponse]]) -> StatusResponse:
+        try:
+            return await action()
+        except TransitionError as exc:
+            code = {
+                TransitionRefused.LOCKED: status.HTTP_423_LOCKED,
+                TransitionRefused.FAILED: status.HTTP_503_SERVICE_UNAVAILABLE,
+            }.get(exc.kind, status.HTTP_409_CONFLICT)
             raise HTTPException(code, detail=exc.detail) from exc
 
     @app.post(
@@ -181,8 +302,8 @@ def create_app(
         dependencies=token_dep,
         responses=_TRANSITION_ERRORS,
     )
-    def start_monitoring() -> StatusResponse:
-        return _transition(context.start_monitoring)
+    async def start_monitoring() -> StatusResponse:
+        return await _transition(context.start_monitoring)
 
     @app.post(
         "/api/monitoring/stop",
@@ -190,8 +311,8 @@ def create_app(
         dependencies=token_dep,
         responses=_TRANSITION_ERRORS,
     )
-    def stop_monitoring() -> StatusResponse:
-        return _transition(context.stop_monitoring)
+    async def stop_monitoring() -> StatusResponse:
+        return await _transition(context.stop_monitoring)
 
     @app.post(
         "/api/app/quit",
@@ -200,9 +321,9 @@ def create_app(
         dependencies=token_dep,
         responses=_ERRORS,
     )
-    def quit_app() -> QuitResponse:
+    async def quit_app() -> QuitResponse:
         log.info("quit requested from the dashboard")
-        return context.request_shutdown("user_quit")
+        return await context.request_shutdown("user_quit")
 
     # ------------------------------------------------------------------ live push
     @app.websocket("/ws/live")
@@ -256,21 +377,26 @@ def create_app(
     def static_file(path: str) -> Response:
         if path.startswith(("api/", "ws/")) or path in ("api", "ws"):
             return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
-        if path == "index.html":
-            return _index()
         route = path[:-1] if path.endswith("/") else path
+        if is_index_path(route):  # any letter case: always with token, CSP and no-store
+            return _index()
         if not is_safe_relative_path(route):
-            # Absolute, drive, UNC, backslash or dot segments: refused before any filesystem
-            # access (on Windows resolving a UNC path would open an SMB connection).
+            # Absolute, drive, UNC, backslash, dot segments, trailing dot/space or Windows device
+            # names: refused before any filesystem access (on Windows resolving a UNC path would
+            # open an SMB connection; "nul.js" opens a device).
             return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
         file = pages.resolve_static_file(static_dir, route)
+        if file is not None and pages.is_index_file(static_dir, file):
+            # Another name for index.html (e.g. the Windows 8.3 short name INDEX~1.HTM): still
+            # served with the token, CSP and no-store, never as a raw file.
+            return _index()
         if file is None:
             last = route.rsplit("/", 1)[-1]
             if "." in last:  # a missing asset, not a client-side route
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
             return _index()
         media_type = _MEDIA_TYPES.get(file.suffix.lower())
-        cache = "public, max-age=31536000, immutable" if path.startswith("assets/") else "no-cache"
+        cache = "public, max-age=31536000, immutable" if route.startswith("assets/") else "no-cache"
         return FileResponse(
             file,
             media_type=media_type,

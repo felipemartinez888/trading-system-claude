@@ -4,6 +4,8 @@ import { StatusBar } from "./components/StatusBar";
 import { DEFAULT_PATH, WORKSPACES, findPage, usePath } from "./navigation";
 import { HealthPage } from "./pages/HealthPage";
 import { LogsPage } from "./pages/LogsPage";
+import { MarketsPage } from "./pages/MarketsPage";
+import { SignalsPage } from "./pages/SignalsPage";
 
 function PageContent({ path }: { path: string }) {
   const page = findPage(path);
@@ -16,6 +18,8 @@ function PageContent({ path }: { path: string }) {
     );
   }
   if (page.id === "health") return <HealthPage />;
+  if (page.id === "markets") return <MarketsPage />;
+  if (page.id === "signals") return <SignalsPage />;
   if (page.id === "logs") return <LogsPage />;
   const workspace = WORKSPACES.find((w) => w.pages.includes(page));
   return (

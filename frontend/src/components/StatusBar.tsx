@@ -12,6 +12,7 @@ import {
 import type { ShutdownInfo, StatusResponse } from "../api/types";
 import { formatDuration, formatUtc } from "../format";
 import { shown, useBackendFreshness, useNow } from "../freshness";
+import { NotificationBell } from "./Notifications";
 import { ProvenanceBadge } from "./ProvenanceBadge";
 
 function errorText(error: unknown): string {
@@ -64,6 +65,7 @@ export interface StatusBarProps {
 export function StatusBar({ live }: StatusBarProps) {
   const status = useStatus();
   const monitoring = useMonitoringMutation();
+  const cancelStart = useMonitoringMutation(); // separate: the start request is still pending
   const quit = useQuitMutation();
   const now = useNow();
   const freshness = useBackendFreshness();
@@ -107,11 +109,21 @@ export function StatusBar({ live }: StatusBarProps) {
     ? (monitoring.variables ?? null)
     : null;
   const action: MonitoringAction = state === "RUNNING" ? "stop" : "start";
+  const serverTransition = mon?.transition ?? null;
+  // N1: Stop stays available whenever the backend answers, even if values are STALE (stopping is
+  // always the safe direction). Start additionally needs fresh state and the backend's consent.
+  const backendAnswers = !status.isError;
   const canAct =
     !monitoring.isPending &&
-    !stale &&
+    serverTransition === null &&
     mon !== null &&
-    (action === "stop" || mon.start_allowed);
+    backendAnswers &&
+    (action === "stop" || (mon.start_allowed && !stale));
+  const starting = pendingAction === "start" || serverTransition === "starting";
+  // A start the user cancelled is reported by the backend as 409 "start cancelled …": expected,
+  // not an error to show.
+  const startCancelled =
+    monitoring.error instanceof ApiError && monitoring.error.detail.includes("start cancelled");
   const uptime =
     session === null
       ? null
@@ -138,22 +150,38 @@ export function StatusBar({ live }: StatusBarProps) {
           asOfMs={monDisplay.asOfMs}
           compact
         />
-        <button
-          type="button"
-          className={`btn ${action === "stop" ? "btn--stop" : "btn--start"}`}
-          disabled={!canAct}
-          aria-busy={monitoring.isPending}
-          title={mon?.blocked_reason ?? undefined}
-          onClick={() => monitoring.mutate(action)}
-        >
-          {pendingAction === "start"
-            ? "Starting…"
-            : pendingAction === "stop"
+        {starting ? (
+          <>
+            <span className="statusbar__muted" aria-live="polite" data-testid="starting">
+              Starting…
+            </span>
+            {/* Review #10: a slow start (REST timeouts) can be cancelled; the backend cancels the
+                in-flight start cleanly and monitoring stays STOPPED. */}
+            <button
+              type="button"
+              className="btn btn--stop"
+              disabled={cancelStart.isPending || !backendAnswers}
+              onClick={() => cancelStart.mutate("stop")}
+            >
+              {cancelStart.isPending ? "Cancelling…" : "Cancel start"}
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={`btn ${action === "stop" ? "btn--stop" : "btn--start"}`}
+            disabled={!canAct}
+            aria-busy={monitoring.isPending}
+            title={mon?.blocked_reason ?? undefined}
+            onClick={() => monitoring.mutate(action)}
+          >
+            {pendingAction === "stop" || serverTransition === "stopping"
               ? "Stopping…"
               : action === "stop"
                 ? "Stop"
                 : "Start"}
-        </button>
+          </button>
+        )}
       </section>
 
       <section className="statusbar__group" aria-label="Session">
@@ -182,24 +210,32 @@ export function StatusBar({ live }: StatusBarProps) {
       </section>
 
       <section className="statusbar__group" aria-label="Market data streams">
-        {Object.entries(data.streams).map(([name, stream]) => (
-          <span key={name} className="statusbar__stream" data-testid={`stream-${name}`}>
-            <span className="statusbar__label">{name === "spot" ? "Spot" : name === "futures" ? "Futures" : name}</span>
-            {stream.value !== null ? (
-              <span>{stream.value}</span>
-            ) : null}
-            <ProvenanceBadge provenance={stream.provenance} reason={stream.reason} compact />
-            {stream.provenance === "UNAVAILABLE" && stream.reason ? (
-              <span className="statusbar__muted">— {stream.reason}</span>
-            ) : null}
-          </span>
-        ))}
+        {Object.entries(data.streams).map(([name, stream]) => {
+          const display = shown(stream, freshness);
+          // Green only when the backend says every stream is HEALTHY and the value is current.
+          const healthy = display.provenance === "SYSTEM" && (stream.value ?? "").startsWith("HEALTHY");
+          return (
+            <span key={name} className="statusbar__stream" data-testid={`stream-${name}`}>
+              <span className="statusbar__label">
+                {name === "spot" ? "Spot" : name === "futures" ? "Futures" : name}
+              </span>
+              {stream.value !== null ? (
+                <span className={healthy ? "stream-ok" : "stream-bad"}>{stream.value}</span>
+              ) : null}
+              <ProvenanceBadge {...display} compact />
+              {stream.provenance === "UNAVAILABLE" && stream.reason ? (
+                <span className="statusbar__muted">— {stream.reason}</span>
+              ) : null}
+            </span>
+          );
+        })}
       </section>
 
       <section className="statusbar__group statusbar__group--end" aria-label="Connection">
         <span className={`link link--${link}`} title="Live push channel (/ws/live)">
           push: {link}
         </span>
+        <NotificationBell />
         <button
           type="button"
           className="btn btn--ghost"
@@ -222,7 +258,13 @@ export function StatusBar({ live }: StatusBarProps) {
         </div>
       ) : null}
 
-      {monitoring.isError ? (
+      {cancelStart.isError ? (
+        <div className="statusbar__notice statusbar__notice--error" role="alert">
+          <span>Cancelling the start failed: {errorText(cancelStart.error)}</span>
+        </div>
+      ) : null}
+
+      {monitoring.isError && !startCancelled ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
           <span>{errorText(monitoring.error)}</span>
           <button type="button" className="btn btn--ghost" onClick={() => monitoring.reset()}>
@@ -240,6 +282,12 @@ export function StatusBar({ live }: StatusBarProps) {
       {quit.isError ? (
         <div className="statusbar__notice statusbar__notice--error" role="alert">
           <span>Quit failed: {errorText(quit.error)}</span>
+        </div>
+      ) : null}
+
+      {mon !== null && mon.last_error !== null && state === "STOPPED" ? (
+        <div className="statusbar__notice statusbar__notice--error" role="alert" data-testid="start-error">
+          <span>Monitoring could not be started: {mon.last_error}. It stays STOPPED.</span>
         </div>
       ) : null}
 
