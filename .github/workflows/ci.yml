@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "task/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python 3.13
+        run: uv python install 3.13
+      - name: Lock (only while uv.lock is not committed yet)
+        if: hashFiles('uv.lock') == ''
+        run: uv lock
+      - name: Sync
+        run: uv sync --all-groups
+      - name: Ruff lint
+        run: uv run ruff check src tests scripts
+      - name: Ruff format
+        run: uv run ruff format --check src tests scripts
+      - name: Mypy (strict)
+        run: uv run mypy src
+      - name: Pytest
+        run: uv run pytest -q
+      - name: Upload generated uv.lock
+        if: hashFiles('uv.lock') != '' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-lock
+          path: uv.lock
+
+  frontend:
+    name: frontend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect frontend
+        id: detect
+        shell: bash
+        working-directory: .
+        run: echo "present=$([ -f frontend/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: 22
+      - name: Install
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm install
+      - name: Typecheck
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm run --if-present typecheck
+      - name: Test
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm test
+      - name: Build
+        if: steps.detect.outputs.present == 'true'
+        run: pnpm build
+      - name: Upload bundle and lockfile
+        if: steps.detect.outputs.present == 'true' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-bundle
+          path: |
+            src/tsclaude/web/static
+            frontend/pnpm-lock.yaml
+
+  guards:
+    name: safety guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No private/signed exchange endpoints or order placement (paper-only rule)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern='/api/v3/order|/fapi/v1/order|/sapi/|listenKey|X-MBX-APIKEY|signature=|/api/v3/account|/fapi/v2/account'
+          if grep -rEn "$pattern" src frontend/src 2>/dev/null; then
+            echo "::error::Private/signed Binance endpoint referenced in product code"
+            exit 1
+          fi
+      - name: No committed secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.env$'; then echo "::error::.env committed"; exit 1; fi
+          if git grep -nE 'sk-ant-[A-Za-z0-9_-]{20,}' -- . ':!*.md'; then
+            echo "::error::Anthropic key-like string committed"; exit 1
+          fi
