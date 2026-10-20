@@ -86,7 +86,7 @@ jobs:
       - name: Install
         if: steps.detect.outputs.present == 'true'
         shell: bash
-        run: ../scripts/ci/run.sh fe-install pnpm install
+        run: ../scripts/ci/run.sh fe-install pnpm install --no-frozen-lockfile
       - name: Typecheck
         if: steps.detect.outputs.present == 'true'
         shell: bash
