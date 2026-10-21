@@ -11,7 +11,7 @@ sizes are relative (S/M/L).
 | P — Planning documents | ✅ Done, approved by owner 2026-10-19 | `docs/`, [decision record](DECISIONS_PENDING.md) |
 | M0 — Foundations | 🔄 Code complete; owner's Windows manual check + Binance spike pending | Core: CI 39351055547. API/dashboard/launcher (M0-T4, `ed0d5d7`): CI 39430972397, review approved after 1 blocking fix |
 | M1 — Live tape (walking skeleton) | 🔄 Code complete (M1-T1 `d9a8890`, M1-T2 merged); **gate pending: owner's 2-hour `scripts/verify_live.ps1` run on Windows** | M1-T1: CI 39432193506; M1-T2: CI 39515178440, review fixes applied |
-| M2 — Historical data + backtest core | 🔄 Simulator, statistics and importer merged; backtest runner (M2-T4) in progress | M2-T2 CI 39472703030 · M2-T3 CI 39552397787 · M2-T1 CI 39546228675 |
+| M2 — Historical data + backtest core | ✅ Code complete (importer, lake, simulator, statistics, runner); **gate pending: owner's historical import** | M2-T1 CI 39546228675 · M2-T2 CI 39472703030 · M2-T3 CI 39552397787 · M2-T4 CI 39596166216 |
 | M3 — Paper trading + risk | ⏳ | — |
 | M4 — Research protocol + first strategies | ⏳ | — |
 | M5 — Claude signal agents | ⏳ | — |

@@ -7,3 +7,4 @@ M2-T2,M2,sim-risk-engineer,2026-10-20T00:58Z,2026-10-20T19:10Z,5,,,,,1,8,0,1,,sa
 M1-T2,M1,platform-ui-engineer,2026-10-20T15:00Z,2026-10-21T00:30Z,4,,,,,2,9,1,1,,stopped-but-running on DB error; verify_live false PASS — found in review
 M2-T1,M2,data-engineer,2026-10-20T19:00Z,2026-10-21T05:30Z,4,,,,,7,6,2,3,,holdout bypasses found over two review rounds; Windows CRLF prereg hash
 M2-T3,M2,quant-engineer,2026-10-20T00:58Z,2026-10-21T12:00Z,7,,,,,7,10,0,5,,four review rounds; five ADR-0012 amendments; gap-risk needed declared max_loss (Bahadur-Savage)
+M2-T4,M2,quant-engineer,2026-10-21T06:00Z,2026-10-21T14:00Z,3,,,,,3,9,0,1,,medium effort; trial-count reset, seed shopping, missing USD-M funding found by audit
