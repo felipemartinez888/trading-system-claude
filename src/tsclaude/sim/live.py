@@ -49,8 +49,12 @@ class LiveClock:
         *,
         settle_ms: int = DEFAULT_SETTLE_MS,
         start_ms: int | None = None,
+        processed: Iterable[SymbolKey] = (),
         mode: RunMode = RunMode.LIVE,
     ) -> None:
+        """`start_ms` + `processed` (restart): the first minute to release and the instruments
+        whose bar of that minute was already processed before the restart (they count as
+        delivered for completeness; a re-delivery of them is late)."""
         self.expected = frozenset(symbols)
         if not self.expected:
             raise ValueError("a live clock needs at least one instrument")
@@ -64,6 +68,12 @@ class LiveClock:
         self._buffer: dict[int, dict[SymbolKey, Bar]] = {}
         self._released: list[Bar] = []
         self._last_key: tuple[int, str, str] | None = None
+        self._done: frozenset[SymbolKey] = frozenset(processed)
+        self._done_minute = start_ms
+        if self._done and start_ms is None:
+            raise ValueError("processed instruments need start_ms")
+        if self._done and start_ms is not None:
+            self._last_key = max((start_ms, str(m), s) for m, s in self._done)
         self.late: list[Bar] = []
         self.stats = LiveClockStats()
 
@@ -91,7 +101,8 @@ class LiveClock:
             self.stats.ignored += 1
             return "ignored"
         minute = bar.open_time_ms
-        if self._next is not None and minute < self._next:
+        stale = self._last_key is not None and order_key(bar) <= self._last_key
+        if stale or (self._next is not None and minute < self._next):
             self.stats.late += 1
             self.late.append(bar)
             return "late"
@@ -129,7 +140,8 @@ class LiveClock:
                 self._next = min(self._buffer)
             minute = self._next
             slot = self._buffer.get(minute, {})
-            complete = self.expected <= set(slot)
+            done = self._done if minute == self._done_minute else frozenset()
+            complete = self.expected <= set(slot) | done
             due = now_ms >= minute + MS_PER_MINUTE + self.settle_ms
             if not (complete or due):
                 break

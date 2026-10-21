@@ -537,10 +537,24 @@ class PaperTradingService:
     @classmethod
     def restore(cls, config: PaperConfig, journal: Journal, **kw: Any) -> PaperTradingService:
         """Rebuild the session from its journal (verified replay), ready to resume."""
-        session = replay(config, journal.batches(), mode=RunMode.LIVE)
+        batches = journal.batches()
+        session = replay(config, batches, mode=RunMode.LIVE)
         last = session.last_minute_ms
-        start = None if last is None else last + MS_PER_MINUTE
-        return cls(config, journal, session=session, start_ms=start, **kw)
+        done = {
+            (Market(b[0].payload["bar"]["market"]), str(b[0].payload["bar"]["symbol"]))
+            for b in batches
+            if b[0].payload["kind"] == "bar" and b[0].payload["bar"]["open_time_ms"] == last
+        }
+        svc = cls(config, journal, session=session, start_ms=last, **kw)
+        if last is not None:
+            svc.clock = LiveClock(
+                [s.key for s in config.instruments],
+                settle_ms=svc.clock.settle_ms,
+                start_ms=last,
+                processed=done,
+            )
+            session.sim.clock = svc.clock
+        return svc
 
     # ------------------------------------------------------------ inputs
     def on_update(self, update: object) -> None:
