@@ -17,8 +17,12 @@ Rules on each closed strategy bar ``i`` (long only, spot or USD-M):
 - Cost filter: the planned all-taker round-trip cost in R must be ``<= max_cost_r``; otherwise
   nothing is confirmed. Therefore, for the pure bracket, ``p* = (1 + max_cost_r) / (1 + tp_r)`` is
   an upper bound of every trade's design break-even ``(1 + c)/(1 + b)`` and is used as the
-  design p* (ADR-0012), with ``stop_loss_r = 1 + max_cost_r``. Realized payoffs are still checked
-  by certification (joint margin), which catches entry slippage moving the realized ``b``.
+  design p* (ADR-0012), with ``stop_loss_r = 1 + max_cost_r``. Caveat: stop and take-profit are
+  placed from the **decision-bar close**, not from the fill; the entry fills at the next 1m open
+  plus slippage, so the realized take-profit distance ``b`` (in R at the fill) and cost ``c``
+  differ from the planned ones and the design p* is not a strict bound on realized trades.
+  Certification always also uses the realized joint margin and takes the minimum, which covers
+  this difference.
 
 Realized volatility is reported as a market condition only; it does not gate.
 """
