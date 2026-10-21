@@ -559,7 +559,8 @@ def test_r3_path_tricks_never_serve_holdout_rows(lake: Lake, variant: str) -> No
     elif variant == "case":
         upper = lake.data_dir / ("LAKE_SEALED" + sealed_rel[len("lake_sealed") :])
         upper.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(target, upper)
+        if not upper.exists():  # case-sensitive FS; on Windows it already is the sealed file
+            shutil.copyfile(target, upper)
         new = "LAKE_SEALED" + sealed_rel[len("lake_sealed") :]
     else:
         inside = lake.data_dir / "lake" / "market=spot" / "copy.jsonl"
