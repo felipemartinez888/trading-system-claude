@@ -21,8 +21,9 @@ P(certified | K). Strata with ``w_K u_K >= SIM_MASS`` (the main contributors) ar
 contributes its exact bound ``w_K u_K``. For ``markov`` the rate is a plain seeded Monte Carlo.
 
 Each cell reports ``(estimate, se)`` and passes iff ``estimate + 2 se <= alpha``; when no run
-certifies, ``se`` uses a one-hit floor ``sqrt((1/R)(1 - 1/R)/R)`` (plain MC) so zero hits never
-yield a zero bound.
+certifies, ``se`` uses a one-hit floor ``sqrt((1/R)(1 - 1/R)/R)`` (per simulated stratum, or per
+cell for plain MC) so zero hits never yield a zero bound. Every reference strategy is run with
+``max_loss_r`` equal to its true worst loss (Amendment 5.3).
 """
 
 from __future__ import annotations
@@ -51,10 +52,11 @@ class TailStrategy:
     p_tail: float
     p_star: float | None
     stop_loss_r: float | None
+    max_loss_r: float  # true worst loss (Amendment 5.3)
 
 
-GAP = TailStrategy("gap", 1.5, -1.0, 0.566 / 0.99, -44.5, 0.01, 0.4, 1.0)
-FAT = TailStrategy("fat", 0.5, -0.2, 0.85 / 0.97, -15.0, 0.03, None, None)
+GAP = TailStrategy("gap", 1.5, -1.0, 0.566 / 0.99, -44.5, 0.01, 0.4, 1.0, 44.5)
+FAT = TailStrategy("fat", 0.5, -0.2, 0.85 / 0.97, -15.0, 0.03, None, None, 15.0)
 
 
 def caller_blocks(n: int) -> list[float | None]:
@@ -63,12 +65,19 @@ def caller_blocks(n: int) -> list[float | None]:
 
 
 def _certified(
-    r: np.ndarray, p_star: float | None, stop: float | None, block: float | None, seed: int
+    r: np.ndarray,
+    p_star: float | None,
+    stop: float | None,
+    block: float | None,
+    seed: int,
+    max_loss: float,
 ) -> bool:
     return certify(
         r,
         p_star=p_star,
         stop_loss_r=stop,
+        max_loss_r=max_loss,
+        max_loss_source="reference strategy: true worst loss",
         alpha=ALPHA,
         n_trials=1,
         min_power=0.8,
@@ -124,7 +133,7 @@ def tail_strategy_grid(
             rng.shuffle(r)
             t_cond = _t_condition(r, n)
             for b in blocks:
-                ok = _certified(r, s.p_star, s.stop_loss_r, b, 1000 * k + i)
+                ok = _certified(r, s.p_star, s.stop_loss_r, b, 1000 * k + i, s.max_loss_r)
                 # the exact stratum bound relies on: certified => deterministic t condition
                 if ok and not t_cond:
                     raise AssertionError(f"certified sample violates the t condition (k={k})")
@@ -132,7 +141,8 @@ def tail_strategy_grid(
         for b in blocks:
             q = hits[b] / runs
             est[b] += weights[k] * q
-            var[b] += weights[k] ** 2 * q * (1 - q) / runs
+            # one-hit floor: a stratum with no certified run still contributes variance
+            var[b] += weights[k] ** 2 * max(q * (1 - q), (1 / runs) * (1 - 1 / runs)) / runs
     return {b: (est[b], math.sqrt(var[b])) for b in blocks}
 
 
@@ -157,7 +167,7 @@ def markov_grid(n: int, runs: int, seed: int) -> dict[float | None, tuple[float,
     for i in range(runs):
         r = markov_chain(rng, n)
         for b in blocks:
-            hits[b] += _certified(r, 0.525, 1.05, b, i)
+            hits[b] += _certified(r, 0.525, 1.05, b, i, 1.05)
     out = {}
     for b in blocks:
         q = hits[b] / runs

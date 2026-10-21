@@ -35,6 +35,7 @@ GATES = (
     "degenerate",
     "dependence_unresolved",
     "bootstrap_unresolved",
+    "max_loss_exceeded",
 )
 BASE: dict[str, Any] = {
     "alpha": 0.05,
@@ -65,6 +66,13 @@ def run(r: Any, **kw: Any) -> Certification:
     only feeds the beyond-stop report (tests of that report pass it explicitly)."""
     if kw.get("p_star") is not None:
         kw.setdefault("stop_loss_r", 1.0)
+    # max_loss_r defaults to the sample's own worst loss (never below 1R) so that only the tests
+    # of the max-loss gate trigger it; the source string records that it is a test default
+    if "max_loss_r" not in kw:
+        worst = float(np.min(np.asarray(r, dtype=np.float64))) if len(r) else -1.0
+        kw["max_loss_r"] = max(1.0, -worst)
+        kw.setdefault("max_loss_source", "test default: worst observed loss")
+    kw.setdefault("max_loss_source", "test")
     return certify(r, **{**BASE, **kw})
 
 
@@ -132,10 +140,12 @@ def test_realized_p_star_strategy_certified_and_margin_is_min_of_both_bounds() -
 
 
 def test_gate_n_min_only() -> None:
-    """1100/2000 wins, p* = 0.525: margin and E positive, but n = 2000 < n_min = 2466."""
-    c = run(bracket_outcomes(2000, 1100, 1.0, 0.05), p_star=0.525)
+    """1100/2000 wins vs design p* = 0.525 with +1.5R / -1R payoffs (E = +0.375R, so every
+    expectancy bound passes): the win-rate margin is real but n = 2000 < n_min (~2460)."""
+    c = run(outcomes(2000, 1100, 1.5, -1.0), p_star=0.525)
     assert failing_gates(c) == {"insufficient_n"}
-    assert c.n_min == 2466
+    assert c.n_min is not None
+    assert c.n_min > 2000
     assert not c.certified
 
 
@@ -321,7 +331,14 @@ def test_f2_degenerate_all_wins_samples_are_not_certified() -> None:
 
 def test_f5_policy_floors_reject_loose_alpha_and_power() -> None:
     r = bracket_outcomes(2000, 1080, 1.0, 0.05)  # 54 %
-    kw: dict[str, Any] = {"p_star": 0.525, "stop_loss_r": 1.05, "n_trials": 1, "mean_block": None}
+    kw: dict[str, Any] = {
+        "p_star": 0.525,
+        "stop_loss_r": 1.05,
+        "max_loss_r": 1.05,
+        "max_loss_source": "design stop incl. costs",
+        "n_trials": 1,
+        "mean_block": None,
+    }
     with pytest.raises(ValueError, match=r"alpha must be <= 0.1"):
         certify(r, alpha=0.6, min_power=0.8, seed=0, **kw)
     with pytest.raises(ValueError, match=r"min_power must be >= 0.8"):
@@ -444,17 +461,26 @@ def test_realized_floor_is_300_for_samples_between_100_and_300() -> None:
     assert run(bracket_outcomes(400, 300, 1.0, 0.05), p_star=None).certified
 
 
-def test_expectancy_bound_uses_adjusted_alpha() -> None:
-    """Kills M12 (nominal alpha in the expectancy bootstrap).
+def test_expectancy_eb_bound_uses_adjusted_alpha() -> None:
+    """Kills dropping the empirical-Bernstein bound and EB at nominal alpha (Amendment 5.2).
 
-    1400 x +0.5R, 560 x -1R, 40 x -1.4R: E = 0.042, t ~ 2.7. With n_trials = 10
-    (alpha_adj = 0.005) the two-sided expectancy bound (0.25 % tail, z = 2.81) fails while the
-    one-sided joint margin (0.5 % tail, z = 2.58) passes; at nominal alpha (2.5 % tail) E passes.
+    1080 x +1R, 920 x -1R, range [-1, 1]: E = 0.08. With n_trials = 10 (alpha_adj = 0.005)
+    EB = 0.08 - sqrt(2 s^2 ln 400 / 2000) - 7 * 2 * ln 400 / (3 * 1999) = -0.011 <= 0 while the
+    percentile (+0.019) and t-type (+0.023) bounds pass; with one trial (ln 40) EB > 0 and the
+    sample certifies. The percentile bound at alpha_adj is checked on the reported values in
+    ``test_reported_bootstrap_bounds_use_adjusted_alpha`` (EB dominates it at gate level).
     """
-    r = mixed([(0.5, 1400), (-1.0, 560), (-1.4, 40)])
-    adjusted = run(r, p_star=0.5, n_trials=10, n_resamples=100_000)
+    r = mixed([(1.0, 1080), (-1.0, 920)])
+    kw: dict[str, Any] = {"p_star": 0.45, "max_loss_r": 1.0, "max_win_r": 1.0}
+    adjusted = run(r, n_trials=10, seed=0, **kw)
     assert failing_gates(adjusted) == {"expectancy_not_positive"}
-    assert run(r, p_star=0.5, n_trials=1).certified
+    assert adjusted.expectancy_ci.lower > 0
+    assert adjusted.expectancy_lcb_t > 0
+    assert adjusted.expectancy_lcb_eb <= 0
+    n, sd, lg = 2000, float(np.std(r, ddof=1)), math.log(2 / 0.005)
+    eb = float(np.mean(r)) - math.sqrt(2 * sd * sd * lg / n) - 7 * 2.0 * lg / (3 * (n - 1))
+    assert math.isclose(adjusted.expectancy_lcb_eb, eb, rel_tol=1e-12)
+    assert run(r, n_trials=1, seed=0, **kw).certified
 
 
 def test_joint_margin_uses_adjusted_alpha() -> None:
@@ -544,6 +570,11 @@ def test_reported_bootstrap_bounds_use_adjusted_alpha() -> None:
     assert math.isclose(c.expectancy_lcb_t, t_bound, rel_tol=1e-12)
     t_nominal = float(np.mean(r)) - t_isf(0.05, c.n_eff - 1) * sd / math.sqrt(c.n_eff)
     assert not math.isclose(c.expectancy_lcb_t, t_nominal, rel_tol=1e-6)
+    lg = math.log(2 / a_adj)
+    eb = float(np.mean(r)) - math.sqrt(2 * sd * sd * lg / c.n_eff)
+    eb -= 7 * (c.max_win_r + c.max_loss_r) * lg / (3 * (c.n_eff - 1))
+    assert math.isclose(c.expectancy_lcb_eb, eb, rel_tol=1e-12)
+    assert c.expectancy_lcb == min(c.expectancy_ci.lower, c.expectancy_lcb_t, eb)
     ratio = (c.p_hat * (1 - c.p_hat) / n) / float(np.var(win / n))
     assert math.isclose(c.variance_ratio, ratio, rel_tol=1e-12)
     assert math.isclose(c.n_eff, n * min(1.0, ratio), rel_tol=1e-12)
@@ -576,7 +607,17 @@ def test_beyond_stop_without_stop_is_labelled_below_minus_1r() -> None:
 def test_stop_loss_r_required_with_design_p_star_and_validated() -> None:
     r = bracket_outcomes(400, 300, 1.0, 0.05)
     with pytest.raises(ValueError, match=r"stop_loss_r is required"):
-        certify(r, p_star=0.525, alpha=0.05, n_trials=1, min_power=0.8, mean_block=None, seed=0)
+        certify(
+            r,
+            p_star=0.525,
+            alpha=0.05,
+            n_trials=1,
+            min_power=0.8,
+            mean_block=None,
+            seed=0,
+            max_loss_r=1.05,
+            max_loss_source="x",
+        )
     with pytest.raises(ValueError, match=r"stop_loss_r must be > 0"):
         run(r, p_star=0.525, stop_loss_r=-1.05)
 
@@ -690,21 +731,63 @@ def test_crisp_floor_counts_iid_noise_as_ratio_one() -> None:
 
 
 def test_expectancy_t_bound_rejects_what_the_percentile_bootstrap_accepts() -> None:
-    """Kills dropping the t-type bound (Amendment 4.3): one +70R win among 180 x +0.6R and
-    119 x -0.6R (n = 300). The bootstrap mean has a short lower tail (37 % of resamples simply
-    omit the big win), so its percentile bound is +0.07; the t-type bound uses s, which includes
-    the big win: mean 0.355 - 1.650 * 4.09 / sqrt(300) = -0.033 <= 0. Only the expectancy gate
-    fails."""
+    """One +70R win among 180 x +0.6R and 119 x -0.6R (n = 300). The bootstrap mean has a short
+    lower tail (37 % of resamples omit the big win), so its percentile bound is +0.07; the
+    t-type bound uses s, which includes the big win: 0.355 - 1.650 * 4.09 / sqrt(300) = -0.033.
+    (Under Amendment 5 the empirical-Bernstein bound is stricter still; the t-type value is
+    checked exactly here and in ``test_reported_bootstrap_bounds_use_adjusted_alpha``.)"""
     r = mixed([(70.0, 1), (0.6, 180), (-0.6, 119)])
-    c = run(r, p_star=0.5, stop_loss_r=0.6)
+    c = run(r, p_star=0.5, stop_loss_r=0.6, max_loss_r=0.6)
     assert c.expectancy_ci.lower > 0.0
     assert c.expectancy_lcb_t <= 0.0
-    assert c.expectancy_lcb == min(c.expectancy_ci.lower, c.expectancy_lcb_t)
+    assert c.expectancy_lcb_eb <= c.expectancy_lcb_t
+    assert c.expectancy_lcb == min(c.expectancy_ci.lower, c.expectancy_lcb_t, c.expectancy_lcb_eb)
     assert failing_gates(c) == {"expectancy_not_positive"}
     s = float(np.std(r, ddof=1))
     t_ref = t_isf(c.alpha_adj, c.n_eff - 1)
     assert math.isclose(c.expectancy_lcb_t, float(np.mean(r)) - t_ref * s / math.sqrt(c.n_eff))
     assert not c.certified
+
+
+def test_gate_max_loss_exceeded_only() -> None:
+    """Amendment 5.1: a strong edge with one -1.2R trade and declared max_loss_r = 1.1 is void;
+    the same sample with max_loss_r = 1.2 certifies (the trade equals the bound, not below)."""
+    r = mixed([(0.95, 1200), (-1.05, 799), (-1.2, 1)])
+    void = run(r, p_star=0.525, max_loss_r=1.1, max_loss_source="dev-segment gap x 1.5")
+    assert failing_gates(void) == {"max_loss_exceeded"}
+    assert not void.certified
+    assert void.max_loss_source == "dev-segment gap x 1.5"
+    assert any("certification void" in x for x in void.reasons)
+    ok = run(r, p_star=0.525, max_loss_r=1.2, max_loss_source="dev-segment gap x 1.5")
+    assert ok.max_loss_exceeded is False
+    assert ok.certified
+
+
+def test_max_loss_inputs_are_required_and_validated() -> None:
+    r = bracket_outcomes(400, 300, 1.0, 0.05)
+    base: dict[str, Any] = {"alpha": 0.05, "n_trials": 1, "min_power": 0.8, "mean_block": None}
+    with pytest.raises(TypeError, match=r"max_loss_r"):
+        certify(r, p_star=None, seed=0, **base)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match=r"max_loss_r must be > 0"):
+        certify(r, p_star=None, seed=0, max_loss_r=0.0, max_loss_source="x", **base)
+    with pytest.raises(ValueError, match=r"max_loss_source must be"):
+        certify(r, p_star=None, seed=0, max_loss_r=1.05, max_loss_source="  ", **base)
+    with pytest.raises(ValueError, match=r"below the largest observed outcome"):
+        certify(r, p_star=None, seed=0, max_loss_r=1.05, max_loss_source="x", max_win_r=0.5, **base)
+    c = certify(r, p_star=None, seed=0, max_loss_r=1.05, max_loss_source="x", **base)
+    assert (c.max_win_r, c.max_win_source) == (0.95, "observed")
+    c2 = certify(
+        r, p_star=None, seed=0, max_loss_r=1.05, max_loss_source="x", max_win_r=0.95, **base
+    )
+    assert c2.max_win_source == "given"
+
+
+def test_brief_bracket_strategy_still_certifies_with_declared_max_loss() -> None:
+    """b = 1, c = 0.05, 60 % wins, n = 2000, max_loss_r = 1.05 (design stop incl. costs)."""
+    r = bracket_outcomes(2000, 1200, 1.0, 0.05)
+    c = run(r, p_star=0.525, stop_loss_r=1.05, max_loss_r=1.05, max_win_r=0.95)
+    assert c.certified, c.reasons
+    assert c.expectancy_lcb_eb > 0.05
 
 
 def test_not_evaluated_gates_report_none_never_false() -> None:

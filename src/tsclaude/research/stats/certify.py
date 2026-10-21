@@ -4,7 +4,8 @@ Implements ADR-0012 with Amendments 1-4: sample floors, realized-payoff uncertai
 degenerate samples and policy floors (1); dependence always accounted for, design p* checked
 against realized payoffs, trial counts from the registry (2); effective-sample-size gate and a
 single 300-trade floor (3); block cap, crisp floor, robust expectancy bound, beyond-stop reporting
-and ``None`` for gates that were not evaluated (4).
+and ``None`` for gates that were not evaluated (4); a declared worst-case loss ``max_loss_r`` with
+its source, a ``max_loss_exceeded`` gate and an empirical-Bernstein expectancy bound (5).
 Inputs are net trade returns ``r_i`` in R (after fees, slippage, funding). A win is ``r_i > 0``;
 zero outcomes count as non-wins (conservative).
 
@@ -38,11 +39,28 @@ Procedure (every step is conservative where a choice exists):
    bound of the block-bootstrap distribution of ``p_hat* - L*/(W* + L*)`` with win rate and
    payoffs resampled **together**. Resamples with no win or no non-win (``W*`` or ``L*``
    undefined) are scored ``-inf``: they count against certification.
-6. **Expectancy** (Amendment 4.3). ``expectancy_lcb = min(percentile, t-type)`` where
+6. **Expectancy** (Amendments 4.3, 5.2). ``expectancy_lcb = min(percentile, t-type, EB)`` where
    ``percentile`` is the lower end of the two-sided block-bootstrap interval at ``1 - alpha_adj``
    and ``t-type = mean - t_{1 - alpha_adj, n_eff - 1} * s / sqrt(n_eff)`` (``s`` the sample
    standard deviation, ``t`` the Student quantile from ``student_t``; ``-inf`` if ``n_eff <= 1``).
    The t-type bound does not depend on the bootstrap, so it cannot collapse with the block.
+   ``EB`` is the empirical-Bernstein bound (Maurer & Pontil 2009, Thm 4, applied to the
+   rescaled variable ``(max_win_r - r)/R``) for outcomes in ``[-max_loss_r, max_win_r]``,
+   ``R = max_win_r + max_loss_r``, at ``delta = alpha_adj`` with ``n_eff``:
+   ``mean - sqrt(2 s^2 ln(2/delta) / n_eff) - 7 R ln(2/delta) / (3 (n_eff - 1))``
+   (``-inf`` if ``n_eff <= 1``). It is valid for *any* distribution on that interval, so a sample
+   that happens to contain no tail event cannot certify unless ``n`` is large relative to the
+   declared range (Amendment 5; Bahadur & Savage 1956 show no range-free test can do this).
+   ``max_win_r`` defaults to the largest observed outcome (source ``"observed"``); bracket designs
+   should pass the take-profit net of costs.
+   Dominance: EB <= t-type whenever ``sqrt(2 ln(2/alpha_adj)) >= t_{1-alpha_adj, n_eff-1}``
+   (the EB range term is positive). That holds for every ``n_eff >= 300`` (required to certify)
+   and ``alpha_adj >= 5e-10``, so the t-type term, kept as Amendment 4 specifies, cannot change
+   a decision there; it can bind only on samples that fail the sample-size gate anyway.
+6b. **Declared worst-case loss** (Amendment 5.1). ``max_loss_r`` (> 0, R net of costs) and its
+   ``max_loss_source`` are required and recorded. Any realized trade with ``r < -max_loss_r``
+   voids certification (gate ``max_loss_exceeded``). certify does not compute the default; the
+   backtest runner supplies the development-segment gap-through measurement (x 1.5).
 7. **Sample size** (Amendments 1.1, 3, 4.2). ``n_required = max(n_min, n_floor)`` where
    ``n_min = max(normal-approximation n, exact n)`` for power ``min_power`` at the observed effect
    ``p_alt = p_hat`` against ``p*`` at level ``alpha_adj`` (``power`` module) and
@@ -60,8 +78,9 @@ Procedure (every step is conservative where a choice exists):
    to that, capped at ``max_resamples``; if the cap binds, certification fails closed.
 
 **Gates and ``None``** (Amendment 4.5). The six gates are ``insufficient_n``,
-``margin_not_positive``, ``expectancy_not_positive``, ``degenerate``, ``dependence_unresolved``
-and ``bootstrap_unresolved``; ``certified`` is true iff none is ``True``. When the bootstrap is
+``margin_not_positive``, ``expectancy_not_positive``, ``degenerate``, ``dependence_unresolved``,
+``bootstrap_unresolved`` and ``max_loss_exceeded`` (seven); ``certified`` is true iff none is
+``True``. When the bootstrap is
 not trustworthy (``degenerate`` or ``dependence_unresolved``), the bootstrap-based gates are not
 evaluated and report ``None`` (their bounds are still reported): ``margin_not_positive`` and
 ``expectancy_not_positive`` always, ``insufficient_n`` unless it is decided without the bootstrap
@@ -156,7 +175,13 @@ class Certification:
     expectancy: float
     expectancy_ci: Interval  # two-sided bootstrap at 1 - alpha_adj
     expectancy_lcb_t: float  # mean - t_{1-alpha_adj, n_eff-1} s / sqrt(n_eff)
-    expectancy_lcb: float  # min(expectancy_ci.lower, expectancy_lcb_t)
+    expectancy_lcb_eb: float  # empirical-Bernstein bound on [-max_loss_r, max_win_r]
+    expectancy_lcb: float  # min(expectancy_ci.lower, expectancy_lcb_t, expectancy_lcb_eb)
+    max_loss_r: float
+    max_loss_source: str
+    max_win_r: float
+    max_win_source: str
+    max_loss_exceeded: bool
     n_min: int | None
     n_min_normal: int | None
     n_min_exact: int | None
@@ -231,6 +256,9 @@ def certify(
     min_power: float,
     mean_block: float | None,
     seed: int,
+    max_loss_r: float,
+    max_loss_source: str,
+    max_win_r: float | None = None,
     stop_loss_r: float | None = None,
     n_floor: int | None = None,
     n_resamples: int = 10_000,
@@ -273,6 +301,13 @@ def certify(
             raise ValueError(f"stop_loss_r must be > 0 (a loss magnitude in R), got {stop}")
     elif ps_given is not None:
         raise ValueError("stop_loss_r is required when p_star is given by design")
+    max_loss = as_float(max_loss_r, "max_loss_r")
+    if max_loss <= 0.0:
+        raise ValueError(f"max_loss_r must be > 0 (a loss magnitude in R), got {max_loss}")
+    if not isinstance(max_loss_source, str) or not max_loss_source.strip():
+        raise ValueError(
+            "max_loss_source must be a non-empty description of where max_loss_r came from"
+        )
     tol = as_float(stop_tolerance_r, "stop_tolerance_r")
     if tol < 0.0:
         raise ValueError(f"stop_tolerance_r must be >= 0, got {tol}")
@@ -376,14 +411,31 @@ def certify(
         e_lcb_t = pay.mean - t_isf(alpha_adj, n_eff - 1.0) * sd_r / math.sqrt(n_eff)
     else:
         e_lcb_t = -math.inf
-    e_lcb = min(e_ci.lower, e_lcb_t)
+    # empirical Bernstein on [-max_loss_r, max_win_r]  (Amendment 5.2)
+    if max_win_r is None:
+        max_win, win_source = max(float(np.max(r)), 0.0), "observed"
+    else:
+        max_win, win_source = as_float(max_win_r, "max_win_r"), "given"
+        if max_win < float(np.max(r)):
+            raise ValueError(f"max_win_r = {max_win} is below the largest observed outcome")
+    r_range = max_win + max_loss
+    if n_eff > 1.0 and math.isfinite(sd_r):
+        log_term = math.log(2.0 / alpha_adj)
+        e_lcb_eb = (
+            pay.mean
+            - math.sqrt(2.0 * sd_r * sd_r * log_term / n_eff)
+            - 7.0 * r_range * log_term / (3.0 * (n_eff - 1.0))
+        )
+    else:
+        e_lcb_eb = -math.inf
+    e_lcb = min(e_ci.lower, e_lcb_t, e_lcb_eb)
     e_not_positive: bool | None = None
     if trusted:
         e_not_positive = e_lcb <= 0.0
     if e_not_positive:
         reasons.append(
             f"expectancy lower bound {e_lcb:.6f} <= 0 (bootstrap {e_ci.lower:.6f}, "
-            f"t-type {e_lcb_t:.6f})"
+            f"t-type {e_lcb_t:.6f}, empirical Bernstein {e_lcb_eb:.6f})"
         )
 
     # 7b. sample size: n_eff >= max(n_min, n_floor)
@@ -418,6 +470,14 @@ def certify(
     if n_min is not None and n_eff < n_min:
         reasons.append(f"n_eff = {n_eff:.1f} (n = {n}) < n_min = {n_min}")
 
+    # 6b. declared worst-case loss (Amendment 5.1)
+    max_loss_exceeded = bool(np.any(r < -max_loss))
+    if max_loss_exceeded:
+        reasons.append(
+            f"realized loss {float(np.min(r)):.4f}R below -max_loss_r = {-max_loss:.4f}R "
+            f"({max_loss_source}): certification void"
+        )
+
     # 9. bootstrap resolution
     bootstrap_unresolved = not resolved
     if bootstrap_unresolved:
@@ -433,6 +493,7 @@ def certify(
         or degenerate
         or dependence_unresolved
         or bootstrap_unresolved
+        or max_loss_exceeded
     )
     threshold = -(1.0 if stop is None else stop) - tol
     beyond = int(np.count_nonzero(r < threshold))
@@ -457,7 +518,13 @@ def certify(
         expectancy=pay.mean,
         expectancy_ci=e_ci,
         expectancy_lcb_t=e_lcb_t,
+        expectancy_lcb_eb=e_lcb_eb,
         expectancy_lcb=e_lcb,
+        max_loss_r=max_loss,
+        max_loss_source=max_loss_source,
+        max_win_r=max_win,
+        max_win_source=win_source,
+        max_loss_exceeded=max_loss_exceeded,
         n_min=n_min,
         n_min_normal=nm_norm,
         n_min_exact=nm_exact,

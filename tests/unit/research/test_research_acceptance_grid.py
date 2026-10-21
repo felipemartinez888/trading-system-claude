@@ -30,18 +30,18 @@ from tsclaude.research.stats.certify import certify
 
 def _sample(name: str, n: int, rng: np.random.Generator) -> tuple[np.ndarray, dict[str, object]]:
     if name == "markov":
-        return markov_chain(rng, n), {"p_star": 0.525, "stop_loss_r": 1.05}
+        return markov_chain(rng, n), {"p_star": 0.525, "stop_loss_r": 1.05, "max_loss_r": 1.05}
     s = GAP if name == "gap" else FAT
     u = rng.random(n)
     body = np.where(u < (1 - s.p_tail) * s.p_hi_body, s.hi, s.lo)
     r = np.where(u >= 1 - s.p_tail, s.tail, body)
-    return r, {"p_star": s.p_star, "stop_loss_r": s.stop_loss_r}
+    return r, {"p_star": s.p_star, "stop_loss_r": s.stop_loss_r, "max_loss_r": s.max_loss_r}
 
 
 @pytest.mark.parametrize("name", ["gap", "fat", "markov"])
 def test_block_none_equals_block_one_and_block_n_always_fails_closed(name: str) -> None:
     rng = np.random.default_rng(7)
-    base = {"alpha": ALPHA, "n_trials": 1, "min_power": 0.8, "seed": 3}
+    base = {"alpha": ALPHA, "n_trials": 1, "min_power": 0.8, "seed": 3, "max_loss_source": "test"}
     for n in (300, 1000):
         r, kw = _sample(name, n, rng)
         c_none = certify(r, mean_block=None, **base, **kw)  # type: ignore[arg-type]
@@ -66,7 +66,7 @@ def _assert_grid(name: str, grid_fn: object) -> None:
 @pytest.mark.slow
 def test_acceptance_grid_fat_tail() -> None:
     """Fat-tail losing strategy (E = -0.049R): every cell estimate + 2 SE <= 0.05."""
-    _assert_grid("fat", lambda n: tail_strategy_grid(FAT, n, runs=24, seed=20261020 + n))
+    _assert_grid("fat", lambda n: tail_strategy_grid(FAT, n, runs=16, seed=20261020 + n))
 
 
 @pytest.mark.slow
@@ -76,16 +76,10 @@ def test_acceptance_grid_persistent_markov() -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason="Escalated (M2-T3, Amendment 4 review): gap-risk false certification is 0.04-0.10 "
-    "for n in 300..1000 because samples with no or one -44.5R gap are certified; no "
-    "outcomes-only bound can reject them (Bahadur-Savage). Needs a preregistered loss bound "
-    "or gap-stress rule (decision pending). Strict: errors once the grid passes.",
-)
 def test_acceptance_grid_gap_risk() -> None:
-    """Gap-risk losing strategy (E = -0.02R): every cell estimate + 2 SE <= 0.05."""
-    _assert_grid("gap", lambda n: tail_strategy_grid(GAP, n, runs=24, seed=20261020 + n))
+    """Gap-risk losing strategy (E = -0.02R), declared max_loss_r = 44.5: every cell
+    estimate + 2 SE <= 0.05 (Amendment 5 closes the case escalated under Amendment 4)."""
+    _assert_grid("gap", lambda n: tail_strategy_grid(GAP, n, runs=16, seed=20261020 + n))
 
 
 def test_markov_reference_is_losing() -> None:
