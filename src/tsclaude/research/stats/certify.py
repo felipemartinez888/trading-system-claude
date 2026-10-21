@@ -1,81 +1,88 @@
 """Certification of a strategy's win rate and expectancy from its net trade outcomes.
 
-Implements ADR-0012 including **Amendment 1** (sample floors, realized-payoff uncertainty,
-fail-closed degenerate samples, policy floors), **Amendment 2** (dependence always accounted
-for, design p* checked against realized payoffs, trial counts from the registry) and
-**Amendment 3** (effective-sample-size gate, single 300-trade floor, tail-loss reporting).
+Implements ADR-0012 with Amendments 1-4: sample floors, realized-payoff uncertainty, fail-closed
+degenerate samples and policy floors (1); dependence always accounted for, design p* checked
+against realized payoffs, trial counts from the registry (2); effective-sample-size gate and a
+single 300-trade floor (3); block cap, crisp floor, robust expectancy bound, beyond-stop reporting
+and ``None`` for gates that were not evaluated (4).
 Inputs are net trade returns ``r_i`` in R (after fees, slippage, funding). A win is ``r_i > 0``;
 zero outcomes count as non-wins (conservative).
 
 Procedure (every step is conservative where a choice exists):
 
 0. **Policy floors** (Amendment 1.4). ``alpha <= 0.10`` and ``min_power >= 0.80``; other values
-   raise ``ValueError`` (invalid input, not a soft failure).
+   raise ``ValueError`` (invalid input, not a soft failure). With a design ``p*`` the planned
+   loss at the stop including costs, ``stop_loss_r`` (> 0), is a required input (Amendment 4.5).
 1. **Multiple testing.** ``alpha_adj = alpha / n_trials`` (Bonferroni). This is Holm's first-step
    threshold; with the other trials' p-values unknown at certification time it is the only level
    valid for *any* rank, so it is used for every candidate (``multiple_testing`` module).
    **``n_trials`` must come from the trial registry** (Amendment 2.3; from M4 the registry
    supplies it, never a hand-typed value): it is the number of configurations evaluated for the
    hypothesis, and every report shows it next to the result.
-2. **Dependence and certified win rate** (Amendment 2.1). Independence is never assumed. The
-   block length is ``L = max(mean_block or 1, b(outcomes), b(win indicators))`` with ``b`` the
-   Politis-White / Patton estimate (``bootstrap.optimal_block_length``); every bootstrap below is
-   a stationary block bootstrap with mean block ``L``. ``p_lcb_exact`` = one-sided
-   Clopper-Pearson lower bound at level ``1 - alpha_adj``; ``p_lcb_bootstrap`` = block-bootstrap
-   percentile lower bound of the win share at the same level; ``p_lcb`` = the smaller.
-3. **Break-even.** ``p_star`` is the given design value (bracket exits: ``(1 + c)/(1 + b)``) or, if
+2. **Dependence** (Amendments 2.1, 4.1). Independence is never assumed. The required block length
+   is ``L_req = max(mean_block or 1, b(outcomes), b(win indicators))`` with ``b`` the Politis-White
+   / Patton estimate (``bootstrap.optimal_block_length``). It may not exceed the cap
+   ``L_cap = min(3 sqrt(n), n/3)``: beyond it the stationary-bootstrap variance collapses (as the
+   block approaches ``n`` every resample approaches the sample itself) and would *loosen*
+   certification, so ``L_req > L_cap`` fails closed with ``dependence_unresolved``. Every
+   bootstrap uses mean block ``L = min(L_req, L_cap)``.
+3. **Certified win rate.** ``p_lcb_exact`` = one-sided Clopper-Pearson lower bound at level
+   ``1 - alpha_adj``; ``p_lcb_bootstrap`` = block-bootstrap percentile lower bound of the win share
+   at the same level; ``p_lcb`` = the smaller.
+4. **Break-even.** ``p_star`` is the given design value (bracket exits: ``(1 + c)/(1 + b)``) or, if
    ``None``, ``L / (W + L)`` from the realized average win ``W`` and loss ``L``. When ``W`` or ``L``
    was not observed the realized ``p*`` is undefined, never assumed; the margin is then undefined
    and counts as not positive.
-4. **Certified margin.** ``margin_lcb = min(p_lcb - p*, joint_lcb)`` for both sources of
-   ``p*`` (Amendment 1.2; Amendment 2.2 extends it to a design ``p*``, so a declared break-even is
-   checked against realized payoffs). ``joint_lcb`` is the one-sided ``alpha_adj`` percentile
-   lower bound of the block-bootstrap distribution of ``p_hat* - L*/(W* + L*)`` with win rate
-   and payoffs resampled **together** (same resample). Resamples with no win or no non-win
-   (``W*`` or ``L*`` undefined) are scored ``-inf``: they count against certification.
-5. **Expectancy.** ``mean(r)`` with a two-sided percentile bootstrap interval at level
-   ``1 - alpha_adj`` (block bootstrap with mean block ``L``). Its lower end is
-   the one-sided bound at ``alpha_adj / 2``, stricter than the one-sided ``alpha_adj`` bound.
-6. **Sample size** (Amendment 1.1, Amendment 3). ``n_required = max(n_min, n_floor)`` where
+5. **Certified margin.** ``margin_lcb = min(p_lcb - p*, joint_lcb)`` for both sources of
+   ``p*`` (Amendments 1.2, 2.2). ``joint_lcb`` is the one-sided ``alpha_adj`` percentile lower
+   bound of the block-bootstrap distribution of ``p_hat* - L*/(W* + L*)`` with win rate and
+   payoffs resampled **together**. Resamples with no win or no non-win (``W*`` or ``L*``
+   undefined) are scored ``-inf``: they count against certification.
+6. **Expectancy** (Amendment 4.3). ``expectancy_lcb = min(percentile, t-type)`` where
+   ``percentile`` is the lower end of the two-sided block-bootstrap interval at ``1 - alpha_adj``
+   and ``t-type = mean - t_{1 - alpha_adj, n_eff - 1} * s / sqrt(n_eff)`` (``s`` the sample
+   standard deviation, ``t`` the Student quantile from ``student_t``; ``-inf`` if ``n_eff <= 1``).
+   The t-type bound does not depend on the bootstrap, so it cannot collapse with the block.
+7. **Sample size** (Amendments 1.1, 3, 4.2). ``n_required = max(n_min, n_floor)`` where
    ``n_min = max(normal-approximation n, exact n)`` for power ``min_power`` at the observed effect
-   ``p_alt = p_hat`` against ``p*`` at level ``alpha_adj`` (``power`` module), and ``n_floor`` is
-   ``N_FLOOR = 300`` for both design and realized ``p*`` (gap risk is invisible in small samples:
-   a 1 %-frequency tail event is absent from 300 trades with probability 0.99^300 = 4.9 %).
-   A caller (preregistration) may raise ``n_floor`` but never lower it. The gate compares the
-   **effective** sample size, ``n_eff = n * min(1, (p_hat (1 - p_hat) / n) / Var*(p_hat*))``
-   with ``Var*`` the block-bootstrap variance of the win rate, against ``n_required``: clustered
-   outcomes need proportionally more trades (``n_eff <= n`` always). For independent data the
-   bootstrap ratio is ``1 +- sqrt(2/B)`` (about 1.4 % at ``B = 10 000``), so at ``n`` just above
-   ``n_required`` about half of i.i.d. samples land slightly below it: the effective threshold is a
-   few percent above the nominal one (conservative). ``n_min`` is undefined
-   (gate fails) when ``p_hat <= p*``, ``p* >= 1``, or it exceeds ``N_MIN_SEARCH_LIMIT``.
-7. **Degenerate samples** (Amendment 1.3). Fewer than two distinct outcome values, or any
-   bootstrap whose replicates are all equal (up to rounding), fail closed. This gate is checked
-   first and alone decides such samples: the margin and expectancy bounds are still reported but
-   their gates are *not evaluated* (flags ``False``), because percentiles of a zero-width or
-   all-undefined bootstrap carry no information. This keeps the gate essential (and testable)
-   rather than a backstop that always coincides with the margin gate.
-8. **Bootstrap resolution.** A percentile at tail ``t`` needs at least ``MIN_TAIL_REPLICATES / t``
+   ``p_alt = p_hat`` against ``p*`` at level ``alpha_adj`` (``power`` module) and
+   ``n_floor = N_FLOOR = 300`` (a preregistration may raise it, never lower it). The gate compares
+   the **effective** sample size ``n_eff = n * min(1, rho)``, ``rho = (p_hat (1 - p_hat)/n) /
+   Var*(p_hat*)`` with ``Var*`` the block-bootstrap variance of the win rate, against
+   ``n_required``. **Crisp floor:** ``rho`` within ``3 sqrt(2/B)`` of 1 (three standard errors of
+   a variance ratio estimated from ``B`` replicates) is treated as exactly 1, so ``n_eff = n`` on
+   independent data. ``n_min`` is undefined (gate fails) when ``p_hat <= p*``, ``p* >= 1``, or it
+   exceeds ``N_MIN_SEARCH_LIMIT``.
+8. **Degenerate samples** (Amendment 1.3). Fewer than two distinct outcome values, or any
+   bootstrap whose replicates are all equal (up to rounding), fail closed.
+9. **Bootstrap resolution.** A percentile at tail ``t`` needs at least ``MIN_TAIL_REPLICATES / t``
    replicates (``20 n_trials / alpha`` for the two-sided expectancy interval). The count is raised
    to that, capped at ``max_resamples``; if the cap binds, certification fails closed.
 
-Reported for display (Amendment 3.2): ``worst_trade_r = min(r)`` and ``share_beyond_minus_1r =``
-the share of trades with ``r < -1`` (net R includes costs, so with a positive round-trip cost an
-ordinary stop-out at ``-(1 + c)`` also counts; reports should read it together with the cost).
-
-``certified`` is true iff none of the five independent gates fails: ``insufficient_n``,
-``margin_not_positive``, ``expectancy_not_positive``, ``degenerate``, ``bootstrap_unresolved``.
-(``p_star_undefined`` is reported but is not a separate gate: it forces ``margin_not_positive``,
-or ``degenerate`` when no resample contains both a win and a non-win.)
+**Gates and ``None``** (Amendment 4.5). The six gates are ``insufficient_n``,
+``margin_not_positive``, ``expectancy_not_positive``, ``degenerate``, ``dependence_unresolved``
+and ``bootstrap_unresolved``; ``certified`` is true iff none is ``True``. When the bootstrap is
+not trustworthy (``degenerate`` or ``dependence_unresolved``), the bootstrap-based gates are not
+evaluated and report ``None`` (their bounds are still reported): ``margin_not_positive`` and
+``expectancy_not_positive`` always, ``insufficient_n`` unless it is decided without the bootstrap
+(``n < n_required`` or ``n_min`` undefined, then ``True``). ``None`` therefore only occurs
+alongside a failing decisive gate. ``p_star_undefined`` is reported, not a gate: it forces
+``margin_not_positive`` (or ``degenerate`` when no resample has both a win and a non-win).
 Holdout, drawdown and cost-stress conditions of ADR-0012 are checked by the caller.
 
-All bootstraps share one resample stream and are evaluated from block sums of three columns (win
-indicator, positive part, negative part) with ``bootstrap.stationary_bootstrap_sums``; this is
-the same stationary bootstrap at ``O(n / L)`` cost per resample.
+**Tail reporting** (Amendments 3.2, 4.5). ``worst_trade_r = min(r)``; ``count_beyond_stop`` /
+``share_beyond_stop`` count trades with ``r < -(stop_loss_r) - stop_tolerance_r`` (losses beyond
+the planned stop, i.e. gaps). Without ``stop_loss_r`` (realized ``p*`` only) the threshold is
+``-1R`` and ``beyond_stop_label`` reads ``"below -1R"``.
 
-Limitations: ``n_min`` at the observed effect is post-hoc power and optimistic after selection; the
-hard floors are the safeguard. The percentile bootstrap of a mean is anti-conservative for heavily
-skewed outcomes at small n; the floors and the two-sided ``alpha_adj`` expectancy bound mitigate it.
+All bootstraps share one resample stream and are evaluated from block sums of three columns (win
+indicator, positive part, negative part) with ``bootstrap.stationary_bootstrap_sums``.
+
+Limitations: no outcomes-only test can bound the false-certification rate for every heavy-tailed
+distribution (Bahadur & Savage 1956: no test of a mean has power above its level uniformly over
+distributions with a finite mean). In particular a sample that contains no tail event at all is
+indistinguishable from a strategy without that tail. ``n_min`` at the observed effect is post-hoc
+power; the hard floor is the safeguard.
 """
 
 from __future__ import annotations
@@ -100,6 +107,7 @@ from tsclaude.research.stats.bootstrap import (
 from tsclaude.research.stats.breakeven import break_even_win_rate, realized_payoffs
 from tsclaude.research.stats.multiple_testing import bonferroni_alpha
 from tsclaude.research.stats.power import n_min_exact, n_min_one_sided
+from tsclaude.research.stats.student_t import t_isf
 
 #: Policy floors (ADR-0012 Amendment 1.4).
 MAX_ALPHA = 0.10
@@ -113,6 +121,15 @@ MIN_TAIL_REPLICATES = 10
 DEFAULT_MAX_RESAMPLES = 1_000_000
 #: Largest n searched by the exact power calculation; beyond it ``insufficient_n`` (fail closed).
 N_MIN_SEARCH_LIMIT = 10_000_000
+#: Crisp-floor band: variance ratios within this many standard errors sqrt(2/B) of 1 count as 1.
+CRISP_FLOOR_SE = 3.0
+#: Numeric tolerance below -stop_loss_r before a trade counts as beyond the stop.
+DEFAULT_STOP_TOLERANCE_R = 1e-9
+
+
+def block_cap(n: int) -> float:
+    """Largest usable mean block ``min(3 sqrt(n), n / 3)`` (ADR-0012 Amendment 4.1)."""
+    return min(3.0 * math.sqrt(n), n / 3.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,26 +155,35 @@ class Certification:
     margin_lcb: float | None
     expectancy: float
     expectancy_ci: Interval  # two-sided bootstrap at 1 - alpha_adj
+    expectancy_lcb_t: float  # mean - t_{1-alpha_adj, n_eff-1} s / sqrt(n_eff)
+    expectancy_lcb: float  # min(expectancy_ci.lower, expectancy_lcb_t)
     n_min: int | None
     n_min_normal: int | None
     n_min_exact: int | None
     n_floor: int
     n_required: int | None  # max(n_min, n_floor), compared with n_eff
     n_eff: float  # n * min(1, binomial var / block-bootstrap var of the win rate)
-    variance_ratio: float  # binomial var / block-bootstrap var of the win rate (uncapped)
+    variance_ratio: float  # binomial var / block-bootstrap var of the win rate (raw)
+    variance_ratio_used: float  # after the crisp-floor rule (Amendment 4.2)
     worst_trade_r: float
-    share_beyond_minus_1r: float
+    stop_loss_r: float | None
+    beyond_stop_label: Literal["beyond stop", "below -1R"]
+    count_beyond_stop: int
+    share_beyond_stop: float
     distinct_values: int
-    insufficient_n: bool
-    margin_not_positive: bool
+    insufficient_n: bool | None
+    margin_not_positive: bool | None
     expectancy_ci_includes_zero: bool
-    expectancy_not_positive: bool
+    expectancy_not_positive: bool | None
     p_star_undefined: bool
     degenerate: bool
+    dependence_unresolved: bool
     bootstrap_unresolved: bool
     certified: bool
     mean_block: float | None  # caller's value
-    block_length: float  # mean block actually used (Amendment 2.1)
+    block_required: float  # max(caller, estimates)
+    block_cap: float  # min(3 sqrt(n), n/3)
+    block_length: float  # mean block actually used = min(block_required, block_cap)
     seed: int
     n_resamples: int
     reasons: tuple[str, ...] = field(default_factory=tuple)
@@ -205,15 +231,19 @@ def certify(
     min_power: float,
     mean_block: float | None,
     seed: int,
+    stop_loss_r: float | None = None,
     n_floor: int | None = None,
     n_resamples: int = 10_000,
     max_resamples: int = DEFAULT_MAX_RESAMPLES,
+    stop_tolerance_r: float = DEFAULT_STOP_TOLERANCE_R,
 ) -> Certification:
     """Decide whether outcomes certify a positive win-rate margin and expectancy (see module).
 
     All decision parameters are required keywords on purpose: in particular ``n_trials`` (every
     configuration evaluated for the hypothesis) must be supplied explicitly, never defaulted.
-    ``n_floor=None`` uses ``N_FLOOR``; a value below it is rejected.
+    ``n_floor=None`` uses ``N_FLOOR``; a value below it is rejected. ``stop_loss_r`` (planned
+    loss at the stop including costs, as a positive number of R) is required with a design
+    ``p_star`` and used only for the beyond-stop report.
     """
     a, pw = _validate_policy(alpha, min_power)
     nt = as_int(n_trials, "n_trials")
@@ -236,6 +266,16 @@ def certify(
         ps_given = as_float(p_star, "p_star")
         if ps_given < 0.0:
             raise ValueError(f"p_star must be >= 0, got {ps_given}")
+    stop: float | None = None
+    if stop_loss_r is not None:
+        stop = as_float(stop_loss_r, "stop_loss_r")
+        if stop <= 0.0:
+            raise ValueError(f"stop_loss_r must be > 0 (a loss magnitude in R), got {stop}")
+    elif ps_given is not None:
+        raise ValueError("stop_loss_r is required when p_star is given by design")
+    tol = as_float(stop_tolerance_r, "stop_tolerance_r")
+    if tol < 0.0:
+        raise ValueError(f"stop_tolerance_r must be >= 0, got {tol}")
     floor = N_FLOOR
     if n_floor is not None:
         floor = as_int(n_floor, "n_floor")
@@ -270,10 +310,19 @@ def certify(
             + " not observed"
         )
 
-    # 2. dependence: block length never below the data-driven estimates (Amendment 2.1)
+    # 2. dependence: block never below the estimates (2.1), never above the cap (4.1)
     win_ind = (r > 0.0).astype(np.float64)
-    block = max(1.0 if mb is None else mb, optimal_block_length(r), optimal_block_length(win_ind))
-    block = min(block, float(n))
+    block_req = max(
+        1.0 if mb is None else mb, optimal_block_length(r), optimal_block_length(win_ind)
+    )
+    cap_block = block_cap(n)
+    dependence_unresolved = block_req > cap_block
+    block = max(1.0, min(block_req, cap_block))
+    if dependence_unresolved:
+        reasons.append(
+            f"required block length {block_req:.1f} exceeds the cap min(3 sqrt(n), n/3) = "
+            f"{cap_block:.1f}: dependence cannot be resolved with n = {n} (fail closed)"
+        )
 
     # one shared stationary-bootstrap stream; statistics from block sums of three columns
     b_count, resolved = _resamples_for(alpha_adj / 2.0, nr, cap)
@@ -296,29 +345,48 @@ def certify(
     if degenerate_reps:
         reasons.append("degenerate bootstrap (all replicates equal): " + ", ".join(degenerate_reps))
 
-    if degenerate:
-        reasons.append("margin and expectancy bounds not evaluated on a degenerate bootstrap")
+    trusted = not (degenerate or dependence_unresolved)
+    if not trusted:
+        reasons.append("bootstrap-based gates not evaluated (reported as None)")
 
     # 4. margin
     margin_cp = None if ps is None else p_lcb - ps
     margin_joint = percentile_bounds(reps["joint_margin"], alpha_adj, "lower").lower
     margin_lcb = None if margin_cp is None else min(margin_cp, margin_joint)
-    margin_not_positive = not degenerate and (margin_lcb is None or margin_lcb <= 0.0)
+    margin_not_positive: bool | None = None
+    if trusted:
+        margin_not_positive = margin_lcb is None or margin_lcb <= 0.0
     if margin_lcb is not None and margin_not_positive:
         reasons.append(f"certified margin = {margin_lcb:.6f} <= 0")
 
-    # 5. expectancy
-    e_ci = percentile_bounds(reps["expectancy"], alpha_adj, "two-sided")
-    e_includes_zero = e_ci.lower <= 0.0 <= e_ci.upper
-    e_not_positive = not degenerate and e_ci.lower <= 0.0
-    if e_not_positive:
-        reasons.append(f"expectancy bootstrap lower bound {e_ci.lower:.6f} <= 0")
-
-    # 6. sample size: n_eff >= max(n_min, n_floor)  (Amendment 3.1)
+    # 7a. effective sample size with the crisp-floor rule (Amendments 3.1, 4.2)
     var_binom = p_hat * (1.0 - p_hat) / n
     var_boot = float(np.var(reps["win_share"]))
     variance_ratio = var_binom / var_boot if var_boot > 0.0 else 1.0
-    n_eff = n * min(1.0, variance_ratio)
+    ratio_used = variance_ratio
+    if abs(variance_ratio - 1.0) <= CRISP_FLOOR_SE * math.sqrt(2.0 / b_count):
+        ratio_used = 1.0
+    n_eff = n * min(1.0, ratio_used)
+
+    # 6. expectancy: min(block-bootstrap percentile, t-type bound)  (Amendment 4.3)
+    e_ci = percentile_bounds(reps["expectancy"], alpha_adj, "two-sided")
+    e_includes_zero = e_ci.lower <= 0.0 <= e_ci.upper
+    sd_r = float(np.std(r, ddof=1)) if n > 1 else math.inf
+    if n_eff > 1.0 and math.isfinite(sd_r):
+        e_lcb_t = pay.mean - t_isf(alpha_adj, n_eff - 1.0) * sd_r / math.sqrt(n_eff)
+    else:
+        e_lcb_t = -math.inf
+    e_lcb = min(e_ci.lower, e_lcb_t)
+    e_not_positive: bool | None = None
+    if trusted:
+        e_not_positive = e_lcb <= 0.0
+    if e_not_positive:
+        reasons.append(
+            f"expectancy lower bound {e_lcb:.6f} <= 0 (bootstrap {e_ci.lower:.6f}, "
+            f"t-type {e_lcb_t:.6f})"
+        )
+
+    # 7b. sample size: n_eff >= max(n_min, n_floor)
     nm_norm: int | None = None
     nm_exact: int | None = None
     n_min_too_large = False
@@ -330,7 +398,13 @@ def certify(
             n_min_too_large = True  # effect too small to power within the search limit
     n_min = None if nm_norm is None or nm_exact is None else max(nm_norm, nm_exact)
     n_required = None if n_min is None else max(n_min, floor)
-    insufficient_n = n_required is None or n_eff < n_required
+    insufficient_n: bool | None
+    if n_required is None or n < n_required:
+        insufficient_n = True  # decided without the bootstrap (n_eff <= n)
+    elif not trusted:
+        insufficient_n = None
+    else:
+        insufficient_n = n_eff < n_required
     if n_min_too_large:
         reasons.append(f"n_min exceeds {N_MIN_SEARCH_LIMIT}: observed margin too small to power")
     elif n_min is None and ps is None:
@@ -344,7 +418,7 @@ def certify(
     if n_min is not None and n_eff < n_min:
         reasons.append(f"n_eff = {n_eff:.1f} (n = {n}) < n_min = {n_min}")
 
-    # 8. bootstrap resolution
+    # 9. bootstrap resolution
     bootstrap_unresolved = not resolved
     if bootstrap_unresolved:
         reasons.append(
@@ -353,12 +427,15 @@ def certify(
         )
 
     certified = not (
-        insufficient_n
-        or margin_not_positive
-        or e_not_positive
+        insufficient_n is True
+        or margin_not_positive is True
+        or e_not_positive is True
         or degenerate
+        or dependence_unresolved
         or bootstrap_unresolved
     )
+    threshold = -(1.0 if stop is None else stop) - tol
+    beyond = int(np.count_nonzero(r < threshold))
     return Certification(
         n=n,
         wins=wins,
@@ -379,6 +456,8 @@ def certify(
         margin_lcb=margin_lcb,
         expectancy=pay.mean,
         expectancy_ci=e_ci,
+        expectancy_lcb_t=e_lcb_t,
+        expectancy_lcb=e_lcb,
         n_min=n_min,
         n_min_normal=nm_norm,
         n_min_exact=nm_exact,
@@ -386,8 +465,12 @@ def certify(
         n_required=n_required,
         n_eff=n_eff,
         variance_ratio=variance_ratio,
+        variance_ratio_used=ratio_used,
         worst_trade_r=float(np.min(r)),
-        share_beyond_minus_1r=float(np.mean(r < -1.0)),
+        stop_loss_r=stop,
+        beyond_stop_label="below -1R" if stop is None else "beyond stop",
+        count_beyond_stop=beyond,
+        share_beyond_stop=beyond / n,
         distinct_values=distinct,
         insufficient_n=insufficient_n,
         margin_not_positive=margin_not_positive,
@@ -395,9 +478,12 @@ def certify(
         expectancy_not_positive=e_not_positive,
         p_star_undefined=p_star_undefined,
         degenerate=degenerate,
+        dependence_unresolved=dependence_unresolved,
         bootstrap_unresolved=bootstrap_unresolved,
         certified=certified,
         mean_block=mb,
+        block_required=block_req,
+        block_cap=cap_block,
         block_length=block,
         seed=sd,
         n_resamples=b_count,

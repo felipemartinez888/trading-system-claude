@@ -26,12 +26,14 @@ from tsclaude.research.stats.certify import (
     Certification,
     certify,
 )
+from tsclaude.research.stats.student_t import t_isf
 
 GATES = (
     "insufficient_n",
     "margin_not_positive",
     "expectancy_not_positive",
     "degenerate",
+    "dependence_unresolved",
     "bootstrap_unresolved",
 )
 BASE: dict[str, Any] = {
@@ -54,10 +56,15 @@ def bracket_outcomes(n: int, wins: int, b: float, c: float, seed: int = 7) -> np
 
 
 def failing_gates(c: Certification) -> set[str]:
-    return {g for g in GATES if getattr(c, g)}
+    """Gates reporting ``True`` (``None`` = not evaluated, ``False`` = passed)."""
+    return {g for g in GATES if getattr(c, g) is True}
 
 
 def run(r: Any, **kw: Any) -> Certification:
+    """``certify`` with ``BASE`` defaults. With a design p*, ``stop_loss_r`` defaults to 1.0: it
+    only feeds the beyond-stop report (tests of that report pass it explicitly)."""
+    if kw.get("p_star") is not None:
+        kw.setdefault("stop_loss_r", 1.0)
     return certify(r, **{**BASE, **kw})
 
 
@@ -227,6 +234,7 @@ def test_gate_degenerate_only() -> None:
     assert math.isclose(c.expectancy_ci.lower, c.expectancy_ci.upper, abs_tol=1e-12)
     assert c.margin_lcb_joint == -math.inf  # reported: no resample has a non-win
     assert failing_gates(c) == {"degenerate"}
+    assert c.margin_not_positive is None
     assert any("not evaluated" in x for x in c.reasons)
     assert not c.certified
 
@@ -313,11 +321,12 @@ def test_f2_degenerate_all_wins_samples_are_not_certified() -> None:
 
 def test_f5_policy_floors_reject_loose_alpha_and_power() -> None:
     r = bracket_outcomes(2000, 1080, 1.0, 0.05)  # 54 %
+    kw: dict[str, Any] = {"p_star": 0.525, "stop_loss_r": 1.05, "n_trials": 1, "mean_block": None}
     with pytest.raises(ValueError, match=r"alpha must be <= 0.1"):
-        certify(r, p_star=0.525, alpha=0.6, n_trials=1, min_power=0.8, mean_block=None, seed=0)
+        certify(r, alpha=0.6, min_power=0.8, seed=0, **kw)
     with pytest.raises(ValueError, match=r"min_power must be >= 0.8"):
-        certify(r, p_star=0.525, alpha=0.05, n_trials=1, min_power=0.05, mean_block=None, seed=0)
-    ok = certify(r, p_star=0.525, alpha=0.10, n_trials=1, min_power=0.80, mean_block=None, seed=0)
+        certify(r, alpha=0.05, min_power=0.05, seed=0, **kw)
+    ok = certify(r, alpha=0.10, min_power=0.80, seed=0, **kw)
     assert ok.alpha == 0.10
 
 
@@ -529,17 +538,47 @@ def test_reported_bootstrap_bounds_use_adjusted_alpha() -> None:
     assert c.expectancy_ci.lower == order_stat(e, a_adj / 2, False)
     assert c.expectancy_ci.upper == order_stat(e, 1 - a_adj / 2, True)
     assert c.expectancy_ci.lower != order_stat(e, 0.025, False)
+    # t-type expectancy bound at alpha_adj (one-sided) with n_eff - 1 degrees of freedom
+    sd = float(np.std(r, ddof=1))
+    t_bound = float(np.mean(r)) - t_isf(a_adj, c.n_eff - 1) * sd / math.sqrt(c.n_eff)
+    assert math.isclose(c.expectancy_lcb_t, t_bound, rel_tol=1e-12)
+    t_nominal = float(np.mean(r)) - t_isf(0.05, c.n_eff - 1) * sd / math.sqrt(c.n_eff)
+    assert not math.isclose(c.expectancy_lcb_t, t_nominal, rel_tol=1e-6)
     ratio = (c.p_hat * (1 - c.p_hat) / n) / float(np.var(win / n))
     assert math.isclose(c.variance_ratio, ratio, rel_tol=1e-12)
     assert math.isclose(c.n_eff, n * min(1.0, ratio), rel_tol=1e-12)
 
 
-def test_tail_loss_fields_are_reported() -> None:
-    """Amendment 3.2: worst trade in R and the share of trades closed beyond -1R."""
-    r = np.array([1.5] * 340 + [-1.0] * 55 + [-1.05] * 3 + [-7.5, -44.5])
-    c = run(r, p_star=0.4)
+def test_beyond_stop_fields_count_only_losses_beyond_the_planned_stop() -> None:
+    """Amendment 4.5: with stop_loss_r = 1.05 (stop 1R + 0.05R costs) ordinary stop-outs at
+    -1.05R are *not* beyond the stop; -1.06, -7.5 and -44.5 are. Worst trade reported."""
+    r = np.array([1.5] * 340 + [-1.05] * 55 + [-1.0] * 2 + [-1.06, -7.5, -44.5])
+    c = run(r, p_star=0.4, stop_loss_r=1.05)
     assert c.worst_trade_r == -44.5
-    assert c.share_beyond_minus_1r == 5 / 400  # -1.0 itself is not beyond the stop
+    assert c.stop_loss_r == 1.05
+    assert c.beyond_stop_label == "beyond stop"
+    assert c.count_beyond_stop == 3
+    assert c.share_beyond_stop == 3 / 400
+    # numeric tolerance only: -1.05 - 1e-12 is a stop-out, not a gap
+    near = run(np.concatenate([r[:-3], [-1.05 - 1e-12] * 3]), p_star=0.4, stop_loss_r=1.05)
+    assert near.count_beyond_stop == 0
+
+
+def test_beyond_stop_without_stop_is_labelled_below_minus_1r() -> None:
+    r = np.array([1.5] * 340 + [-1.0] * 56 + [-1.2, -1.0000001, -7.5, -44.5])
+    c = run(r, p_star=None)
+    assert c.stop_loss_r is None
+    assert c.beyond_stop_label == "below -1R"
+    assert c.count_beyond_stop == 4
+    assert c.share_beyond_stop == 4 / 400
+
+
+def test_stop_loss_r_required_with_design_p_star_and_validated() -> None:
+    r = bracket_outcomes(400, 300, 1.0, 0.05)
+    with pytest.raises(ValueError, match=r"stop_loss_r is required"):
+        certify(r, p_star=0.525, alpha=0.05, n_trials=1, min_power=0.8, mean_block=None, seed=0)
+    with pytest.raises(ValueError, match=r"stop_loss_r must be > 0"):
+        run(r, p_star=0.525, stop_loss_r=-1.05)
 
 
 def test_block_length_never_below_estimates_or_caller_value() -> None:
@@ -549,7 +588,14 @@ def test_block_length_never_below_estimates_or_caller_value() -> None:
     est = max(optimal_block_length(r), optimal_block_length(s.astype(np.float64)))
     assert auto.block_length == est
     assert auto.block_length > 30  # dependence detected without being told
-    assert run(r, p_star=0.525, mean_block=500.0).block_length == 500.0
+    assert auto.block_required == est
+    raised = run(r, p_star=0.525, mean_block=120.0)  # <= cap = min(3 sqrt(2000), 2000/3) = 134.2
+    assert raised.block_length == 120.0
+    assert not raised.dependence_unresolved
+    over = run(r, p_star=0.525, mean_block=500.0)  # > cap: fail closed, block used = cap
+    assert over.block_required == 500.0
+    assert over.block_length == over.block_cap == 3 * math.sqrt(2000)
+    assert over.dependence_unresolved
     iid = run(bracket_outcomes(2000, 1200, 1.0, 0.05), p_star=0.525, mean_block=None)
     assert iid.block_length >= 1.0
     assert iid.mean_block is None
@@ -595,34 +641,81 @@ def test_n1_markov_false_certification_clearly_below_alpha(
     assert rate + 2 * se <= 0.05, hits
 
 
-def test_n2_gap_risk_false_certification_at_the_floor() -> None:
-    """N2 at n = N_FLOOR = 300: design p* = 0.4 (TP 1.5R / SL 1R), but 1 % of trades gap to
-    -44.5R (+1.5R 56.6 %, -1R 42.4 %, -44.5R 1 %: E = 0.849 - 0.424 - 0.445 = -0.02R).
+# --------------------------------------------------------------------------------------------
+# Amendment 4: block cap, crisp floor, robust expectancy bound, None for not-evaluated gates
+# --------------------------------------------------------------------------------------------
 
-    Requirement (Amendment 3.2): false-certification rate <= alpha_adj = 0.05.
-    Estimator: stratify on K = number of -44.5R trades, K ~ Binomial(300, 0.01) with exact
-    weights; strata 0 and 1 get 60 seeded runs, strata 2..8 get 15, and K > 8 (P = 0.0038) is
-    bounded by P(cert | K) <= 1. Tolerance: estimate + 2 stratified SE <= 0.05.
 
-    Measured: P(cert | K = 0) ~ 0.6, P(cert | K = 1) ~ 0.02, 0 for K >= 2; rate ~ 0.032.
-    Caveat: P(cert | K = 0) < 1 partly because, at exactly n = 300, i.i.d. bootstrap noise puts
-    about half of the samples' n_eff just below the floor; without that the K = 0 stratum alone
-    would contribute up to 0.049, i.e. the floor puts this worst case at about alpha.
+def test_gate_dependence_unresolved_only() -> None:
+    """Kills deletion of the dependence gate: a strong i.i.d. edge with a caller block of n.
+
+    The required block 2000 exceeds min(3 sqrt(n), n/3) = 134.2, so the bootstrap cannot
+    resolve the declared dependence; every bootstrap-based gate is not evaluated (None).
     """
-    n, p_tail = 300, 0.01
-    weight = [math.comb(n, k) * p_tail**k * (1 - p_tail) ** (n - k) for k in range(n + 1)]
-    rng = np.random.default_rng(20261020)
-    estimate = sum(weight[9:])
-    variance = 0.0
-    for k in range(9):
-        runs = 60 if k < 2 else 15
-        hits = 0
-        for i in range(runs):
-            rest = np.where(rng.random(n - k) < 0.566 / 0.99, 1.5, -1.0)
-            r = np.concatenate([rest, np.full(k, -44.5)])
-            rng.shuffle(r)
-            hits += run(r, p_star=0.4, seed=1000 * k + i).certified
-        q = hits / runs
-        estimate += weight[k] * q
-        variance += weight[k] ** 2 * q * (1 - q) / runs
-    assert estimate + 2 * math.sqrt(variance) <= 0.05, (estimate, math.sqrt(variance))
+    c = run(bracket_outcomes(2000, 1200, 1.0, 0.05), p_star=0.525, mean_block=2000.0)
+    assert failing_gates(c) == {"dependence_unresolved"}
+    assert c.margin_not_positive is None
+    assert c.expectancy_not_positive is None
+    assert c.insufficient_n is None  # n >= n_required, n_eff not trustworthy
+    assert not c.certified
+    assert run(bracket_outcomes(2000, 1200, 1.0, 0.05), p_star=0.525, mean_block=None).certified
+
+
+def test_block_cap_formula_both_branches() -> None:
+    """Kills cap = n/3 only (n = 2000: 3 sqrt(n) = 134.2 binds) and cap = 3 sqrt(n) only
+    (n = 60: n/3 = 20 binds)."""
+    r2000 = bracket_outcomes(2000, 1200, 1.0, 0.05)
+    assert run(r2000, p_star=0.525, mean_block=300.0).dependence_unresolved
+    assert run(r2000, p_star=0.525, mean_block=134.0).dependence_unresolved is False
+    r60 = bracket_outcomes(60, 45, 1.0, 0.05)
+    c60 = run(r60, p_star=0.525, mean_block=22.0)
+    assert c60.block_cap == 20.0
+    assert c60.dependence_unresolved
+    assert c60.insufficient_n is True  # decided without the bootstrap: n < floor
+    assert run(r60, p_star=0.525, mean_block=19.0).dependence_unresolved is False
+
+
+def test_crisp_floor_counts_iid_noise_as_ratio_one() -> None:
+    """Kills removal of the crisp-floor rule (Amendment 4.2): i.i.d. sample at exactly n = 300
+    with a bootstrap variance ratio of 0.961 (noise; band 3 sqrt(2/B) = 0.042): n_eff = 300 and
+    it certifies; without the rule n_eff = 288 < 300."""
+    r = np.array([0.95] * 225 + [-1.05] * 75)
+    np.random.default_rng(2).shuffle(r)
+    c = run(r, p_star=0.525, stop_loss_r=1.05, seed=0)
+    assert c.variance_ratio < 1.0 - 0.03
+    assert abs(c.variance_ratio - 1.0) <= 3 * math.sqrt(2 / c.n_resamples)
+    assert c.variance_ratio_used == 1.0
+    assert c.n_eff == 300.0
+    assert c.certified
+
+
+def test_expectancy_t_bound_rejects_what_the_percentile_bootstrap_accepts() -> None:
+    """Kills dropping the t-type bound (Amendment 4.3): one +70R win among 180 x +0.6R and
+    119 x -0.6R (n = 300). The bootstrap mean has a short lower tail (37 % of resamples simply
+    omit the big win), so its percentile bound is +0.07; the t-type bound uses s, which includes
+    the big win: mean 0.355 - 1.650 * 4.09 / sqrt(300) = -0.033 <= 0. Only the expectancy gate
+    fails."""
+    r = mixed([(70.0, 1), (0.6, 180), (-0.6, 119)])
+    c = run(r, p_star=0.5, stop_loss_r=0.6)
+    assert c.expectancy_ci.lower > 0.0
+    assert c.expectancy_lcb_t <= 0.0
+    assert c.expectancy_lcb == min(c.expectancy_ci.lower, c.expectancy_lcb_t)
+    assert failing_gates(c) == {"expectancy_not_positive"}
+    s = float(np.std(r, ddof=1))
+    t_ref = t_isf(c.alpha_adj, c.n_eff - 1)
+    assert math.isclose(c.expectancy_lcb_t, float(np.mean(r)) - t_ref * s / math.sqrt(c.n_eff))
+    assert not c.certified
+
+
+def test_not_evaluated_gates_report_none_never_false() -> None:
+    deg = run(np.full(400, 0.95), p_star=0.525)
+    assert deg.degenerate
+    assert deg.margin_not_positive is None
+    assert deg.expectancy_not_positive is None
+    assert deg.insufficient_n is None
+    small_deg = run(np.full(100, 0.95), p_star=0.525)
+    assert small_deg.insufficient_n is True  # n < floor needs no bootstrap
+    ok = run(bracket_outcomes(2000, 1200, 1.0, 0.05), p_star=0.525)
+    assert ok.margin_not_positive is False
+    assert ok.expectancy_not_positive is False
+    assert ok.insufficient_n is False
