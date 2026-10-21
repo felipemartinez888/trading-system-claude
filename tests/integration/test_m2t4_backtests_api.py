@@ -11,11 +11,11 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from api_testkit import BASE_URL, ContextFactory  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+from api_testkit import BASE_URL, ContextFactory
+from fastapi.testclient import TestClient
 
-from tsclaude.api.app import create_app  # noqa: E402
-from tsclaude.contracts.events import canonical_json  # noqa: E402
+from tsclaude.api.app import create_app
+from tsclaude.contracts.events import canonical_json
 
 RUN_ID = "bt-20261021T000000Z-abcdef0123"
 
