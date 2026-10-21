@@ -1,0 +1,20 @@
+# Backtest runner configuration (research/runner.py, M2-T4). Hashed into every run manifest.
+version: backtest-config-v1
+starting_equity: "10000"
+risk_per_trade: "0.005"        # SIMULATION §6 default
+decision_latency_ms: 0         # raise to >= observed live p95 once measured (SIMULATION §2)
+alpha: 0.05
+min_power: 0.80
+n_resamples: 10000
+max_missing_share: 0.0         # any missing 1m bar in range -> grade X (RESEARCH_PROTOCOL §6)
+flagged_share_cap: 0.05        # ambiguous / spans_gap share above this caps the grade at C
+max_loss_safety_factor: 1.5    # L-10; may only be raised
+stress_factors: ["1.5", "2"]
+flat_margin_bars: 1
+# Instrument filters are UNVERIFIED placeholders (no exchangeInfo snapshot in the lake yet).
+# Per-symbol entries override the market default. Tick/lot rounding is always adverse.
+instruments:
+  spot:
+    default: {tick_size: "0.00000001", lot_size: "0.00000001", min_notional: "5"}
+  usdm:
+    default: {tick_size: "0.00000001", lot_size: "0.001", min_notional: "5"}

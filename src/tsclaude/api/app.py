@@ -8,6 +8,7 @@ Endpoints (all JSON, ISO-8601 `Z` timestamps, metric-like values as `Sourced`):
 | GET  | `/api/status` | session, monitoring, chain integrity, previous session, streams |
 | GET  | `/api/coverage` | observation intervals and the unobserved gaps between them |
 | GET  | `/api/events?after_seq=&limit=` | event page (newest page if `after_seq` is omitted) |
+| GET  | `/api/backtests`, `/api/backtests/{run_id}` | recorded backtest runs (`BACKTEST`) |
 | POST | `/api/monitoring/start` | token; 409 invalid transition; 423 chain failed / no session |
 | POST | `/api/monitoring/stop` | token; 409 invalid transition |
 | POST | `/api/app/quit` | token; 202; closes the session, then stops the server |
@@ -31,6 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from tsclaude.api import pages
+from tsclaude.api.backtests import backtests_router
 from tsclaude.api.context import (
     MAX_EVENTS_LIMIT,
     AppContext,
@@ -284,6 +286,9 @@ def create_app(
         now = context.clock.now_ms()
         extra = list(context.transient_notifications)
         return await asyncio.to_thread(notifications_response, context.store, now, limit, extra)
+
+    # ------------------------------------------------------------------ backtest reads (M2-T4)
+    app.include_router(backtests_router(context.store.path.parent / "runs"))
 
     # ------------------------------------------------------------------ commands
     async def _transition(action: Callable[[], Awaitable[StatusResponse]]) -> StatusResponse:
