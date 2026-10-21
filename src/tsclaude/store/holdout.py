@@ -126,7 +126,7 @@ class PreregEvidence:
     prereg_id: str
     strategy_hash: str
     path: str  # posix, relative to the repository root
-    sha256: str  # of the file content
+    sha256: str  # of the committed blob content
     git_head: str
     git_blob: str
 
@@ -220,7 +220,11 @@ def inspect_preregistration(repo_root: Path | str, prereg_id: str) -> PreregEvid
     blob = _git(repo, "rev-parse", f"HEAD:{rel}")
     if head.returncode != 0 or blob.returncode != 0:
         raise PreregistrationError(f"{rel} is not in the HEAD commit")
-    content = path.read_bytes()
+    # Hash and parse the *committed* blob (line endings in the working tree vary by platform).
+    blob_bytes = _git_bytes(repo, "cat-file", "blob", blob.stdout.strip())
+    if blob_bytes.returncode != 0:
+        raise PreregistrationError(f"{rel}: committed blob cannot be read")
+    content = blob_bytes.stdout
     declared_id, declared = _declared(content, rel)
     if declared_id != prereg_id:
         raise PreregistrationError(f"{rel} declares prereg_id {declared_id!r}")
