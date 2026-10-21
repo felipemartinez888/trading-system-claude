@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,17 +46,13 @@ def parse_symbols(text: str, default_market: str) -> list[tuple[Market, str]]:
     return out
 
 
-#: Seam for tests (the default reader uses the Parquet codec inside store/).
-ReaderFactory = Callable[[Path, "HoldoutGuard"], "LakeReader"]
-
-
 def _default_reader(data_dir: Path, guard: HoldoutGuard) -> LakeReader:
     from tsclaude.store.lake_reader import LakeReader
 
     return LakeReader.open(data_dir, guard)
 
 
-def _cmd_run(args: argparse.Namespace, reader_factory: ReaderFactory = _default_reader) -> int:
+def _cmd_run(args: argparse.Namespace) -> int:
     from tsclaude.research.runner import BacktestConfig, BacktestRequest, RunEnv, run_backtest
     from tsclaude.research.trials import TrialRegistry
     from tsclaude.store.eventstore import EventStore
@@ -82,7 +77,7 @@ def _cmd_run(args: argparse.Namespace, reader_factory: ReaderFactory = _default_
     with EventStore(settings.state_db_path) as store:
         guard = HoldoutGuard(EventStoreUnlocks(store, Path(args.repo_root)))
         env = RunEnv(
-            reader=reader_factory(settings.data_dir, guard),
+            reader=_default_reader(settings.data_dir, guard),  # module lookup: test seam
             trials=TrialRegistry(settings.state_db_path),
             runs_dir=settings.data_dir / "runs",
             now_ms=clock.now_ms,

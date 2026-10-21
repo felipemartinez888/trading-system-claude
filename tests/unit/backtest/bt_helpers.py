@@ -96,7 +96,9 @@ def synthetic_rows(
     return rows
 
 
-def write_lake(data_dir: Path, datasets: Sequence[tuple[Market, str, list[dict[str, Any]]]]) -> list[str]:
+def write_lake(
+    data_dir: Path, datasets: Sequence[tuple[Market, str, list[dict[str, Any]]]]
+) -> list[str]:
     writer = LakeWriter(data_dir, JsonLinesCodec())
     ids = []
     for market, symbol, rows in datasets:
