@@ -128,3 +128,21 @@ percentile bootstrap.
    tolerance`, where `stop_loss_r` (planned loss at the stop incl. costs) is a required input when
    p* is given by design; with realized p* and no stop the field is labelled "below −1R". Gates not
    evaluated report `None`, never `False`.
+
+## Amendment 5 (2026-10-21) — declared worst-case loss (closing the gap-risk case)
+
+No test based on outcomes alone can hold its level for every heavy-tailed distribution
+(Bahadur & Savage, 1956): samples that happen to contain no tail event look exactly like a
+profitable strategy. The gap-risk reference strategy therefore still certified at 4–10 % for
+300 ≤ n ≤ 500 under Amendment 4. Certification is made valid under an explicit, auditable
+assumption instead:
+
+1. **`max_loss_r` is required** — the worst plausible loss per trade in R, net of costs. It is
+   not chosen freely: the default is the instrument's worst historical gap-through stop loss in
+   R measured on the development segment by the simulator (×1.5 safety factor), and a
+   preregistration may only raise it. Any realized trade below `−max_loss_r` voids certification.
+2. **Expectancy lower bound** = min(percentile bootstrap, t-type, empirical-Bernstein bound
+   (Maurer & Pontil 2009) on outcomes bounded by `[−max_loss_r, max_win_r]`), at the adjusted
+   level and with n_eff.
+3. **Acceptance:** the Amendment 4 grid must pass for all three reference strategies with
+   `max_loss_r` set to their true worst loss. The certificate states `max_loss_r` and its source.

@@ -181,6 +181,8 @@ class SymbolInfo:
     step_size: str | None
     min_notional: str | None
     filters: tuple[dict[str, object], ...]
+    contract_type: str | None = None  # USD-M only, e.g. "PERPETUAL"
+    onboard_date_ms: int | None = None  # USD-M only: listing time of the contract
 
 
 @dataclass(frozen=True, slots=True)
