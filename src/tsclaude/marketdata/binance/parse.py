@@ -123,6 +123,10 @@ def _str(obj: Mapping[str, Any], key: str) -> str:
     return raw
 
 
+def _opt_str(obj: Mapping[str, Any], key: str) -> str | None:
+    return _str(obj, key) if key in obj else None
+
+
 def _bool(obj: Mapping[str, Any], key: str) -> bool:
     raw = _req(obj, key)
     if not isinstance(raw, bool):
@@ -395,6 +399,10 @@ def parse_exchange_info(market: Market, payload: Any) -> ExchangeInfo:
             step_size=_filter_value(filters, "LOT_SIZE", "stepSize"),
             min_notional=min_notional,
             filters=filters,
+            contract_type=_opt_str(s, "contractType"),
+            onboard_date_ms=to_epoch_ms(s["onboardDate"], "onboardDate")
+            if "onboardDate" in s
+            else None,
         )
         symbols[info.symbol] = info
     server_time = data.get("serverTime")

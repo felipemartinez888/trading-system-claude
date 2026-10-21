@@ -261,6 +261,12 @@ class BinanceRest:
 
     async def load_exchange_info(self, symbols: tuple[str, ...] | None = None) -> ExchangeInfo:
         """Fetch exchangeInfo and seed the weight limiter from its `rateLimits`."""
+        return (await self.load_exchange_info_raw(symbols))[1]
+
+    async def load_exchange_info_raw(
+        self, symbols: tuple[str, ...] | None = None
+    ) -> tuple[Any, ExchangeInfo]:
+        """Like `load_exchange_info`, also returning the raw JSON payload (kept as evidence)."""
         params: dict[str, Any] = {}
         if self.market is Market.SPOT:
             weight = 20
@@ -274,7 +280,7 @@ class BinanceRest:
         )
         self.weights.seed(info.rate_limits)
         self.exchange_info = info
-        return info
+        return payload, info
 
     def _kline_weight(self, limit: int) -> int:
         return 2 if self.market is Market.SPOT else _kline_weight_usdm(limit)
