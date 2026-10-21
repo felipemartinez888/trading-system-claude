@@ -112,12 +112,17 @@ def snapshot(
     running: bool = True,
     symbol: str = "BTCUSDT",
     market: Market = Market.SPOT,
+    symbols: tuple[tuple[Market, str], ...] | None = None,
 ) -> MarketSnapshot:
+    """A market-data snapshot at `now` for one symbol (or `symbols`), all with the same values."""
+    pairs = symbols or ((market, symbol),)
     states = states or {
         "kline_1m": (StreamState.HEALTHY, now - 600_000),
         "book_ticker": (StreamState.HEALTHY, now - 600_000),
     }
-    streams = [_stream(market, symbol, k, s, since, now) for k, (s, since) in states.items()]
+    streams = [
+        _stream(m, sym, k, st, since, now) for m, sym in pairs for k, (st, since) in states.items()
+    ]
     top = BookTop(
         bid_price=bid,
         ask_price=ask,
@@ -127,17 +132,22 @@ def snapshot(
         received_at_ms=now - 100,
         event_time_ms=None,
     )
-    sym = SymbolSnapshot(
-        market=market,
-        symbol=symbol,
-        last_closed_bar=Sourced.unavailable("not used"),
-        partial_candle=Sourced.unavailable("not used"),
-        best_bid_ask=Sourced[BookTop](value=top, provenance=Provenance.LIVE, as_of_ms=now - 100),
-        mark_price=Sourced.unavailable("spot"),
-        funding=Sourced.unavailable("spot"),
-        open_gap_minutes=gap_minutes,
-        exchange_status=Sourced.unavailable("not loaded"),
-    )
+    syms = [
+        SymbolSnapshot(
+            market=m,
+            symbol=sym,
+            last_closed_bar=Sourced.unavailable("not used"),
+            partial_candle=Sourced.unavailable("not used"),
+            best_bid_ask=Sourced[BookTop](
+                value=top, provenance=Provenance.LIVE, as_of_ms=now - 100
+            ),
+            mark_price=Sourced.unavailable("spot"),
+            funding=Sourced.unavailable("spot"),
+            open_gap_minutes=gap_minutes,
+            exchange_status=Sourced.unavailable("not loaded"),
+        )
+        for m, sym in pairs
+    ]
     off = (
         Sourced[int](value=offset, provenance=Provenance.LIVE, as_of_ms=now)
         if offset is not None
@@ -149,6 +159,6 @@ def snapshot(
         clock_offset_ms=off,
         rest_banned={},
         streams=streams,
-        symbols=[sym],
+        symbols=syms,
         connections=[],
     )

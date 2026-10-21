@@ -524,6 +524,14 @@ class Book:
     def has_pending(self, market: Market, symbol: str) -> bool:
         return (market, symbol) in self._pending
 
+    def holder(self, market: Market, symbol: str) -> str | None:
+        """Request id of the open position, or else of the resting entry, on (market, symbol)."""
+        pos = self._positions.get((market, symbol))
+        if pos is not None:
+            return pos.request.request_id
+        pending = self._pending.get((market, symbol))
+        return None if pending is None else pending.request.request_id
+
     def _position_value(self, pos: _Position) -> Decimal:
         """Asset value at the last mark: spot inventory, or margin plus unrealized P&L."""
         marked = pos.qty * pos.last_mark
