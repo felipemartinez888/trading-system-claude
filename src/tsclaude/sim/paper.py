@@ -624,10 +624,23 @@ class PaperTradingService:
     def apply_funding_rate(
         self, market: Market, symbol: str, ts_ms: int, rate: Decimal, mark_price: Decimal
     ) -> bool:
+        """Funding for every book holding the position; books where the timestamp is not valid
+        (see `Book.apply_funding`) are skipped and listed in the journal entry."""
         return self._process(lambda: self.session.funding(market, symbol, ts_ms, rate, mark_price))
 
     def reset_halt(self, book: str, operator: str, note: str = "") -> bool:
-        """Manual kill-switch reset, stamped at the last processed close."""
+        """Manual kill-switch reset, stamped at the last processed close.
+
+        Operator errors (unknown book, book not halted, no operator name) raise `ValueError`
+        without touching the session; only a failure while applying the reset faults it.
+        """
+        target = self.session.sim.books.get(book)
+        if target is None:
+            raise ValueError(f"unknown book {book!r}")
+        if target.halted is None:
+            raise ValueError(f"book {book} is not halted")
+        if not operator:
+            raise ValueError("a manual reset needs the operator's name")
         last = self.session.last_minute_ms
         ts = 0 if last is None else last + MS_PER_MINUTE - 1
         return self._process(lambda: self.session.reset_halt(book, ts, operator, note))

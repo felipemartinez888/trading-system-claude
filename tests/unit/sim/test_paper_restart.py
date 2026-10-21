@@ -199,3 +199,56 @@ def test_crash_mid_fill_leaves_no_partial_state() -> None:
     first_missing = len(recorded) // 2
     drive(restored, bars, list(range(first_missing, 10)))
     assert restored.ledger_hashes() == ref.ledger_hashes()
+
+
+def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
+    """A crash takes the baseline book below -10 %: halted at the mark, flattened at the next
+    open (signal CLOSED by kill_switch), new signals VETOED (book_halted) until the logged manual
+    reset; afterwards the daily loss limit still vetoes until the next UTC day."""
+    from decimal import Decimal as D
+
+    from tsclaude.risk.config import RiskConfig
+
+    cfg = config(risk=RiskConfig(max_risk_per_trade=D("0.5"), max_gross_exposure=D("1")))
+    strat = ScriptedStrategy(
+        {
+            (minute(1), "BTCUSDT"): [record(1, 1, stop=850.0, tp=1400.0)],
+            (minute(5), "BTCUSDT"): [record(2, 5, ref=870.0, stop=860.0, tp=900.0)],
+            (minute(8), "BTCUSDT"): [record(3, 8, ref=870.0, stop=860.0, tp=900.0)],
+        }
+    )
+    svc, journal = new_service(strat, cfg=cfg)
+    crash = {i: (870, 871, 869, 870) for i in range(3, 12)}
+    crash[3] = (880, 881, 869, 870)
+    bars = two_symbol_bars(12, crash)
+    with pytest.raises(ValueError, match="not halted"):
+        svc.reset_halt("baseline", "owner")
+    drive(svc, bars, list(range(7)))
+    baseline = svc.session.sim.books["baseline"]
+    assert baseline.halted == "drawdown_kill_switch"
+    lc = svc.session.lifecycle
+    s1, s2 = lc.get(sid(1)), lc.get(sid(2))
+    assert s1 is not None
+    assert s1.status is SignalStatus.CLOSED
+    assert s1.reason == "kill_switch"
+    assert s2 is not None
+    assert s2.status is SignalStatus.VETOED
+    assert "book_halted" in (s2.reason or "")
+    with pytest.raises(ValueError, match="operator"):
+        svc.reset_halt("baseline", "")
+    with pytest.raises(ValueError, match="unknown book"):
+        svc.reset_halt("nope", "owner")
+    assert svc.state is ServiceState.RUNNING
+    assert svc.reset_halt("baseline", "owner", "reviewed")
+    assert baseline.halted is None
+    drive(svc, bars, list(range(7, 12)))
+    # the reset re-opens the book, but the daily loss limit (independent rule) still blocks
+    # entries until the next UTC day
+    s3 = lc.get(sid(3))
+    assert s3 is not None
+    assert s3.status is SignalStatus.VETOED
+    assert "daily_loss" in (s3.reason or "")
+    assert "book_halted" not in (s3.reason or "")
+    resets = [b[0].payload for b in journal.batches() if b[0].payload["kind"] == "reset"]
+    assert resets[0]["operator"] == "owner"
+    assert replay(cfg, journal.batches()).ledger_hashes() == svc.ledger_hashes()
