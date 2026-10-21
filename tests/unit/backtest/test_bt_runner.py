@@ -275,3 +275,19 @@ def test_runner_rejects_unaligned_or_empty_ranges(tmp_path: Path) -> None:
         run_backtest(request(TO, FROM), env, TEST_CONFIG)
     with pytest.raises(ValueError, match="instrument"):
         run_backtest(request(FROM, TO, symbols=("ETHUSDT",)), env, type(TEST_CONFIG)())
+
+
+# Recorded on Linux (sandbox, numpy 2.5). SIMULATION §9: the same manifest must give the same
+# metrics.json hash on Windows and Linux; CI runs this on both. If an intentional change to the
+# runner, report, simulator, statistics or fixture alters the evidence, update these values in the
+# same commit and say why.
+GOLDEN_MANIFEST = "349aa232dadd510595539d51937d2241fb1605afd4adf16709891e92f47f6098"
+GOLDEN_METRICS = "c7fc3a8a322d4d37f99719940bac738bad9411be487af06b768cea61e5f7993b"
+GOLDEN_TRADES = "82eb900102f198e23ca2f9c17df835ddb7d9e14d28c7162454d57ead48ec7b22"
+
+
+def test_golden_hashes_identical_across_platforms(run1: tuple[RunOutcome, Path]) -> None:
+    out, _ = run1
+    assert out.manifest["manifest_hash"] == GOLDEN_MANIFEST
+    assert out.manifest["outputs"]["trades_parquet_sha256"] == GOLDEN_TRADES
+    assert out.metrics_hash == GOLDEN_METRICS
