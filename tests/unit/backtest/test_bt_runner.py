@@ -57,7 +57,8 @@ def test_end_to_end_writes_manifest_trades_equity_metrics(run1: tuple[RunOutcome
     assert manifest["strategy"]["strategy_id"] == "bracket_reference"
     assert manifest["strategy"]["params_hash"] == fast_strategy().params_hash
     assert manifest["datasets"]["main"]  # dataset ids recorded
-    assert manifest["seed"] == 0
+    assert manifest["seed_source"] == "trial key"
+    assert manifest["seed"] == int(manifest["trials"]["trial_key"][:8], 16)
     assert manifest["timezone"] == "UTC"
     assert manifest["provenance"] == "BACKTEST"
     assert manifest["cost_model"]["version"]
@@ -179,9 +180,10 @@ def test_trial_count_increments_per_distinct_configuration(tmp_path: Path) -> No
     if cert is not None:
         assert cert["n_trials"] == 2
         assert cert["alpha_adj"] == pytest.approx(TEST_CONFIG.alpha / 2)
-    # a different hypothesis id has its own count
+    # a hypothesis label never partitions the count (audit finding 1): same configuration
     c = run_backtest(request(lo, hi, hypothesis_id="H1-test"), env, TEST_CONFIG)
-    assert c.metrics["n_trials"] == 1
+    assert c.metrics["n_trials"] == 2
+    assert c.manifest["trials"]["trial_key"] == a.manifest["trials"]["trial_key"]
 
 
 def test_random_entry_control_matches_entries_per_hour(run1: tuple[RunOutcome, Path]) -> None:
@@ -243,7 +245,8 @@ def test_max_loss_from_development_gap_through_stops(tmp_path: Path) -> None:
     meas = out.metrics["certification_inputs"]["max_loss_measurement"]
     assert meas["measured"] is True
     assert meas["dev_gap_fill_stops"] >= 1
-    worst = meas["worst_stop_loss_r"]
+    worst = meas["worst_loss_r"]
+    assert worst <= meas["worst_stop_loss_r"]
     planned = meas["planned_stop_loss_r"]
     assert worst < -planned  # a gap-through beyond the planned stop loss
     assert meas["value"] == pytest.approx(1.5 * -worst)
@@ -280,10 +283,11 @@ def test_runner_rejects_unaligned_or_empty_ranges(tmp_path: Path) -> None:
 # Recorded on Linux (sandbox, numpy 2.5). SIMULATION §9: the same manifest must give the same
 # metrics.json hash on Windows and Linux; CI runs this on both. If an intentional change to the
 # runner, report, simulator, statistics or fixture alters the evidence, update these values in the
-# same commit and say why.
-GOLDEN_MANIFEST = "349aa232dadd510595539d51937d2241fb1605afd4adf16709891e92f47f6098"
-GOLDEN_METRICS = "c7fc3a8a322d4d37f99719940bac738bad9411be487af06b768cea61e5f7993b"
-GOLDEN_TRADES = "82eb900102f198e23ca2f9c17df835ddb7d9e14d28c7162454d57ead48ec7b22"
+# same commit and say why. Updated for the M2-T4 audit fixes: seed derived from the trial key
+# (control entries change), cost identity / funding / seed source in the manifest, new metrics.
+GOLDEN_MANIFEST = "00cbb07bc049f4e7515bb2a10c8d0b09a8911c2d76b8d3e6ace29cf5988380e7"
+GOLDEN_METRICS = "20e283e7d1ea79ac00b8499f126b9c4479763288bf4ed109fb046a4a14583f36"
+GOLDEN_TRADES = "39ca032989429bb5408d1ee3d7ef95e16ba8e7277a73b8dc0806185b3133ef91"
 
 
 def test_golden_hashes_identical_across_platforms(run1: tuple[RunOutcome, Path]) -> None:

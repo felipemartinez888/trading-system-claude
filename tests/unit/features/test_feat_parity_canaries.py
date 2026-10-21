@@ -201,3 +201,11 @@ def test_aggregator_rejects_unsorted_input() -> None:
     agg.push(m1[1])
     with pytest.raises(ValueError, match="increasing"):
         agg.push(m1[0])
+
+
+def test_empty_buckets_count_as_incomplete() -> None:
+    m1 = _minutes(90, T0, skip=set(range(20, 50)))  # minutes 20..49 missing: bucket 30 empty
+    agg = BarAggregator(Interval.M15)
+    out = [d for b in m1 if (d := agg.push(b)) is not None]
+    assert [b.open_time_ms for b in out] == [T0, T0 + 60 * MS_PER_MINUTE, T0 + 75 * MS_PER_MINUTE]
+    assert agg.incomplete == 3  # bucket 15 (partial), 30 (empty), 45 (partial)

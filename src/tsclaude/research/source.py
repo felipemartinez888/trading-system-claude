@@ -8,6 +8,10 @@ strategy is evaluated on the **trailing window** of the last ``strategy.window_b
 exist in it). CONFIRMED proposals become market `EntryRequest`s; the simulator stamps the decision
 time and executes no earlier than the next 1m open.
 
+Gaps: when a strategy bucket is incomplete (a missing minute, or an empty bucket) the symbol's
+strategy-bar history is reset, so the warm-up restarts after every gap and no feature is ever
+computed over bars that are not contiguous.
+
 Run boundaries: no entry is proposed for decision bars closing before ``trade_from_ms`` (warm-up)
 or at/after ``flat_from_ms``; at the first 1m bar closing at/after ``flat_from_ms`` an
 `ExitRequest` is issued for every symbol, so positions close at the next open and the run ends
@@ -96,6 +100,7 @@ class StrategySource:
         self._hist: dict[SymbolKey, _History] = {}
         self._flattened: set[SymbolKey] = set()
         self.records: list[ProposalRecord] = []
+        self.breaks = 0  # history resets caused by incomplete strategy buckets
         self.decision_bars: dict[SymbolKey, list[int]] = {}  # tradable decision closes
 
     @property
@@ -115,7 +120,13 @@ class StrategySource:
         if agg is None:
             agg = self._agg[key] = BarAggregator(self.strategy.interval)
             self._hist[key] = _History()
+        before = agg.incomplete
         derived = agg.push(bar)
+        if agg.incomplete != before:
+            # a strategy bucket was dropped (missing minutes): the history breaks here and the
+            # warm-up restarts, so no feature window ever joins bars across a gap
+            self._hist[key] = _History()
+            self.breaks += 1
         if derived is None:
             return out
         hist = self._hist[key]

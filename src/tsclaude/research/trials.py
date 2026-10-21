@@ -2,15 +2,21 @@
 
 A dedicated table ``research_trials`` in ``state.db`` (next to the event store's tables; the
 event-type list is Lead-owned, so trials are not events yet -- change requested). One row per
-**configuration**: ``trial_key`` = SHA-256 over the canonical JSON of hypothesis, strategy id,
-version, params hash, symbols, date range, segment, cost model and backtest-config hash. The seed
-is not part of the key (it drives the bootstrap and the random control, not the configuration).
+**configuration**: ``trial_key`` = SHA-256 over the canonical JSON of the strategy id (the
+*family*), version, params hash, symbols, date range, segment, the full cost-model parameters,
+the backtest-config hash and -- only when the caller chose one explicitly -- the seed (Lead
+decision on the M2-T4 audit: a research run's seed is derived from its trial key, so re-rolling
+seeds is only possible by recording new trials). The hypothesis / preregistration id is a
+**label** stored with the row; it is not part of the key and does not partition the count, so a
+parameter search cannot reset the count by renaming its hypothesis.
 Re-running an identical configuration does not add a trial; it increments ``evaluations``.
 
-``n_trials(hypothesis_id)`` -- the count of distinct configurations recorded for the hypothesis --
-is the only value the runner passes to `certify` as ``n_trials``. Random-entry controls and cost
+``n_trials(family)`` -- the count of distinct configurations recorded for the strategy id -- is
+the only value the runner passes to `certify` as ``n_trials``. Random-entry controls and cost
 stress variants are diagnostics of a configuration, not candidate configurations, and are not
-counted. Rows are never deleted or updated except the evaluation counter.
+counted. Rows are never deleted or updated except the evaluation counter and last-seen fields.
+
+TODO(M4, audit N5): enforce the preregistration's declared trial budget (refuse runs beyond it).
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from tsclaude.contracts.events import canonical_json
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS research_trials (
     trial_key        TEXT PRIMARY KEY,
-    hypothesis_id    TEXT NOT NULL,
+    hypothesis_label TEXT NOT NULL,
     strategy_id      TEXT NOT NULL,
     strategy_version TEXT NOT NULL,
     params_hash      TEXT NOT NULL,
@@ -38,21 +44,32 @@ CREATE TABLE IF NOT EXISTS research_trials (
     last_seen_ms     INTEGER NOT NULL,
     evaluations      INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS research_trials_hypothesis ON research_trials(hypothesis_id);
+CREATE INDEX IF NOT EXISTS research_trials_family ON research_trials(strategy_id);
 """
 
 
 @dataclass(frozen=True, slots=True)
 class TrialRecord:
     trial_key: str
-    hypothesis_id: str
-    n_trials: int  # distinct configurations for the hypothesis, including this one
+    family: str  # strategy id
+    n_trials: int  # distinct configurations of the family, including this one
     evaluations: int  # times this exact configuration was evaluated
     new: bool
 
 
-def trial_key(config: Mapping[str, Any]) -> str:
-    return hashlib.sha256(canonical_json(dict(config)).encode("utf-8")).hexdigest()
+def trial_body(
+    *, strategy_id: str, strategy_version: str, params_hash: str, config: Mapping[str, Any]
+) -> dict[str, Any]:
+    return {
+        "strategy_id": strategy_id,
+        "strategy_version": strategy_version,
+        "params_hash": params_hash,
+        **dict(config),
+    }
+
+
+def trial_key(body: Mapping[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(dict(body)).encode("utf-8")).hexdigest()
 
 
 class TrialRegistry:
@@ -71,7 +88,7 @@ class TrialRegistry:
     def record(
         self,
         *,
-        hypothesis_id: str,
+        hypothesis_label: str,
         strategy_id: str,
         strategy_version: str,
         params_hash: str,
@@ -79,16 +96,15 @@ class TrialRegistry:
         run_id: str,
         now_ms: int,
     ) -> TrialRecord:
-        """Record one evaluation atomically and return the hypothesis' trial count."""
-        if not hypothesis_id:
-            raise ValueError("hypothesis_id is required")
-        body = {
-            "hypothesis_id": hypothesis_id,
-            "strategy_id": strategy_id,
-            "strategy_version": strategy_version,
-            "params_hash": params_hash,
-            **dict(config),
-        }
+        """Record one evaluation atomically and return the family's trial count."""
+        if not strategy_id:
+            raise ValueError("strategy_id is required")
+        body = trial_body(
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            params_hash=params_hash,
+            config=config,
+        )
         key = trial_key(body)
         conn = self._connect()
         try:
@@ -102,7 +118,7 @@ class TrialRegistry:
                         "INSERT INTO research_trials VALUES (?,?,?,?,?,?,?,?,?,?,1)",
                         (
                             key,
-                            hypothesis_id,
+                            hypothesis_label,
                             strategy_id,
                             strategy_version,
                             params_hash,
@@ -122,8 +138,8 @@ class TrialRegistry:
                         (evaluations, run_id, now_ms, key),
                     )
                 (count,) = conn.execute(
-                    "SELECT COUNT(*) FROM research_trials WHERE hypothesis_id = ?",
-                    (hypothesis_id,),
+                    "SELECT COUNT(*) FROM research_trials WHERE strategy_id = ?",
+                    (strategy_id,),
                 ).fetchone()
                 conn.execute("COMMIT")
             except BaseException:
@@ -131,36 +147,37 @@ class TrialRegistry:
                 raise
         finally:
             conn.close()
-        return TrialRecord(key, hypothesis_id, int(count), evaluations, row is None)
+        return TrialRecord(key, strategy_id, int(count), evaluations, row is None)
 
-    def n_trials(self, hypothesis_id: str) -> int:
+    def n_trials(self, family: str) -> int:
+        """Distinct configurations recorded for a strategy id (the family)."""
         conn = self._connect()
         try:
             (count,) = conn.execute(
-                "SELECT COUNT(*) FROM research_trials WHERE hypothesis_id = ?", (hypothesis_id,)
+                "SELECT COUNT(*) FROM research_trials WHERE strategy_id = ?", (family,)
             ).fetchone()
         finally:
             conn.close()
         return int(count)
 
-    def list(self, hypothesis_id: str | None = None) -> list[dict[str, Any]]:
+    def list(self, family: str | None = None) -> list[dict[str, Any]]:
         conn = self._connect()
         try:
             sql = (
-                "SELECT trial_key, hypothesis_id, strategy_id, strategy_version, params_hash,"
+                "SELECT trial_key, hypothesis_label, strategy_id, strategy_version, params_hash,"
                 " first_run_id, first_seen_ms, last_run_id, last_seen_ms, evaluations"
                 " FROM research_trials"
             )
             args: tuple[str, ...] = ()
-            if hypothesis_id is not None:
-                sql += " WHERE hypothesis_id = ?"
-                args = (hypothesis_id,)
+            if family is not None:
+                sql += " WHERE strategy_id = ?"
+                args = (family,)
             rows = conn.execute(sql + " ORDER BY first_seen_ms, trial_key", args).fetchall()
         finally:
             conn.close()
         cols = (
             "trial_key",
-            "hypothesis_id",
+            "hypothesis_label",
             "strategy_id",
             "strategy_version",
             "params_hash",

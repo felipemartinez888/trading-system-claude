@@ -35,14 +35,15 @@ Grades (RESEARCH_PROTOCOL §6), the worst applicable wins:
 - ``B`` certified on validation (or on holdout without all A conditions); cost-stress failures
   cap at B;
 - ``A`` certified on the holdout of a preregistered strategy, robust to cost stress
-  (certified at x1.5 and positive mean at x2) and beating its random control.
+  (certified at x1.5 and positive mean at x2), beating its random control, **and** a recorded,
+  verified validation run of the same configuration graded B and certified (audit N4).
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -270,7 +271,7 @@ class GradeInputs:
     stress: Mapping[str, Certification | None]
     stress_means: Mapping[str, float | None]
     beats_control: bool | None
-    reasons: list[str] = field(default_factory=list)
+    validation_passed: bool | None = None  # holdout runs: a passing validation run exists
 
 
 def grade(g: GradeInputs) -> tuple[str, list[str]]:
@@ -311,6 +312,8 @@ def grade(g: GradeInputs) -> tuple[str, list[str]]:
         caps.append(("B", "validation passed; holdout pending"))
     elif g.segment == "holdout" and g.prereg_id is None:
         caps.append(("B", "holdout run without a preregistration"))
+    if g.segment == "holdout" and g.validation_passed is not True:
+        caps.append(("B", "no passing (grade B, certified) validation run of this configuration"))
     best = "A"
     reasons = []
     for level, why in caps:

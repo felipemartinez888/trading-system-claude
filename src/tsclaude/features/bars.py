@@ -3,7 +3,9 @@
 A derived bar covers ``[k * I, (k + 1) * I)`` in UTC epoch time. It is emitted **only** when all
 ``I / 1m`` minutes of its bucket are present and the bucket's last minute has closed, i.e. at the
 1m close ``(k + 1) * I - 1``. A bucket with a missing minute is never emitted (fail closed: no
-interpolation, no partial bars); it is counted in ``BarAggregator.incomplete``.
+interpolation, no partial bars); it is counted in ``BarAggregator.incomplete``, and so is every
+bucket that received no minute at all between two observed buckets. Consumers treat an increase
+of ``incomplete`` as a **break** in the strategy-bar history (no feature window spans it).
 
 OHLCV: open of the first minute, max high, min low, close of the last minute, sums of volumes and
 trade counts. ``source = DERIVED``; ``ingested_at_ms`` is the latest ingestion time of the parts,
@@ -37,7 +39,8 @@ class BarAggregator:
         self._bucket: int | None = None
         self._parts: list[Bar] = []
         self._last_open: int | None = None
-        self.incomplete = 0  # buckets dropped because a minute was missing
+        self._last_bucket: int | None = None  # bucket of the previous 1m bar
+        self.incomplete = 0  # buckets dropped: a minute missing, or the whole bucket empty
 
     def push(self, bar: Bar) -> Bar | None:
         """Add the next closed 1m bar; return the derived bar if this minute completes it."""
@@ -51,6 +54,10 @@ class BarAggregator:
         self._last_open = bar.open_time_ms
         step = self.interval.ms
         bucket = bar.open_time_ms - bar.open_time_ms % step
+        if self._last_bucket is not None and bucket - self._last_bucket > step:
+            # buckets in between received no minute at all: they are incomplete too
+            self.incomplete += (bucket - self._last_bucket) // step - 1
+        self._last_bucket = bucket
         if bucket != self._bucket:
             if self._parts:
                 self.incomplete += 1  # previous bucket never completed

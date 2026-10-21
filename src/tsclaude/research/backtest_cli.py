@@ -53,6 +53,7 @@ def _default_reader(data_dir: Path, guard: HoldoutGuard) -> LakeReader:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    from tsclaude.research.prereg import PreregistrationRefused
     from tsclaude.research.runner import BacktestConfig, BacktestRequest, RunEnv, run_backtest
     from tsclaude.research.trials import TrialRegistry
     from tsclaude.store.eventstore import EventStore
@@ -81,12 +82,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
             trials=TrialRegistry(settings.state_db_path),
             runs_dir=settings.data_dir / "runs",
             now_ms=clock.now_ms,
+            repo_root=Path(args.repo_root),
         )
         try:
             out = run_backtest(req, env, cfg)
         except HoldoutError as exc:
             print(json.dumps({"ok": False, "refused": "holdout", "error": str(exc)}))
             return 3
+        except PreregistrationRefused as exc:
+            print(json.dumps({"ok": False, "refused": "preregistration", "error": str(exc)}))
+            return 4
     print(
         json.dumps(
             {
@@ -114,7 +119,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if run is None:
         print(json.dumps({"ok": False, "error": f"unknown run {args.run_id}"}))
         return 2
-    print(json.dumps(run if args.full else run["summary"], indent=2))
+    print(json.dumps(run if args.full else run["summary"], indent=2))  # current n_trials (N1)
     return 0
 
 
@@ -131,7 +136,7 @@ def _cmd_trials(args: argparse.Namespace) -> int:
 
     settings = Settings.from_env()
     registry = TrialRegistry(settings.state_db_path)
-    print(json.dumps(registry.list(args.hypothesis), indent=2))
+    print(json.dumps(registry.list(args.strategy), indent=2))
     return 0
 
 
@@ -145,9 +150,18 @@ def register(sub: Any) -> None:
     run.add_argument("--market", default="spot", help="market for symbols without a prefix")
     run.add_argument("--from", dest="from_", required=True, help="UTC date or ISO-8601 Z")
     run.add_argument("--to", required=True, help="UTC date or ISO-8601 Z (exclusive)")
-    run.add_argument("--seed", type=int, default=0)
+    run.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="explicit seed (recorded as a separate trial); default: derived from the trial key",
+    )
     run.add_argument("--prereg", default=None, help="preregistration id (holdout runs)")
-    run.add_argument("--hypothesis", default=None, help="trial-registry hypothesis id")
+    run.add_argument(
+        "--hypothesis",
+        default=None,
+        help="label stored with the trial (n_trials counts every configuration of the strategy)",
+    )
     run.add_argument("--config", default=str(DEFAULT_CONFIG))
     run.add_argument("--repo-root", default=".")
     run.set_defaults(func=_cmd_run)
@@ -158,5 +172,5 @@ def register(sub: Any) -> None:
     ls = bsub.add_parser("list", help="list recorded runs")
     ls.set_defaults(func=_cmd_list)
     tr = bsub.add_parser("trials", help="list the trial registry")
-    tr.add_argument("--hypothesis", default=None)
+    tr.add_argument("--strategy", default=None, help="strategy id (family)")
     tr.set_defaults(func=_cmd_trials)

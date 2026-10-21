@@ -29,8 +29,10 @@ returned and stored in the manifest's ``outputs`` (outside the hashed part).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import heapq
+import itertools
 import json
 import shutil
 import subprocess
@@ -50,15 +52,17 @@ from tsclaude.contracts.signals import SignalStatus
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, from_iso, to_iso
 from tsclaude.features.core import FEATURES_VERSION
 from tsclaude.research import report
-from tsclaude.research.parquet import write_table
+from tsclaude.research.parquet import read_table, write_table
+from tsclaude.research.prereg import check_preregistration
 from tsclaude.research.source import StrategySource, SymbolKey
 from tsclaude.research.stats import Certification, certify
-from tsclaude.research.trials import TrialRegistry
+from tsclaude.research.trials import TrialRegistry, trial_body, trial_key
 from tsclaude.sim.book import Book, BookConfig, SimEventType, TradeRecord, allow_all
 from tsclaude.sim.clock import HistoricalClock, order_key
 from tsclaude.sim.costs import CostModel, Liquidity
 from tsclaude.sim.engine import SIM_ENGINE_VERSION, SimResult, Simulator
 from tsclaude.sim.fills import ExitReason
+from tsclaude.sim.money import to_decimal
 from tsclaude.sim.orders import InstrumentSpec
 from tsclaude.store.holdout import HOLDOUT_END_MS, HOLDOUT_START_MS, Purpose
 from tsclaude.store.lake_reader import LakeReader
@@ -183,14 +187,17 @@ class BacktestRequest:
     symbols: Sequence[SymbolKey]
     from_ms: int
     to_ms: int
-    seed: int = 0
+    #: None (research default): derived from the trial key. An explicit seed is part of the
+    #: trial key, so every seed tried is a recorded trial (audit finding 2).
+    seed: int | None = None
     prereg_id: str | None = None
-    hypothesis_id: str | None = None
+    hypothesis_id: str | None = None  # label only; never partitions the trial count
     dataset_ids: Mapping[str, Sequence[str]] | None = None  # pin: "main" / "max_loss"
     max_loss_r_override: float | None = None  # a preregistration may only raise the default
 
     @property
     def hypothesis(self) -> str:
+        """Label recorded with the trial (the count is per strategy family regardless)."""
         return self.hypothesis_id or self.prereg_id or self.strategy.strategy_id
 
 
@@ -202,6 +209,7 @@ class RunEnv:
     now_ms: Callable[[], int]
     cost_model: CostModel = field(default_factory=CostModel)
     code_version: Callable[[], dict[str, Any]] = field(default_factory=lambda: git_version)
+    repo_root: Path = field(default_factory=lambda: Path("."))  # for preregistration checks
 
 
 @dataclass(frozen=True)
@@ -265,8 +273,12 @@ def _months(start_ms: int, end_ms: int) -> Iterator[tuple[int, int]]:
 class _DataLog:
     dataset_ids: set[str] = field(default_factory=set)
     conflicts: int = 0
-    missing_minutes: int = 0  # inside the evaluated range only
+    missing_minutes: int = 0  # inside the evaluated range [from, to)
+    missing_warmup_minutes: int = 0  # inside the warm-up [from - warm-up, from)
     bars: int = 0
+    funding_events: int = 0
+    funding_applied: int = 0
+    funding_problems: list[str] = field(default_factory=list)
 
 
 def _stream(
@@ -295,9 +307,12 @@ def _stream(
             log.dataset_ids.update(res.dataset_ids)
             log.conflicts += len(res.conflicts)
             for a, b in res.missing:
-                a, b = max(a, count_from_ms), min(b, end_ms)
-                if b > a:
-                    log.missing_minutes += (b - a) // MS_PER_MINUTE
+                ia, ib = max(a, count_from_ms), min(b, end_ms)
+                if ib > ia:
+                    log.missing_minutes += (ib - ia) // MS_PER_MINUTE
+                wa, wb = a, min(b, count_from_ms)
+                if wb > wa:
+                    log.missing_warmup_minutes += (wb - wa) // MS_PER_MINUTE
             log.bars += len(res.items)
             chunks.append(res.items)
         yield from heapq.merge(*chunks, key=order_key)
@@ -324,12 +339,109 @@ def _simulate(
     end_ms: int,
     count_from_ms: int,
     pinned: Sequence[str] | None,
+    funding: Mapping[SymbolKey, Sequence[FundingEvent]] | None = None,
 ) -> tuple[SimResult, _DataLog]:
+    """Drive the simulator; funding is posted at each funding timestamp ``T`` after the last 1m
+    bar closing before ``T`` and before the first bar opening at/after ``T`` (positions held
+    through ``T`` pay or receive it; one opened at ``T`` does not)."""
     log = _DataLog()
     sim = Simulator(HistoricalClock([]), books, source, decision_latency_ms=cfg.decision_latency_ms)
+    queue = sorted(
+        (ev.ts_ms, str(key[0]), key[1], ev) for key, evs in (funding or {}).items() for ev in evs
+    )
+    log.funding_events = len(queue)
+    pos = 0
+
+    def settle(until_ms: int) -> None:
+        nonlocal pos
+        while pos < len(queue) and queue[pos][0] <= until_ms:
+            ts, market, symbol, ev = queue[pos]
+            pos += 1
+            for book in books:
+                if book.position_qty(Market(market), symbol) == 0:
+                    continue
+                try:
+                    sim.apply_funding_rate(
+                        book.name, Market(market), symbol, ts, ev.rate, ev.mark_price
+                    )
+                    log.funding_applied += 1
+                except ValueError as exc:  # fail closed: reported, grade X
+                    log.funding_problems.append(
+                        f"funding at {to_iso(ts)} for {market}:{symbol} not applied to "
+                        f"{book.name}: {exc}"
+                    )
+
+    last_close: int | None = None
     for bar in _stream(env, req, read_from_ms, end_ms, count_from_ms, log, pinned):
+        if last_close is not None:
+            settle(min(bar.open_time_ms, last_close + 1))
         sim.step(bar)
+        last_close = bar.close_time_ms
+    if last_close is not None:
+        settle(last_close + 1)
     return sim.finish(), log
+
+
+@dataclass(frozen=True, slots=True)
+class FundingEvent:
+    ts_ms: int
+    rate: Decimal
+    mark_price: Decimal
+
+
+#: Binance USD-M funding interval upper bound (8h; some symbols use 4h, which is denser).
+FUNDING_MAX_INTERVAL_MS = 8 * 3_600_000
+
+
+def load_funding(
+    env: RunEnv, req: BacktestRequest, from_ms: int, to_ms: int
+) -> tuple[dict[SymbolKey, list[FundingEvent]], list[str], set[str]]:
+    """Guarded funding reads for the USD-M symbols of a run, with coverage checks.
+
+    Positions exist only inside ``[from, to)``, so funding must cover that range: consecutive
+    funding times (and the range edges) may be at most `FUNDING_MAX_INTERVAL_MS` apart. Missing
+    funding or a missing mark price is a reported problem (grade X): costs would be understated.
+    The mark price is the funding row's, else the open of the 1m mark-price kline at ``T``.
+    """
+    out: dict[SymbolKey, list[FundingEvent]] = {}
+    problems: list[str] = []
+    datasets: set[str] = set()
+    for market, symbol in req.symbols:
+        if market is not Market.USDM:
+            continue
+        kw: dict[str, Any] = {
+            "purpose": Purpose.RESEARCH,
+            "prereg_id": req.prereg_id,
+            "strategy_hash": req.strategy.strategy_hash,
+        }
+        res = env.reader.read_funding(symbol, from_ms, to_ms, **kw)
+        datasets.update(res.dataset_ids)
+        rows = sorted(res.items, key=lambda r: int(r["funding_time_ms"]))
+        times = [int(r["funding_time_ms"]) for r in rows]
+        edges = [from_ms, *times, to_ms]
+        worst = max(b - a for a, b in itertools.pairwise(edges))
+        if worst > FUNDING_MAX_INTERVAL_MS:
+            problems.append(
+                f"funding data missing for usdm:{symbol} in [{to_iso(from_ms)}, {to_iso(to_ms)}): "
+                f"{len(times)} funding events, largest interval {worst / 3_600_000:.1f}h > 8h; "
+                "USD-M costs cannot be computed, run refused for certification (grade X)"
+            )
+        events: list[FundingEvent] = []
+        for r in rows:
+            ts = int(r["funding_time_ms"])
+            mark = r.get("mark_price")
+            if mark is None:
+                mres = env.reader.read_mark_price_1m(symbol, ts, ts + MS_PER_MINUTE, **kw)
+                datasets.update(mres.dataset_ids)
+                mark = mres.items[0]["open"] if mres.items else None
+            if mark is None:
+                problems.append(f"no mark price for funding of usdm:{symbol} at {to_iso(ts)}")
+                continue
+            events.append(
+                FundingEvent(ts, to_decimal(float(r["funding_rate"])), to_decimal(float(mark)))
+            )
+        out[(market, symbol)] = events
+    return out, problems, datasets
 
 
 def _planning(env: RunEnv, req: BacktestRequest) -> dict[SymbolKey, PlanningCosts]:
@@ -401,7 +513,13 @@ def _max_win_r(trades: Sequence[TradeRecord], cost_model: CostModel) -> tuple[fl
 
 
 def measure_max_loss(env: RunEnv, req: BacktestRequest, cfg: BacktestConfig) -> dict[str, Any]:
-    """L-10 default: worst development-segment stop-loss outcome (R) x safety factor."""
+    """L-10 default: worst development-segment **losing exit** (R) x safety factor.
+
+    Every losing trade counts, whatever closed it (stop-loss incl. gap-through, time exit,
+    end-of-run exit, exit signal) -- audit finding N7. The value is never below the safety factor
+    times the planned stop loss. USD-M funding is applied on the development run as well; if it
+    cannot be (missing funding data), the measurement is not trusted (fallback, grade cap C).
+    """
     planning = _planning(env, req)
     first = planning[req.symbols[0]]
     planned_stop = req.strategy.stop_loss_r(first) or 1.0
@@ -409,28 +527,42 @@ def measure_max_loss(env: RunEnv, req: BacktestRequest, cfg: BacktestConfig) -> 
     source = _source(req, planning, DEV_START_MS, DEV_END_MS, cfg, prefix="ml")
     books = _books(env, req, cfg, [(BASELINE, env.cost_model)])
     pinned = None if req.dataset_ids is None else req.dataset_ids.get("max_loss")
-    _, log = _simulate(env, req, cfg, books, source, DEV_START_MS, DEV_END_MS, DEV_START_MS, pinned)
-    stops = [t for t in books[0].trades if t.exit_reason is ExitReason.STOP_LOSS]
-    worst = min((float(t.r_multiple) for t in stops), default=None)
+    funding, funding_problems, funding_ds = load_funding(env, req, DEV_START_MS, DEV_END_MS)
+    _, log = _simulate(
+        env, req, cfg, books, source, DEV_START_MS, DEV_END_MS, DEV_START_MS, pinned, funding
+    )
+    trades = books[0].trades
+    losers = [t for t in trades if t.r_multiple < 0]
+    stops = [t for t in trades if t.exit_reason is ExitReason.STOP_LOSS]
+    worst = min((float(t.r_multiple) for t in losers), default=None)
+    problems = funding_problems + log.funding_problems
     out: dict[str, Any] = {
-        "dataset_ids": sorted(log.dataset_ids),
+        "dataset_ids": sorted(log.dataset_ids | funding_ds),
         "dev_range": [to_iso(DEV_START_MS), to_iso(DEV_END_MS)],
-        "dev_trades": len(books[0].trades),
+        "dev_trades": len(trades),
+        "dev_losing_trades": len(losers),
+        "dev_losing_exits_by_reason": {
+            str(reason): sum(1 for t in losers if t.exit_reason is reason) for reason in ExitReason
+        },
         "dev_stop_loss_trades": len(stops),
         "dev_gap_fill_stops": sum(1 for t in stops if t.gap_fill),
-        "worst_stop_loss_r": worst,
+        "worst_stop_loss_r": min((float(t.r_multiple) for t in stops), default=None),
+        "worst_loss_r": worst,
         "planned_stop_loss_r": planned_stop,
         "safety_factor": factor,
+        "problems": problems,
     }
-    if worst is None:
+    if worst is None or (problems and trades):
+        why = (
+            "no development-segment losing trades"
+            if worst is None
+            else "development funding could not be applied"
+        )
         value = factor * planned_stop
         out.update(
             measured=False,
             value=value,
-            source=(
-                f"fallback: no development-segment stop-loss trades; {factor} x planned stop "
-                f"loss {planned_stop:.6f}R"
-            ),
+            source=f"fallback: {why}; {factor} x planned stop loss {planned_stop:.6f}R",
         )
     else:
         value = factor * max(-worst, planned_stop)
@@ -438,8 +570,9 @@ def measure_max_loss(env: RunEnv, req: BacktestRequest, cfg: BacktestConfig) -> 
             measured=True,
             value=value,
             source=(
-                f"{factor} x worst development-segment stop-loss outcome "
-                f"{worst:.6f}R over {len(stops)} stop-loss trades (simulator, {SIM_ENGINE_VERSION})"
+                f"{factor} x max(worst development-segment losing exit {worst:.6f}R over "
+                f"{len(losers)} losing trades, planned stop loss {planned_stop:.6f}R) "
+                f"(simulator, {SIM_ENGINE_VERSION})"
             ),
         )
     if req.max_loss_r_override is not None:
@@ -457,10 +590,8 @@ def _certify(
     *,
     p_star: float | None,
     stop_loss_r: float | None,
-    cfg: BacktestConfig,
+    ctx: Mapping[str, Any],
     n_trials: int,
-    seed: int,
-    max_loss: Mapping[str, Any],
     max_win_r: float | None,
 ) -> Certification | None:
     if len(r) < 2:
@@ -469,17 +600,127 @@ def _certify(
     return certify(
         r,
         p_star=p_star,
-        alpha=cfg.alpha,
+        alpha=float(ctx["alpha"]),
         n_trials=n_trials,
-        min_power=cfg.min_power,
+        min_power=float(ctx["min_power"]),
         mean_block=None,
-        seed=seed,
-        max_loss_r=float(max_loss["value"]),
-        max_loss_source=str(max_loss["source"]),
+        seed=int(ctx["seed"]),
+        max_loss_r=float(ctx["max_loss"]["value"]),
+        max_loss_source=str(ctx["max_loss"]["source"]),
         max_win_r=mw,
         stop_loss_r=stop_loss_r,
-        n_resamples=cfg.n_resamples,
+        n_resamples=int(ctx["n_resamples"]),
     )
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    cert: Certification | None
+    stress_summary: dict[str, dict[str, Any]]
+    control: dict[str, Any]
+    grade: str
+    reasons: list[str]
+
+
+def evaluate(
+    ctx: Mapping[str, Any],
+    r: Sequence[float],
+    stress_r: Mapping[str, Sequence[float]],
+    control_r: Sequence[float],
+    n_trials: int,
+) -> Evaluation:
+    """Certification, cost stress, random-control comparison and grade for given outcomes.
+
+    `ctx` is the JSON-serializable ``evaluation_inputs`` stored in ``metrics.json``, so a stored
+    run can be re-evaluated with the registry's *current* ``n_trials`` (audit finding N1).
+    """
+    cert = _certify(
+        r,
+        p_star=ctx["p_star"],
+        stop_loss_r=ctx["stop_loss_r"],
+        ctx=ctx,
+        n_trials=n_trials,
+        max_win_r=ctx["max_win_r"],
+    )
+    stress_certs: dict[str, Certification | None] = {}
+    stress_means: dict[str, float | None] = {}
+    summary: dict[str, dict[str, Any]] = {}
+    for label, sr in stress_r.items():
+        c = _certify(
+            sr,
+            p_star=None,
+            stop_loss_r=ctx["stop_loss_r"],
+            ctx=ctx,
+            n_trials=n_trials,
+            max_win_r=ctx["stress_max_win_r"].get(label),
+        )
+        stress_certs[label] = c
+        stress_means[label] = report._mean(list(sr))
+        summary[label] = {
+            "certified": None if c is None else c.certified,
+            "margin_lcb": None if c is None else c.margin_lcb,
+            "expectancy_lcb": None if c is None else c.expectancy_lcb,
+            "reasons": [] if c is None else list(c.reasons),
+        }
+    control = report.control_comparison(r, control_r, float(ctx["alpha"]) / n_trials)
+    grade, reasons = report.grade(
+        report.GradeInputs(
+            segment=ctx["segment"],
+            prereg_id=ctx["prereg_id"],
+            integrity_problems=list(ctx["integrity_problems"]),
+            cert=cert,
+            n_trades=len(r),
+            flagged_share_cap=float(ctx["flagged_share_cap"]),
+            ambiguous_share=ctx["ambiguous_share"],
+            spans_gap_share=ctx["spans_gap_share"],
+            max_loss_measured=bool(ctx["max_loss"]["measured"]),
+            stress=stress_certs,
+            stress_means=stress_means,
+            beats_control=control["beats_control"],
+            validation_passed=ctx.get("validation_passed"),
+        )
+    )
+    return Evaluation(cert, summary, control, grade, reasons)
+
+
+def cost_identity(model: CostModel) -> dict[str, Any]:
+    """Every cost parameter (fees, slippage estimator and its parameters), for keys/manifests."""
+    return {**model.describe(), "slippage": _estimator_identity(model.slippage)}
+
+
+def _estimator_identity(est: object) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": type(est).__name__}
+    if dataclasses.is_dataclass(est) and not isinstance(est, type):
+        for f in dataclasses.fields(est):
+            v = getattr(est, f.name)
+            nested = hasattr(v, "estimate") and not isinstance(v, str | int | float | Decimal)
+            out[f.name] = _estimator_identity(v) if nested else str(v)
+    else:
+        out["repr"] = repr(est)  # non-dataclass estimators: identified by their repr
+    return out
+
+
+def _validation_passed(runs_dir: Path, hashed: Mapping[str, Any]) -> bool:
+    """A recorded, verified validation run of the same configuration graded B (audit N4)."""
+    root = Path(runs_dir)
+    if not root.is_dir():
+        return False
+    for d in sorted(root.iterdir()):
+        run = load_run(root, d.name, recompute=False)
+        if run is None or run["metrics"] is None or run["summary"]["metrics_verified"] is not True:
+            continue
+        m = run["manifest"]
+        same = (
+            m.get("segment") == "validation"
+            and m.get("strategy", {}).get("params_hash") == hashed["strategy"]["params_hash"]
+            and m.get("symbols") == hashed["symbols"]
+            and m.get("config_hash") == hashed["config_hash"]
+            and m.get("cost_model", {}).get("slippage") == hashed["cost_model"]["slippage"]
+        )
+        cert = run["metrics"].get("certification") or {}
+        if same and run["metrics"].get("evidence_grade") == "B" and cert.get("certified"):
+            return True
+    return False
 
 
 def _timing_problems(source: StrategySource, books: Sequence[Book], latency_ms: int) -> list[str]:
@@ -590,44 +831,71 @@ def run_backtest(
             strategy_hash=strat.strategy_hash,
             dataset_ids=[],
         )
+    # a preregistration id is accepted only for a committed preregistrations/<id>.yaml
+    if req.prereg_id is not None:
+        check_preregistration(env.repo_root, req.prereg_id)
 
-    # 2. trial registry (before results exist)
+    # 2. trial registry (before results exist); the seed is derived from the trial key unless
+    #    given explicitly, in which case it is part of the key (every seed tried is a trial)
     stamp = datetime.fromtimestamp(created / 1000, tz=UTC).strftime("%Y%m%dT%H%M%SZ")
-    trial_config = {
+    trial_config: dict[str, Any] = {
         "symbols": [f"{m}:{s}" for m, s in req.symbols],
         "from_ms": req.from_ms,
         "to_ms": req.to_ms,
         "segment": segment,
         "config_hash": cfg.config_hash,
-        "cost_model": env.cost_model.describe(),
+        "cost_model": cost_identity(env.cost_model),
     }
-    provisional_id = f"bt-{stamp}-{_sha([strat.params_hash, trial_config, req.seed])[:8]}"
+    if req.seed is not None:
+        trial_config["seed"] = req.seed
+    key = trial_key(
+        trial_body(
+            strategy_id=strat.strategy_id,
+            strategy_version=strat.version,
+            params_hash=strat.params_hash,
+            config=trial_config,
+        )
+    )
+    seed = req.seed if req.seed is not None else int(key[:8], 16)
+    seed_source = "explicit (counted in the trial key)" if req.seed is not None else "trial key"
     trial = env.trials.record(
-        hypothesis_id=req.hypothesis,
+        hypothesis_label=req.hypothesis,
         strategy_id=strat.strategy_id,
         strategy_version=strat.version,
         params_hash=strat.params_hash,
         config=trial_config,
-        run_id=provisional_id,
+        run_id=f"bt-{stamp}-{key[:8]}",
         now_ms=created,
     )
 
-    # 3. main run: baseline + cost stress books on the same signals
+    # 3. main run: baseline + cost stress books on the same signals; USD-M funding applied
+    funding, funding_problems, funding_ds = load_funding(env, req, req.from_ms, req.to_ms)
     stress = [(f"stress_x{f}", env.cost_model.scaled(Decimal(f))) for f in cfg.stress_factors]
     books = _books(env, req, cfg, [(BASELINE, env.cost_model), *stress])
     main = _source(req, planning, req.from_ms, req.to_ms, cfg, prefix="s")
     pinned = None if req.dataset_ids is None else req.dataset_ids.get("main")
-    result, log = _simulate(env, req, cfg, books, main, read_from, req.to_ms, req.from_ms, pinned)
+    result, log = _simulate(
+        env, req, cfg, books, main, read_from, req.to_ms, req.from_ms, pinned, funding
+    )
     by_name = {b.name: b for b in books}
     base = by_name[BASELINE]
     base_trades = report.order_trades(base.trades)
 
     # random-entry control: same exits, same entries per (symbol, UTC hour), seeded
-    schedule = _control_schedule(main, base_trades, req.seed)
+    schedule = _control_schedule(main, base_trades, seed)
     control_books = _books(env, req, cfg, [(CONTROL, env.cost_model)])
     control_src = _source(req, planning, req.from_ms, req.to_ms, cfg, schedule=schedule, prefix="c")
-    control_result, _ = _simulate(
-        env, req, cfg, control_books, control_src, read_from, req.to_ms, req.from_ms, pinned
+    control_result, control_log = _simulate(
+        env,
+        req,
+        cfg,
+        control_books,
+        control_src,
+        read_from,
+        req.to_ms,
+        req.from_ms,
+        pinned,
+        funding,
     )
     control_trades = report.order_trades(control_books[0].trades)
 
@@ -638,62 +906,26 @@ def run_backtest(
     stop_loss_r = strat.stop_loss_r(first)
     max_win, max_win_source = _max_win_r(base_trades, env.cost_model)
 
-    # 5. certification
-    r = report.outcomes(base_trades)
-    cert = _certify(
-        r,
-        p_star=p_star,
-        stop_loss_r=stop_loss_r,
-        cfg=cfg,
-        n_trials=trial.n_trials,
-        seed=req.seed,
-        max_loss=max_loss,
-        max_win_r=max_win,
-    )
-    stress_certs: dict[str, Certification | None] = {}
-    stress_stats: dict[str, Any] = {}
-    stress_means: dict[str, float | None] = {}
-    for name, cm in stress:
-        label = name.removeprefix("stress_")
-        st = report.order_trades(by_name[name].trades)
-        sr = report.outcomes(st)
-        sw, _ = _max_win_r(st, cm)
-        c = _certify(
-            sr,
-            p_star=None,
-            stop_loss_r=stop_loss_r,
-            cfg=cfg,
-            n_trials=trial.n_trials,
-            seed=req.seed,
-            max_loss=max_loss,
-            max_win_r=sw,
-        )
-        stress_certs[label] = c
-        stress_means[label] = report._mean(sr)
-        stress_stats[label] = {
-            "cost_model": cm.version,
-            **report.trade_stats(st, cfg.alpha),
-            "certified": None if c is None else c.certified,
-            "margin_lcb": None if c is None else c.margin_lcb,
-            "expectancy_lcb": None if c is None else c.expectancy_lcb,
-            "reasons": [] if c is None else list(c.reasons),
-        }
-    alpha_adj = cfg.alpha / trial.n_trials
-    control = report.control_comparison(r, report.outcomes(control_trades), alpha_adj)
-    control["scheduled_entries"] = sum(len(v) for v in schedule.values())
-    control["source_errors"] = _count(control_result, SimEventType.SOURCE_ERROR)
-
     # integrity
     evaluated_minutes = (req.to_ms - req.from_ms) // MS_PER_MINUTE * len(req.symbols)
+    warmup_minutes = (req.from_ms - read_from) // MS_PER_MINUTE * len(req.symbols)
     missing_share = log.missing_minutes / evaluated_minutes if evaluated_minutes else 0.0
+    warm_share = log.missing_warmup_minutes / warmup_minutes if warmup_minutes else 0.0
     problems: list[str] = []
     if missing_share > cfg.max_missing_share:
         problems.append(
             f"data gaps: {log.missing_minutes} missing 1m bars in range "
             f"(share {missing_share:.6f} > tolerance {cfg.max_missing_share})"
         )
+    if warm_share > cfg.max_missing_share:
+        problems.append(
+            f"data gaps in warm-up: {log.missing_warmup_minutes} missing 1m bars before 'from' "
+            f"(share {warm_share:.6f} > tolerance {cfg.max_missing_share})"
+        )
     if log.bars == 0:
         problems.append("no bars in range")
+    problems += funding_problems
+    problems += sorted(set(log.funding_problems + control_log.funding_problems))
     problems += _timing_problems(main, books, cfg.decision_latency_ms)
     problems += _timing_problems(control_src, control_books, cfg.decision_latency_ms)
     for b in [*books, *control_books]:
@@ -720,23 +952,30 @@ def run_backtest(
         },
         "segment": segment,
         "datasets": {
-            "main": sorted(log.dataset_ids),
+            "main": sorted(log.dataset_ids | funding_ds),
             "max_loss": list(max_loss["dataset_ids"]),
         },
         "config": cfg.to_dict(),
         "config_hash": cfg.config_hash,
-        "cost_model": {**env.cost_model.describe(), "planning": first.basis},
+        "cost_model": {**cost_identity(env.cost_model), "planning": first.basis},
         "features_version": FEATURES_VERSION,
         "sim_engine_version": SIM_ENGINE_VERSION,
         "report_version": report.REPORT_VERSION,
-        "seed": req.seed,
+        "seed": seed,
+        "seed_source": seed_source,
         "timezone": "UTC",
         "trials": {
             "trial_key": trial.trial_key,
+            "family": strat.strategy_id,
             "n_trials": trial.n_trials,
-            "counted_by": "research_trials registry",
+            "counted_by": "research_trials registry (distinct configurations per strategy id)",
         },
         "max_loss": {"value": max_loss["value"], "source": max_loss["source"]},
+        "funding": {
+            "usdm_symbols": [f"{m}:{s}" for m, s in req.symbols if m is Market.USDM],
+            "events": log.funding_events,
+            "applied": log.funding_applied,
+        },
         "risk_hook": "sim.book.allow_all (stub; M3 risk engine not wired)",
     }
     manifest_hash = _sha(hashed)
@@ -754,24 +993,55 @@ def run_backtest(
     if missing_fields:
         problems.append(f"manifest fields missing: {missing_fields}")
 
-    # report
+    # 5. certification and grade (one function, reused when n_trials grows later)
     stats = report.trade_stats(base_trades, cfg.alpha)
-    grade, reasons = report.grade(
-        report.GradeInputs(
-            segment=segment,
-            prereg_id=req.prereg_id,
-            integrity_problems=problems,
-            cert=cert,
-            n_trades=len(r),
-            flagged_share_cap=cfg.flagged_share_cap,
-            ambiguous_share=stats["ambiguous_share"],
-            spans_gap_share=stats["spans_gap_share"],
-            max_loss_measured=bool(max_loss["measured"]),
-            stress=stress_certs,
-            stress_means=stress_means,
-            beats_control=control["beats_control"],
-        )
+    stress_trades = {
+        name.removeprefix("stress_"): report.order_trades(by_name[name].trades)
+        for name, _ in stress
+    }
+    ctx: dict[str, Any] = {
+        "p_star": p_star,
+        "stop_loss_r": stop_loss_r,
+        "max_loss": {k: max_loss[k] for k in ("value", "source", "measured")},
+        "max_win_r": max_win,
+        "stress_max_win_r": {
+            label: _max_win_r(st, cm)[0]
+            for (label, st), (_, cm) in zip(stress_trades.items(), stress, strict=True)
+        },
+        "alpha": cfg.alpha,
+        "min_power": cfg.min_power,
+        "n_resamples": cfg.n_resamples,
+        "seed": seed,
+        "segment": segment,
+        "prereg_id": req.prereg_id,
+        "integrity_problems": problems,
+        "flagged_share_cap": cfg.flagged_share_cap,
+        "ambiguous_share": stats["ambiguous_share"],
+        "spans_gap_share": stats["spans_gap_share"],
+        "validation_passed": (
+            _validation_passed(env.runs_dir, hashed) if segment == "holdout" else None
+        ),
+    }
+    r = report.outcomes(base_trades)
+    ev = evaluate(
+        ctx,
+        r,
+        {label: report.outcomes(st) for label, st in stress_trades.items()},
+        report.outcomes(control_trades),
+        trial.n_trials,
     )
+    cert = ev.cert
+    stress_stats: dict[str, Any] = {}
+    for (label, st), (_, cm) in zip(stress_trades.items(), stress, strict=True):
+        stress_stats[label] = {
+            "cost_model": cm.version,
+            **report.trade_stats(st, cfg.alpha),
+            **ev.stress_summary[label],
+        }
+    control = dict(ev.control)
+    control["scheduled_entries"] = sum(len(v) for v in schedule.values())
+    control["source_errors"] = _count(control_result, SimEventType.SOURCE_ERROR)
+    grade, reasons = ev.grade, ev.reasons
     watch = sum(1 for x in main.records if x.proposal.stage is SignalStatus.WATCH)
     metrics = report.clean(
         {
@@ -797,6 +1067,7 @@ def run_backtest(
                 "alpha": cfg.alpha,
                 "min_power": cfg.min_power,
             },
+            "evaluation_inputs": ctx,
             "equity": report.equity_stats(base.equity_curve, base.summary()),
             "activity": report.exposure_turnover(
                 base_trades, cfg.starting_equity, req.to_ms - req.from_ms, len(req.symbols)
@@ -809,14 +1080,18 @@ def run_backtest(
                 "confirmed": sum(1 for x in main.records if x.request_id),
                 "decision_bars": sum(len(v) for v in main.decision_bars.values()),
                 "incomplete_strategy_buckets": main.incomplete_buckets,
+                "history_breaks": main.breaks,
             },
             "integrity": {
                 "problems": problems,
                 "bars_read": log.bars,
                 "missing_minutes_in_range": log.missing_minutes,
+                "missing_minutes_in_warmup": log.missing_warmup_minutes,
                 "missing_share": missing_share,
                 "conflicts": log.conflicts,
                 "bar_gap_events": _count(result, SimEventType.BAR_GAP),
+                "funding_events": log.funding_events,
+                "funding_applied": log.funding_applied,
                 "rejections": base.summary()["rejections_by_reason"],
                 "open_positions_at_end": base.summary()["open_positions"],
                 "sim_fingerprint": result.fingerprint,
@@ -879,44 +1154,105 @@ def list_runs(runs_dir: Path | str) -> list[dict[str, Any]]:
     return out
 
 
-def load_run(runs_dir: Path | str, run_id: str) -> dict[str, Any] | None:
+def load_run(
+    runs_dir: Path | str,
+    run_id: str,
+    trials: TrialRegistry | None = None,
+    *,
+    recompute: bool = True,
+) -> dict[str, Any] | None:
+    """A recorded run with a summary. With ``recompute`` the certification and grade are
+    re-evaluated with the registry's **current** ``n_trials`` for the strategy family when more
+    trials were recorded since the run (audit N1); the summary then shows the current values and
+    ``recomputed: true``, and the stored ones stay in ``metrics``. The registry defaults to
+    ``<runs_dir>/../state.db``.
+    """
     root = Path(runs_dir).resolve()
     d = (root / run_id).resolve()
     if d.parent != root or not (d / "manifest.json").is_file():
         return None  # never leave the runs directory
     manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
     metrics_path = d / "metrics.json"
-    metrics = (
-        json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else None
-    )
+    metrics: dict[str, Any] | None = None
     verified = None
     if metrics_path.is_file():
         text = metrics_path.read_text(encoding="utf-8").rstrip("\n")
+        metrics = json.loads(text)
         verified = hashlib.sha256(text.encode("utf-8")).hexdigest() == manifest.get(
             "outputs", {}
         ).get("metrics_sha256")
-    trades = (metrics or {}).get("trades", {})
-    cert = (metrics or {}).get("certification") or {}
+    m = metrics or {}
+    trades = m.get("trades", {})
+    cert = m.get("certification") or {}
+    family = manifest.get("strategy", {}).get("strategy_id")
+    stored_trials = m.get("n_trials")
+    current: dict[str, Any] | None = None
+    if recompute and metrics is not None and family and verified:
+        if trials is None and (root.parent / "state.db").is_file():
+            trials = TrialRegistry(root.parent / "state.db")
+        now = trials.n_trials(family) if trials is not None else None
+        if now is not None and stored_trials is not None and now != stored_trials:
+            current = _recompute(d, metrics, now)
     summary = {
         "run_id": manifest.get("run_id"),
         "created_at": manifest.get("created_at"),
-        "strategy_id": manifest.get("strategy", {}).get("strategy_id"),
+        "strategy_id": family,
         "strategy_version": manifest.get("strategy", {}).get("version"),
         "params_hash": manifest.get("strategy", {}).get("params_hash"),
         "symbols": manifest.get("symbols"),
         "from": manifest.get("range", {}).get("from"),
         "to": manifest.get("range", {}).get("to"),
         "segment": manifest.get("segment"),
-        "evidence_grade": (metrics or {}).get("evidence_grade"),
+        "evidence_grade": m.get("evidence_grade"),
         "n_trades": trades.get("n"),
         "win_rate": trades.get("win_rate"),
         "win_rate_ci": trades.get("win_rate_ci"),
         "p_star": cert.get("p_star"),
         "margin_lcb": cert.get("margin_lcb"),
-        "n_trials": (metrics or {}).get("n_trials"),
+        "n_trials": stored_trials,
+        "n_trials_recorded": stored_trials,
+        "recomputed": False,
         "metrics_verified": verified,
     }
-    return {"summary": summary, "manifest": manifest, "metrics": metrics}
+    if current is not None:
+        c = current["certification"] or {}
+        summary.update(
+            evidence_grade=current["evidence_grade"],
+            n_trials=current["n_trials"],
+            p_star=c.get("p_star"),
+            margin_lcb=c.get("margin_lcb"),
+            recomputed=True,
+        )
+    return {"summary": summary, "manifest": manifest, "metrics": metrics, "current": current}
+
+
+def _recompute(run_dir: Path, metrics: Mapping[str, Any], n_trials: int) -> dict[str, Any] | None:
+    ctx = metrics.get("evaluation_inputs")
+    if not ctx:
+        return None
+    _, rows = read_table(run_dir / "trades.parquet")
+    by_book: dict[str, list[float]] = {}
+    for row in rows:  # rows are written per book in entry order
+        by_book.setdefault(str(row["book"]), []).append(float(row["r"]))
+    ev = evaluate(
+        ctx,
+        by_book.get(BASELINE, []),
+        {label: by_book.get(f"stress_{label}", []) for label in ctx["stress_max_win_r"]},
+        by_book.get(CONTROL, []),
+        n_trials,
+    )
+    out: dict[str, Any] = report.clean(
+        {
+            "recomputed": True,
+            "n_trials": n_trials,
+            "evidence_grade": ev.grade,
+            "grade_reasons": ev.reasons,
+            "certification": None if ev.cert is None else report.certification_dict(ev.cert),
+            "cost_stress": ev.stress_summary,
+            "random_control": ev.control,
+        }
+    )
+    return out
 
 
 def request_from_manifest(manifest: Mapping[str, Any], strategy: Strategy[Any]) -> BacktestRequest:
@@ -929,7 +1265,7 @@ def request_from_manifest(manifest: Mapping[str, Any], strategy: Strategy[Any]) 
         symbols=symbols,
         from_ms=int(manifest["range"]["from_ms"]),
         to_ms=int(manifest["range"]["to_ms"]),
-        seed=int(manifest["seed"]),
+        seed=None if manifest.get("seed_source") == "trial key" else int(manifest["seed"]),
         prereg_id=manifest.get("prereg_id"),
         hypothesis_id=manifest.get("hypothesis_id"),
         dataset_ids={k: list(v) for k, v in manifest["datasets"].items()},

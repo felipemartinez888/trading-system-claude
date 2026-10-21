@@ -159,6 +159,7 @@ def _inputs(**kw: Any) -> report.GradeInputs:
         "stress": {"x1.5": GOOD, "x2": GOOD},
         "stress_means": {"x1.5": 0.5, "x2": 0.4},
         "beats_control": True,
+        "validation_passed": True,
     }
     base.update(kw)
     return report.GradeInputs(**base)
@@ -190,6 +191,8 @@ def test_grade_caps_each_individually() -> None:
         "B": [
             {"stress": {"x1.5": None, "x2": GOOD}, "segment": "holdout"},
             {"stress_means": {"x1.5": 0.1, "x2": -0.01}, "segment": "holdout"},
+            {"validation_passed": False, "segment": "holdout"},  # audit N4
+            {"validation_passed": None, "segment": "holdout"},
         ],
     }
     for expected, variants in cases.items():

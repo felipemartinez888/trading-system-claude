@@ -169,7 +169,12 @@ def fast_strategy(**kw: Any) -> BracketReference:
 
 
 def request(
-    from_ms: int, to_ms: int, *, seed: int = 0, symbols: Sequence[str] = ("BTCUSDT",), **kw: Any
+    from_ms: int,
+    to_ms: int,
+    *,
+    seed: int | None = None,
+    symbols: Sequence[str] = ("BTCUSDT",),
+    **kw: Any,
 ) -> BacktestRequest:
     strategy = kw.pop("strategy", None) or fast_strategy()
     return BacktestRequest(
