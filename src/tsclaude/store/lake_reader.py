@@ -200,7 +200,12 @@ class LakeReader:
             seen_parts.add(ip.part.content_hash)
             used.add(ip.dataset_id)
             rows_of_part = (
-                self._lake.read_sealed_part(ip.part, approval)
+                self._lake.read_sealed_part(
+                    ip.part,
+                    self._guard,
+                    prereg_id=approval.prereg_id,
+                    strategy_hash=approval.strategy_hash,
+                )
                 if ip.part.sealed
                 else self._lake.read_part(ip.part)
             )

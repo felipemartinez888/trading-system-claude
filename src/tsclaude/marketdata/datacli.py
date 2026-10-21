@@ -164,6 +164,7 @@ async def run_universe(
     mode: Mode = "research",
     exchange_info: dict[Market, Any] | None = None,
     symbol_concurrency: int = 4,
+    override_reason: str | None = None,
 ) -> dict[str, Any]:
     """Compute and write the universe snapshot.
 
@@ -179,7 +180,9 @@ async def run_universe(
         snapshot = RESEARCH_SNAPSHOT if mode == "research" else today
     snapshot_date_ok(snapshot, today)
     if mode == "research":
-        check_research_snapshot(snapshot)
+        check_research_snapshot(snapshot, override_reason)
+    elif override_reason:
+        raise ValueError("--override-reason applies to research snapshots only")
     raw: dict[Market, Any] = {}
     for market in (Market.SPOT, Market.USDM):
         if exchange_info and market in exchange_info:
@@ -251,7 +254,15 @@ async def run_universe(
         return {"ok": False, "mode": mode, "failures": failures, "candidates": len(candidates)}
     ranked, excluded_late = select_universe(candidates, data, rule, w)
     doc = snapshot_document(
-        snapshot, rule, w, ranked, excluded + excluded_late, inputs, env.clock.now_ms(), mode
+        snapshot,
+        rule,
+        w,
+        ranked,
+        excluded + excluded_late,
+        inputs,
+        env.clock.now_ms(),
+        mode,
+        override_reason if mode == "research" else None,
     )
     path = write_snapshot(doc, configs_dir)
     return {
@@ -339,6 +350,7 @@ def _cmd_universe(args: argparse.Namespace) -> int:
                 Path(args.configs_dir),
                 mode="live" if args.live else "research",
                 exchange_info=exchange_info or None,
+                override_reason=args.override_reason,
             )
         finally:
             await env.close()
@@ -391,6 +403,11 @@ def register(sub: Any) -> None:
         default=None,
         help="research default 2025-01-01 (L-08; must not be after the holdout start); "
         "live default: today",
+    )
+    uni.add_argument(
+        "--override-reason",
+        default=None,
+        help="research only: required (and recorded) to use a snapshot other than 2025-01-01",
     )
     uni.add_argument(
         "--live",

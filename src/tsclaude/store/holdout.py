@@ -84,9 +84,15 @@ _APPROVAL_ISSUER = object()
 
 
 class HoldoutApproval:
-    """Issued by `HoldoutGuard.check` for one read range."""
+    """Issued by `HoldoutGuard.check` for one read range. Immutable and informational only:
+    `Lake.read_sealed_part` never trusts it and re-checks the unlock through the guard."""
 
     __slots__ = ("end_ms", "holdout_access", "prereg_id", "start_ms", "strategy_hash")
+    start_ms: int
+    end_ms: int
+    holdout_access: bool
+    prereg_id: str | None
+    strategy_hash: str | None
 
     def __init__(
         self,
@@ -100,11 +106,18 @@ class HoldoutApproval:
     ) -> None:
         if issuer is not _APPROVAL_ISSUER:
             raise HoldoutError("holdout approvals are issued by HoldoutGuard.check only")
-        self.start_ms = start_ms
-        self.end_ms = end_ms
-        self.holdout_access = holdout_access
-        self.prereg_id = prereg_id
-        self.strategy_hash = strategy_hash
+        set_ = object.__setattr__
+        set_(self, "start_ms", start_ms)
+        set_(self, "end_ms", end_ms)
+        set_(self, "holdout_access", holdout_access)
+        set_(self, "prereg_id", prereg_id)
+        set_(self, "strategy_hash", strategy_hash)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("HoldoutApproval is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("HoldoutApproval is immutable")
 
 
 # ---------------------------------------------------------------------------- preregistrations
@@ -127,6 +140,68 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    git = shutil.which("git")
+    if git is None:
+        raise PreregistrationError("git is not available; cannot verify the preregistration")
+    return subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [git, "-C", str(repo), *args], capture_output=True, check=False
+    )
+
+
+def _declared(content: bytes, rel: str) -> tuple[object, object]:
+    """(prereg_id, strategy_hash) declared by a preregistration file's content."""
+    import yaml
+
+    try:
+        doc = yaml.safe_load(content.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise PreregistrationError(f"{rel} is not valid YAML") from exc
+    if not isinstance(doc, dict):
+        raise PreregistrationError(f"{rel} must be a mapping")
+    return doc.get("prereg_id"), doc.get("strategy_hash")
+
+
+def verify_recorded_unlock(repo_root: Path | str, payload: dict[str, Any]) -> str | None:
+    """Why a recorded unlock is NOT valid against the repository (None = valid).
+
+    The recorded blob must exist, hash to the recorded SHA-256, be the preregistration file at the
+    recorded commit, declare the same prereg_id and strategy_hash, and that commit must be an
+    ancestor of the current HEAD.
+    """
+    repo = Path(repo_root).resolve()
+    try:
+        prereg_id = str(payload["prereg_id"])
+        strategy = str(payload["strategy_hash"])
+        sha = str(payload["prereg_sha256"])
+        head = str(payload["git_head"])
+        blob = str(payload["git_blob"])
+    except KeyError as exc:
+        return f"unlock event lacks {exc.args[0]}"
+    if not _PREREG_ID.fullmatch(prereg_id) or not re.fullmatch(r"[0-9a-f]{40,64}", blob):
+        return "unlock event has invalid identifiers"
+    if not re.fullmatch(r"[0-9a-f]{40,64}", head):
+        return "unlock event has an invalid git_head"
+    rel = f"{PREREG_DIR}/{prereg_id}.yaml"
+    content = _git_bytes(repo, "cat-file", "blob", blob)
+    if content.returncode != 0:
+        return "recorded preregistration blob does not exist in the repository"
+    if hashlib.sha256(content.stdout).hexdigest() != sha:
+        return "recorded preregistration blob does not match the recorded SHA-256"
+    at_head = _git(repo, "rev-parse", f"{head}:{rel}")
+    if at_head.returncode != 0 or at_head.stdout.strip() != blob:
+        return "recorded blob is not the preregistration file at the recorded commit"
+    if _git(repo, "merge-base", "--is-ancestor", head, "HEAD").returncode != 0:
+        return "recorded commit is not an ancestor of HEAD"
+    try:
+        declared_id, declared_hash = _declared(content.stdout, rel)
+    except PreregistrationError as exc:
+        return str(exc)
+    if declared_id != prereg_id or declared_hash != strategy:
+        return "recorded preregistration does not declare this prereg_id and strategy_hash"
+    return None
+
+
 def inspect_preregistration(repo_root: Path | str, prereg_id: str) -> PreregEvidence:
     """Verify `preregistrations/<prereg_id>.yaml` is committed, clean and self-consistent."""
     if not _PREREG_ID.fullmatch(prereg_id):
@@ -146,17 +221,9 @@ def inspect_preregistration(repo_root: Path | str, prereg_id: str) -> PreregEvid
     if head.returncode != 0 or blob.returncode != 0:
         raise PreregistrationError(f"{rel} is not in the HEAD commit")
     content = path.read_bytes()
-    import yaml
-
-    try:
-        doc = yaml.safe_load(content.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise PreregistrationError(f"{rel} is not valid YAML") from exc
-    if not isinstance(doc, dict):
-        raise PreregistrationError(f"{rel} must be a mapping")
-    if doc.get("prereg_id") != prereg_id:
-        raise PreregistrationError(f"{rel} declares prereg_id {doc.get('prereg_id')!r}")
-    declared = doc.get("strategy_hash")
+    declared_id, declared = _declared(content, rel)
+    if declared_id != prereg_id:
+        raise PreregistrationError(f"{rel} declares prereg_id {declared_id!r}")
     if not isinstance(declared, str) or not _STRATEGY_HASH.fullmatch(declared):
         raise PreregistrationError(f"{rel} must declare a strategy_hash")
     return PreregEvidence(
@@ -220,36 +287,79 @@ CREATE TABLE IF NOT EXISTS holdout_unlock_claims (
 
 
 class EventStoreUnlocks:
-    """Unlocks as chained `holdout_unlocked` events; one per preregistration."""
+    """Unlocks as chained `holdout_unlocked` events; one per preregistration.
 
-    def __init__(self, store: EventStore) -> None:
+    An event alone is not trusted (R1): `find` accepts an unlock only if the matching claim row
+    exists and the recorded preregistration verifies against the git repository
+    (`verify_recorded_unlock`). Anything else fails closed.
+    """
+
+    def __init__(self, store: EventStore, repo_root: Path | str) -> None:
         self._store = store
+        self._repo = Path(repo_root)
 
     @staticmethod
     def aggregate_id(prereg_id: str) -> str:
         return f"prereg:{prereg_id}"
 
-    def find(self, prereg_id: str) -> UnlockRecord | None:
-        events = self._store.read(
+    def _events(self, prereg_id: str) -> list[Any]:
+        return self._store.read(
             types=[EventType.HOLDOUT_UNLOCKED],
             aggregate=(AggregateType.RESEARCH, self.aggregate_id(prereg_id)),
-            limit=1,
         )
+
+    def _claim_row(self, prereg_id: str) -> tuple[str, str] | None:
+        conn = sqlite3.connect(self._store.path, isolation_level=None, timeout=30.0)
+        try:
+            row = conn.execute(
+                "SELECT strategy_hash, prereg_sha256 FROM holdout_unlock_claims"
+                " WHERE prereg_id = ?",
+                (prereg_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None  # no claims table: nothing was ever unlocked through the CLI
+        finally:
+            conn.close()
+        return None if row is None else (str(row[0]), str(row[1]))
+
+    def find(self, prereg_id: str) -> UnlockRecord | None:
+        events = self._events(prereg_id)
         if not events:
             return None
+        if len(events) != 1:
+            log.error("several holdout_unlocked events; refusing", extra={"prereg_id": prereg_id})
+            return None
         p = events[0].payload
+        claim = self._claim_row(prereg_id)
+        if claim is None or claim != (p.get("strategy_hash"), p.get("prereg_sha256")):
+            log.error(
+                "holdout unlock without a matching claim; refusing", extra={"prereg_id": prereg_id}
+            )
+            return None
+        if p.get("prereg_id") != prereg_id:
+            return None
+        problem = verify_recorded_unlock(self._repo, p)
+        if problem is not None:
+            log.error(
+                "holdout unlock does not verify; refusing",
+                extra={"prereg_id": prereg_id, "problem": problem},
+            )
+            return None
         return UnlockRecord(
             str(p["prereg_id"]),
             str(p["strategy_hash"]),
             int(p["unlocked_at_ms"]),
             str(p["reason"]),
-            str(p.get("prereg_sha256")) if p.get("prereg_sha256") else None,
+            str(p["prereg_sha256"]),
         )
 
     def unlock(self, authorization: UnlockAuthorization, *, now_ms: int) -> UnlockRecord:
         if not isinstance(authorization, UnlockAuthorization):
             raise HoldoutError("an UnlockAuthorization is required")
         ev = authorization.consume()
+        # The evidence is never trusted as given: it must be exactly what the repository says now.
+        if inspect_preregistration(self._repo, ev.prereg_id) != ev:
+            raise PreregistrationError("unlock evidence does not match the repository")
         self._claim(ev, now_ms)
         payload: dict[str, Any] = {
             "prereg_id": ev.prereg_id,
@@ -285,7 +395,7 @@ class EventStoreUnlocks:
             conn.executescript(_CLAIMS)
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if self.find(ev.prereg_id) is not None:
+                if self._events(ev.prereg_id):  # any recorded event, valid or not
                     raise HoldoutAlreadyUnlocked(f"{ev.prereg_id} already unlocked the holdout")
                 conn.execute(
                     "INSERT INTO holdout_unlock_claims VALUES (?,?,?,?)",
@@ -314,6 +424,9 @@ class SealedUnlocks:
 # ---------------------------------------------------------------------------- guard
 class HoldoutGuard:
     def __init__(self, unlocks: UnlockRegistry) -> None:
+        # Only the two real registries: a custom registry could simply claim an unlock exists.
+        if type(unlocks) not in (EventStoreUnlocks, SealedUnlocks):
+            raise HoldoutError("HoldoutGuard accepts EventStoreUnlocks or SealedUnlocks only")
         self._unlocks = unlocks
 
     def check(

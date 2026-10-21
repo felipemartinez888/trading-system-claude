@@ -174,13 +174,13 @@ def test_library_unlock_needs_cli_authorization(store: EventStore, repo: Path) -
     with pytest.raises(HoldoutError, match="unlock-holdout"):
         UnlockAuthorization(issuer=object(), evidence=evidence, reason="r")
     with pytest.raises(HoldoutError, match="UnlockAuthorization"):
-        EventStoreUnlocks(store).unlock("P1", now_ms=1)  # type: ignore[arg-type]
+        EventStoreUnlocks(store, repo).unlock("P1", now_ms=1)  # type: ignore[arg-type]
     auth = holdout_cli.authorize(
         repo, "P1", HASH, "r", stdin=TTY("UNLOCK HOLDOUT P1\n"), stdout=io.StringIO()
     )
     auth.consume()
     with pytest.raises(HoldoutError, match="already used"):
-        EventStoreUnlocks(store).unlock(auth, now_ms=1)
+        EventStoreUnlocks(store, repo).unlock(auth, now_ms=1)
 
 
 def test_unlock_once_records_hashes_and_opens_only_that_strategy(
@@ -193,7 +193,7 @@ def test_unlock_once_records_hashes_and_opens_only_that_strategy(
     assert event.payload["prereg_sha256"] == inspect_preregistration(repo, "P1").sha256
     assert len(event.payload["git_head"]) == 40
     assert event.payload["prereg_path"] == "preregistrations/P1.yaml"
-    guard = HoldoutGuard(EventStoreUnlocks(store))
+    guard = HoldoutGuard(EventStoreUnlocks(store, repo))
     approval = guard.check(
         ms(2026, 2), ms(2026, 3), purpose="research", prereg_id="P1", strategy_hash=HASH
     )
@@ -228,7 +228,7 @@ def test_concurrent_unlocks_cannot_both_succeed(tmp_path: Path, repo: Path) -> N
         with EventStore(db) as s:
             barrier.wait()
             try:
-                EventStoreUnlocks(s).unlock(auth, now_ms=ms(2026, 10, 20))
+                EventStoreUnlocks(s, repo).unlock(auth, now_ms=ms(2026, 10, 20))
                 results.append("ok")
             except HoldoutAlreadyUnlocked:
                 results.append("refused")
@@ -297,7 +297,7 @@ def test_holdout_months_live_under_the_sealed_root(
     assert len(lake.read_part(parts[12])) == 10
     assert lake.verify(dsid)["ok"]  # integrity checks still cover sealed parts
 
-    reader = LakeReader(lake, HoldoutGuard(EventStoreUnlocks(store)))
+    reader = LakeReader(lake, HoldoutGuard(EventStoreUnlocks(store, repo)))
     with pytest.raises(HoldoutLocked):
         reader.read_bars(
             Market.SPOT,
@@ -328,7 +328,7 @@ def test_holdout_months_live_under_the_sealed_root(
         ms(2025, 12, 1), HOLDOUT_START_MS, purpose="research"
     )
     with pytest.raises(SealedPartError):
-        lake.read_sealed_part(parts[1], warm)
+        lake.read_sealed_part(parts[1], warm, prereg_id=None, strategy_hash=None)  # type: ignore[arg-type]
 
 
 def test_volume_reads_are_guarded(lake: Lake) -> None:
@@ -381,3 +381,221 @@ def test_overlapping_datasets_merge_conflicts_and_pinning(lake: Lake) -> None:
     assert len(pinned.items) == 10
     assert pinned.conflicts == []
     assert pinned.missing == [(t0 + 10 * MIN, t0 + 20 * MIN)]
+
+
+# ---------------------------------------------------------------- re-review R1..R3
+def _bars_through_holdout(lake: Lake) -> str:
+    return _dataset(lake, ms(2025, 12, 31, 23, 30), ms(2026, 1, 1, 0, 30))
+
+
+def _read_holdout(reader: LakeReader):  # type: ignore[no-untyped-def]
+    return reader.read_bars(
+        Market.SPOT,
+        SYM,
+        ms(2026, 1, 1),
+        ms(2026, 1, 1, 0, 30),
+        purpose="research",
+        prereg_id="P1",
+        strategy_hash=HASH,
+    )
+
+
+def test_r1_a_raw_event_without_claim_or_repo_evidence_is_not_trusted(
+    lake: Lake, store: EventStore, repo: Path
+) -> None:
+    from tsclaude.contracts.events import NewEvent
+
+    _bars_through_holdout(lake)
+    evidence = inspect_preregistration(repo, "P1")
+    store.append(
+        NewEvent(
+            type=EventType.HOLDOUT_UNLOCKED,
+            aggregate_type=AggregateType.RESEARCH,
+            aggregate_id="prereg:P1",
+            ts_ms=1,
+            payload={
+                "prereg_id": "P1",
+                "strategy_hash": HASH,
+                "unlocked_at_ms": 1,
+                "reason": "forged",
+                "prereg_sha256": evidence.sha256,
+                "git_head": evidence.git_head,
+                "git_blob": evidence.git_blob,
+            },
+        )
+    )
+    unlocks = EventStoreUnlocks(store, repo)
+    assert unlocks.find("P1") is None  # no claim row: the event alone is not an unlock
+    with pytest.raises(HoldoutLocked):
+        _read_holdout(LakeReader(lake, HoldoutGuard(unlocks)))
+
+
+def test_r1_b_forged_authorization_cannot_unlock(store: EventStore, repo: Path) -> None:
+    from tsclaude.store.holdout import PreregEvidence
+
+    fake = PreregEvidence("FAKE", HASH, "preregistrations/FAKE.yaml", "0" * 64, "0" * 40, "0" * 40)
+    auth = UnlockAuthorization(issuer=holdout_cli.ISSUER, evidence=fake, reason="peek")
+    with pytest.raises(PreregistrationError):
+        EventStoreUnlocks(store, repo).unlock(auth, now_ms=1)
+    real = inspect_preregistration(repo, "P1")
+    tampered = PreregEvidence(
+        real.prereg_id,
+        "sha256:ffffffffffffffff",
+        real.path,
+        real.sha256,
+        real.git_head,
+        real.git_blob,
+    )
+    auth2 = UnlockAuthorization(issuer=holdout_cli.ISSUER, evidence=tampered, reason="peek")
+    with pytest.raises(PreregistrationError, match="does not match"):
+        EventStoreUnlocks(store, repo).unlock(auth2, now_ms=1)
+    assert store.read(types=[EventType.HOLDOUT_UNLOCKED]) == []
+
+
+def test_r1_c_recorded_unlock_must_verify_against_git(store: EventStore, repo: Path) -> None:
+    from tsclaude.store.holdout import verify_recorded_unlock
+
+    _unlock(store, repo)
+    (event,) = store.read(types=[EventType.HOLDOUT_UNLOCKED])
+    good = dict(event.payload)
+    assert verify_recorded_unlock(repo, good) is None
+    assert "does not exist" in str(verify_recorded_unlock(repo, {**good, "git_blob": "1" * 40}))
+    assert "SHA-256" in str(verify_recorded_unlock(repo, {**good, "prereg_sha256": "2" * 64}))
+    assert "declare" in str(
+        verify_recorded_unlock(repo, {**good, "strategy_hash": "sha256:eeeeeeeeeeeeeeee"})
+    )
+    # a commit that is not an ancestor of HEAD (e.g. on an abandoned branch)
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "preregistrations" / "P1.yaml").write_text(
+        f"prereg_id: P1\nstrategy_hash: '{HASH}'\nnote: side\n", encoding="utf-8"
+    )
+    _git(repo, "commit", "-q", "-am", "side")
+    side_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _git(repo, "checkout", "-q", "-")
+    side_blob = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", f"{side_head}:preregistrations/P1.yaml"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    import hashlib
+
+    side_sha = hashlib.sha256(
+        subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "blob", side_blob], check=True, capture_output=True
+        ).stdout
+    ).hexdigest()
+    off = {**good, "git_head": side_head, "git_blob": side_blob, "prereg_sha256": side_sha}
+    assert "ancestor" in str(verify_recorded_unlock(repo, off))
+    # a valid unlock is still found
+    assert EventStoreUnlocks(store, repo).find("P1") is not None
+
+
+def test_r2_approvals_are_immutable_and_never_trusted(
+    lake: Lake, store: EventStore, repo: Path
+) -> None:
+    _bars_through_holdout(lake)
+    guard = HoldoutGuard(SealedUnlocks())
+    warm = guard.check(ms(2025, 12, 1), HOLDOUT_START_MS, purpose="research")
+    with pytest.raises(AttributeError):
+        warm.holdout_access = True  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        object.__setattr__(warm, "nonexistent", 1)
+    sealed = next(ip.part for ip in lake.index() if ip.part.sealed)
+    with pytest.raises(SealedPartError):
+        lake.read_sealed_part(sealed, warm, prereg_id="P1", strategy_hash=HASH)  # type: ignore[arg-type]
+    with pytest.raises(HoldoutLocked):
+        lake.read_sealed_part(sealed, guard, prereg_id="P1", strategy_hash=HASH)
+
+    class Yes:
+        def find(self, prereg_id: str):  # type: ignore[no-untyped-def]
+            from tsclaude.store.holdout import UnlockRecord
+
+            return UnlockRecord(prereg_id, HASH, 0, "fake")
+
+    with pytest.raises(HoldoutError, match="accepts"):
+        HoldoutGuard(Yes())  # type: ignore[arg-type]
+
+
+def _tamper(lake: Lake, dsid: str, month: int, new_path: str) -> None:
+    import json
+
+    mpath = lake.imports_dir / dsid / "manifest.json"
+    m = json.loads(mpath.read_text())
+    for d in m["parts"]:
+        if d["month"] == month:
+            d["path"] = new_path
+            d["year"], d["month"] = 2025, 12  # claims to be December 2025
+            d["first_time_ms"], d["last_time_ms"] = (
+                ms(2025, 12, 31, 23, 30),
+                ms(2025, 12, 31, 23, 59),
+            )
+    mpath.write_text(json.dumps(m))
+    lake.refresh()
+
+
+def _sealed_part_path(lake: Lake) -> str:
+    return next(ip.part.path for ip in lake.index() if ip.part.month == 1)
+
+
+@pytest.mark.parametrize("variant", ["dotdot", "symlink", "case", "copied_into_lake"])
+def test_r3_path_tricks_never_serve_holdout_rows(lake: Lake, variant: str) -> None:
+    dsid = _bars_through_holdout(lake)
+    sealed_rel = _sealed_part_path(lake)
+    assert sealed_rel.startswith("lake_sealed/")
+    target = lake.data_dir / sealed_rel
+    if variant == "dotdot":
+        new = "lake/../" + sealed_rel
+    elif variant == "symlink":
+        link = lake.data_dir / "lake" / "market=spot" / "link.jsonl"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target)
+        except OSError:
+            pytest.skip("symlinks not permitted here")
+        new = "lake/market=spot/link.jsonl"
+    elif variant == "case":
+        upper = lake.data_dir / ("LAKE_SEALED" + sealed_rel[len("lake_sealed") :])
+        upper.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(target, upper)
+        new = "LAKE_SEALED" + sealed_rel[len("lake_sealed") :]
+    else:
+        inside = lake.data_dir / "lake" / "market=spot" / "copy.jsonl"
+        inside.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(target, inside)
+        new = "lake/market=spot/copy.jsonl"
+    _tamper(lake, dsid, 1, new)
+    part = next(ip.part for ip in lake.index() if ip.part.path == new)
+    assert not part.sealed  # the tampered manifest claims a non-holdout month
+    with pytest.raises(SealedPartError):
+        lake.read_part(part)
+    reader = LakeReader(lake, HoldoutGuard(SealedUnlocks()))
+    with pytest.raises((SealedPartError, HoldoutLocked)):
+        reader.read_bars(
+            Market.SPOT, SYM, ms(2025, 12, 31, 23, 30), HOLDOUT_START_MS, purpose="research"
+        )
+
+
+def test_r3_sealed_decided_by_time_not_path() -> None:
+    from tsclaude.store.lake import PartInfo
+
+    p = PartInfo(
+        "spot", "bars_1m", SYM, 2026, 3, "lake/x.jsonl", "h", "f", 1, ms(2026, 3, 1), ms(2026, 3, 1)
+    )
+    assert p.sealed
+    q = PartInfo(
+        "spot",
+        "bars_1m",
+        SYM,
+        2025,
+        12,
+        "lake_sealed/x.jsonl",
+        "h",
+        "f",
+        1,
+        ms(2025, 12, 1),
+        ms(2025, 12, 31, 23, 59),
+    )
+    assert not q.sealed

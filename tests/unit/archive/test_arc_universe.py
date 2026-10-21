@@ -163,9 +163,12 @@ def test_research_mode_ignores_today_status_and_rejects_late_snapshots() -> None
     research, _ = static_candidates(spot, fut, RULE, w, status_filter=False)
     assert "HALTUSDT" in research  # today's BREAK status is not used for research
     check_research_snapshot(RESEARCH_SNAPSHOT)
-    check_research_snapshot(date(2026, 1, 1))
+    with pytest.raises(UniverseError, match="must be 2025-01-01"):
+        check_research_snapshot(date(2024, 12, 1))  # review R5: no silent other date
+    check_research_snapshot(date(2024, 12, 1), "sensitivity analysis, prereg P7")
+    check_research_snapshot(date(2026, 1, 1), "x")
     with pytest.raises(UniverseError, match="after the holdout start"):
-        check_research_snapshot(date(2026, 1, 2))
+        check_research_snapshot(date(2026, 1, 2), "override does not lift the holdout rule")
 
 
 def test_data_through_snapshot_is_required() -> None:
@@ -175,3 +178,47 @@ def test_data_through_snapshot_is_required() -> None:
     ranked, excluded = select_universe(["BTCUSDT"], data, RULE, w)
     assert ranked == []
     assert "through the snapshot" in excluded[0]["reason"]
+
+
+def test_research_loader_refuses_live_snapshots(tmp_path: Path) -> None:
+    pytest.importorskip("yaml")
+    from tsclaude.marketdata.universe import (
+        UniverseError,
+        load_research_universe,
+        write_snapshot,
+    )
+
+    w = windows(SNAP, RULE)
+    live = snapshot_document(SNAP, RULE, w, [], [], {}, 0, "live")
+    live_path = write_snapshot(live, tmp_path)
+    assert live_path.name.startswith("universe_live_")
+    with pytest.raises(UniverseError, match="live/forward"):
+        load_research_universe(live_path)
+    renamed = tmp_path / "universe_snapshot_2026-10-19.yaml"
+    renamed.write_text(live_path.read_text())
+    with pytest.raises(UniverseError, match="not a research"):
+        load_research_universe(renamed)
+    from tsclaude.marketdata.universe import RESEARCH_SNAPSHOT
+
+    research = snapshot_document(
+        RESEARCH_SNAPSHOT, RULE, windows(RESEARCH_SNAPSHOT, RULE), [], [], {}, 0, "research"
+    )
+    assert load_research_universe(write_snapshot(research, tmp_path))["purpose"] == "research"
+    odd = snapshot_document(
+        date(2024, 12, 1), RULE, windows(date(2024, 12, 1), RULE), [], [], {}, 0, "research"
+    )
+    odd_path = write_snapshot(odd, tmp_path)
+    with pytest.raises(UniverseError, match="must be"):
+        load_research_universe(odd_path)
+    recorded = snapshot_document(
+        date(2024, 12, 1),
+        RULE,
+        windows(date(2024, 12, 1), RULE),
+        [],
+        [],
+        {},
+        0,
+        "research",
+        "sensitivity analysis",
+    )
+    assert load_research_universe(write_snapshot(recorded, tmp_path))["snapshot_override"]

@@ -59,13 +59,35 @@ class UniverseError(ValueError):
     pass
 
 
-def check_research_snapshot(snapshot: date) -> None:
-    """L-08: research snapshots after the holdout start would rank on holdout information."""
+def check_research_snapshot(snapshot: date, override_reason: str | None = None) -> None:
+    """L-08: the research snapshot is 2025-01-01. Another date needs an explicit override reason
+    (recorded in the snapshot file); a date after the holdout start is never allowed."""
     if day_ms(snapshot) > HOLDOUT_START_MS:
         raise UniverseError(
             f"research universe snapshot {snapshot} is after the holdout start; "
             f"use {RESEARCH_SNAPSHOT} (L-08) or --live for the forward universe"
         )
+    if snapshot != RESEARCH_SNAPSHOT and not (override_reason and override_reason.strip()):
+        raise UniverseError(
+            f"research universe snapshot must be {RESEARCH_SNAPSHOT} (L-08); another date needs "
+            "an explicit, recorded override reason"
+        )
+
+
+def load_research_universe(path: Path | str) -> dict[str, Any]:
+    """Load a universe snapshot for research/backtests. Live/forward snapshots are refused."""
+    import yaml
+
+    p = Path(path)
+    if p.name.startswith("universe_live_"):
+        raise UniverseError(f"{p.name} is a live/forward universe; never use it for research")
+    doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict) or doc.get("purpose") != "research":
+        raise UniverseError(f"{p.name} is not a research universe snapshot (purpose != research)")
+    snap = date.fromisoformat(str(doc.get("snapshot_date")))
+    override = doc.get("snapshot_override") or {}
+    check_research_snapshot(snap, override.get("reason") if isinstance(override, dict) else None)
+    return doc
 
 
 @dataclass(frozen=True)
@@ -292,9 +314,17 @@ def snapshot_document(
     inputs: Mapping[str, Any],
     generated_at_ms: int,
     mode: Mode = "research",
+    override_reason: str | None = None,
 ) -> dict[str, Any]:
     top = list(ranked[: rule.top_n])
+    extra: dict[str, Any] = {}
+    if override_reason:
+        extra["snapshot_override"] = {
+            "reason": override_reason.strip(),
+            "default": RESEARCH_SNAPSHOT.isoformat(),
+        }
     return {
+        **extra,
         "version": 2,
         "purpose": "research" if mode == "research" else "live_forward",
         "snapshot_date": snapshot.isoformat(),

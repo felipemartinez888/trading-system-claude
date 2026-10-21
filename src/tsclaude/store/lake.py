@@ -44,7 +44,13 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from tsclaude.contracts.market import Market
-from tsclaude.store.holdout import HOLDOUT_END_MS, HOLDOUT_START_MS, HoldoutApproval
+from tsclaude.store.holdout import (
+    HOLDOUT_END_MS,
+    HOLDOUT_START_MS,
+    HoldoutGuard,
+    Purpose,
+    touches_holdout,
+)
 
 type ColumnType = Literal["int", "float", "float?", "str"]
 type Row = dict[str, Any]
@@ -136,7 +142,10 @@ class PartInfo:
 
     @property
     def sealed(self) -> bool:
-        return self.path.startswith("lake_sealed/")
+        """Decided by the part's time range, never by its path (review R3)."""
+        return month_is_sealed(self.year, self.month) or touches_holdout(
+            self.first_time_ms, self.last_time_ms + 1
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -444,25 +453,74 @@ class Lake:
     def refresh(self) -> None:
         self._index = None
 
+    def _contained(self, part: PartInfo, roots: Sequence[Path], forbidden: Path | None) -> Path:
+        """The part's real path, required inside one of `roots` and outside `forbidden`.
+
+        Uses the resolved, case-normalized path, so `..` segments, symlinks and case variants
+        (Windows) cannot point a manifest entry at another root.
+        """
+        real = os.path.normcase(os.path.realpath(self.data_dir / part.path))
+
+        def inside(root: Path) -> bool:
+            r = os.path.normcase(os.path.realpath(root))
+            try:
+                return os.path.commonpath([real, r]) == r
+            except ValueError:  # different drives (Windows)
+                return False
+
+        if not any(inside(r) for r in roots) or (forbidden is not None and inside(forbidden)):
+            raise SealedPartError(f"{part.path} does not resolve inside the expected lake root")
+        return Path(real)
+
     def read_part(self, part: PartInfo) -> list[Row]:
-        """Rows of a non-sealed part. Sealed (holdout) parts are refused here."""
+        """Rows of a non-sealed part. Holdout-period data is refused here, whatever the path or
+        manifest claims: by the part's time range, by its real location, and row by row."""
         if part.sealed:
             raise SealedPartError(
                 f"{part.path} lies in the sealed holdout; read it through LakeReader with a "
                 "recorded unlock"
             )
-        return self._read_rows(part)
+        path = self._contained(part, [self.lake_dir], forbidden=self.sealed_dir)
+        rows = self.codec.read(path, SCHEMAS[LakeKind(part.kind)])
+        key = TIME_KEY[LakeKind(part.kind)]
+        if any(HOLDOUT_START_MS <= int(r[key]) < HOLDOUT_END_MS for r in rows):
+            raise SealedPartError(f"{part.path} contains holdout-period rows")
+        return rows
 
-    def read_sealed_part(self, part: PartInfo, approval: HoldoutApproval) -> list[Row]:
-        """Rows of a sealed part, only with an approval issued by the holdout guard."""
-        if not isinstance(approval, HoldoutApproval) or not approval.holdout_access:
-            raise SealedPartError(f"{part.path}: no holdout approval")
-        if not (part.first_time_ms < approval.end_ms and part.last_time_ms >= approval.start_ms):
-            raise SealedPartError(f"{part.path} is outside the approved range")
-        return self._read_rows(part)
+    def read_sealed_part(
+        self,
+        part: PartInfo,
+        guard: HoldoutGuard,
+        *,
+        prereg_id: str | None,
+        strategy_hash: str | None,
+    ) -> list[Row]:
+        """Rows of a sealed part. The unlock is re-checked through the guard here; no approval
+        object or flag is trusted (review R2)."""
+        if type(guard) is not HoldoutGuard:
+            raise SealedPartError("a HoldoutGuard is required to read sealed parts")
+        approval = guard.check(
+            part.first_time_ms,
+            part.last_time_ms + 1,
+            purpose=Purpose.RESEARCH,
+            prereg_id=prereg_id,
+            strategy_hash=strategy_hash,
+        )
+        if not approval.holdout_access:  # pragma: no cover - sealed parts touch the holdout
+            raise SealedPartError(f"{part.path}: no holdout access")
+        path = self._contained(part, [self.lake_dir, self.sealed_dir], forbidden=None)
+        return self.codec.read(path, SCHEMAS[LakeKind(part.kind)])
+
+    def _catalog_path(self, part: PartInfo) -> Path | None:
+        try:
+            return self._contained(part, [self.lake_dir], forbidden=self.sealed_dir)
+        except SealedPartError:
+            return None
 
     def _read_rows(self, part: PartInfo) -> list[Row]:
-        return self.codec.read(self.data_dir / part.path, SCHEMAS[LakeKind(part.kind)])
+        """Integrity checks only (verify); rows never leave the lake module."""
+        path = self._contained(part, [self.lake_dir, self.sealed_dir], forbidden=None)
+        return self.codec.read(path, SCHEMAS[LakeKind(part.kind)])
 
     # ------------------------------------------------------------------ integrity
     def verify(self, dataset_id: str, raw_cache_dir: Path | None = None) -> dict[str, Any]:
@@ -579,9 +637,10 @@ class Lake:
             for kind in kinds:
                 files = sorted(
                     {
-                        (self.data_dir / ip.part.path).as_posix()
+                        cpath.as_posix()
                         for ip in self.index()
                         if ip.part.kind == kind and not ip.part.sealed
+                        if (cpath := self._catalog_path(ip.part)) is not None
                     }
                 )
                 if not files:
@@ -593,6 +652,9 @@ class Lake:
                     f"CREATE VIEW {kind} AS SELECT * FROM read_parquet([{listing}],"  # noqa: S608
                     " hive_partitioning = true, filename = true,"
                     " hive_types = {'year': INTEGER, 'month': INTEGER})"
+                    # Defence in depth: rows in the holdout never appear, whatever a file holds.
+                    f" WHERE NOT ({TIME_KEY[kind]} >= {HOLDOUT_START_MS}"
+                    f" AND {TIME_KEY[kind]} < {HOLDOUT_END_MS})"
                 )
             con.close()
             os.replace(tmp, path)

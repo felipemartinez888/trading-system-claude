@@ -84,7 +84,9 @@ def unlock(
     clock: WallClock | None = None,
 ) -> UnlockRecord:
     auth = authorize(repo_root, prereg_id, strategy_hash, reason, stdin=stdin, stdout=stdout)
-    return EventStoreUnlocks(store).unlock(auth, now_ms=(clock or SystemClock()).now_ms())
+    return EventStoreUnlocks(store, repo_root).unlock(
+        auth, now_ms=(clock or SystemClock()).now_ms()
+    )
 
 
 def _cmd_unlock(args: argparse.Namespace) -> int:

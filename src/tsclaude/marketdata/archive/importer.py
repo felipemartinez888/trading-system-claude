@@ -155,7 +155,7 @@ class Importer:
         cross_check_months: int = 2,
         month_concurrency: int = 3,
     ) -> None:
-        self._lake = lake
+        self._writer = lake
         self._fetcher = fetcher
         self._rest = rest or {}
         self._clock = clock
@@ -168,7 +168,7 @@ class Importer:
     async def run(self, req: ImportRequest) -> ImportResult:
         """Import one request. Parts are staged; nothing is visible unless the whole request
         succeeds (the staging directory of a failed request is removed)."""
-        staging = self._lake.begin()
+        staging = self._writer.begin()
         try:
             if req.kind is LakeKind.FUNDING:
                 return await self._run_funding(req, staging)
