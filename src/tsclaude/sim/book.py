@@ -36,7 +36,7 @@ from typing import Any
 
 from tsclaude.contracts.market import Bar, Market
 from tsclaude.contracts.signals import Side
-from tsclaude.contracts.timeutil import MS_PER_MINUTE
+from tsclaude.contracts.timeutil import MS_PER_DAY, MS_PER_MINUTE
 from tsclaude.sim.costs import CostModel, FillCosts, Liquidity, PricedExecution
 from tsclaude.sim.fills import (
     BarPrices,
@@ -102,12 +102,43 @@ class SimEventType(StrEnum):
     FUNDING_APPLIED = "sim_funding_applied"
     LEDGER_POSTED = "sim_ledger_posted"
     SOURCE_ERROR = "sim_source_error"
+    BOOK_HALTED = "sim_book_halted"  # drawdown kill switch (or another halt) fired
+    BOOK_RESET = "sim_book_reset"  # manual reset of a halted book
+    OBSERVATION_CHANGED = "sim_observation_changed"  # live <-> downtime resolution (restart)
 
 
 # ---------------------------------------------------------------- risk hook
 @dataclass(frozen=True, slots=True)
+class PositionView:
+    """An open position as the risk hook sees it (prices are the last 1m marks)."""
+
+    market: Market
+    symbol: str
+    side: Side
+    qty: Decimal
+    entry_price: Decimal
+    entry_notional: Decimal
+    mark_price: Decimal
+
+    @property
+    def marked_notional(self) -> Decimal:
+        return q8(self.qty * self.mark_price)
+
+    def to_payload(self) -> Payload:
+        return {
+            "market": str(self.market),
+            "symbol": self.symbol,
+            "side": str(self.side),
+            "qty": dstr(self.qty),
+            "entry_price": dstr(self.entry_price),
+            "entry_notional": dstr(self.entry_notional),
+            "mark_price": dstr(self.mark_price),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RiskCheck:
-    """Input to the risk hook.
+    """Input to the risk hook (the book-state half of a risk decision).
 
     ``stage="submit"``: order acceptance; ``ts_ms`` is the decision time (the bar close the signal
     was computed from) and ``equity`` the mark-to-market equity at that close.
@@ -115,6 +146,13 @@ class RiskCheck:
     bar the order executes on (for intrabar fills the earliest possible fill time), and ``equity``
     the sizing equity at the previous 1m close. The hook may only use data with
     ``close_time_ms < ts_ms`` -- i.e. up to the previous close -- never the executing bar.
+
+    ``positions`` are the positions that count at ``ts_ms``. At the fill stage they include
+    positions of other symbols that were open at this minute's open and exited later inside the
+    minute (processed earlier in the same minute): their slot and exposure are freed only after the
+    execution time (audit R2). ``open_positions == len(positions)``.
+    ``start_of_day_equity`` is the equity at the last 1m mark before the UTC day of ``ts_ms`` (or
+    the starting equity on the book's first day); ``peak_equity`` the running peak of the marks.
     """
 
     stage: str  # "submit" or "fill"
@@ -123,6 +161,13 @@ class RiskCheck:
     request: EntryRequest
     equity: Decimal
     open_positions: int
+    positions: tuple[PositionView, ...] = ()
+    pending_entries: int = 0  # other entries resting in the book (excluding this request)
+    start_of_day_equity: Decimal | None = None
+    peak_equity: Decimal | None = None
+    earliest_exec_ms: int | None = None
+    risk_per_trade: Decimal | None = None
+    max_notional_fraction: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,11 +234,20 @@ class TradeRecord:
     mae_r: Decimal
     mfe_r: Decimal
     alt_r_if_tp_first: Decimal | None  # ambiguous bars: R if resolved TP-first
+    #: exited on a backfilled 1m path while the app was down (SIMULATION §7); never set in
+    #: backtests, and only serialized when set so backtest artefacts are unchanged
+    resolved_from_backfill: bool = False
 
     def to_payload(self) -> Payload:
         def d(v: Decimal | None) -> str | None:
             return None if v is None else dstr(v)
 
+        payload = self._base_payload(d)
+        if self.resolved_from_backfill:
+            payload["resolved_from_backfill"] = True
+        return payload
+
+    def _base_payload(self, d: Callable[[Decimal | None], str | None]) -> Payload:
         return {
             "trade_id": self.trade_id,
             "book": self.book,
@@ -300,6 +354,7 @@ class _PendingEntry:
     request: EntryRequest
     stop: Decimal
     take_profit: Decimal | None
+    spans_gap: bool = False  # the order rested through missing 1m bars of its instrument
 
 
 @dataclass(slots=True)
@@ -324,6 +379,7 @@ class _Position:
     #: fills (the fill time inside the bar is unknown)
     entry_time_ms: int = 0
     exit_due_ms: int | None = None  # exit signal / invalidation: market at this open or later
+    exit_due_reason: ExitReason = ExitReason.EXIT_SIGNAL
     funding: Decimal = ZERO
     last_funding_ms: int | None = None
     spans_gap: bool = False
@@ -352,6 +408,7 @@ class Book:
         *,
         instruments: Sequence[InstrumentSpec],
         config: BookConfig | None = None,
+        kill_switch_drawdown: Decimal | None = None,
     ) -> None:
         if not name:
             raise ValueError("book name is required")
@@ -366,7 +423,14 @@ class Book:
             if spec.key in self.instruments:
                 raise ValueError(f"duplicate instrument {spec.key}")
             self.instruments[spec.key] = spec
+        if kill_switch_drawdown is not None and not ZERO < kill_switch_drawdown < ONE:
+            raise ValueError("kill_switch_drawdown must be in (0, 1)")
+        self.kill_switch_drawdown = kill_switch_drawdown
         self.starting_equity = q8(starting_equity)
+        #: halt reason while the book is halted (no entries until `reset_halt`), else None
+        self.halted: str | None = None
+        #: False while resolving a downtime over backfilled bars: no entry may fill (SIMULATION §7)
+        self.observed = True
         self.ledger = Ledger()
         self.trades: list[TradeRecord] = []
         self.equity_curve: list[EquityPoint] = []
@@ -375,12 +439,23 @@ class Book:
         self._seen_requests: set[str] = set()
         self._rejections: dict[str, int] = {}  # fill-time rejection counts by reason
         self._last_open: dict[SymbolKey, int] = {}  # last bar open seen per instrument (gaps)
-        self._now_ms = 0  # end of the latest bar processed (latest close + 1 ms)
+        # Per-instrument clock: end of the latest bar processed for that instrument (close + 1).
+        # Funding guards use it, never a global "now": within one minute, bars of other symbols
+        # processed earlier must not let a later timestamp through (audit R1).
+        self._now_by_key: dict[SymbolKey, int] = {}
+        # Positions that were open at the current minute's open but have exited inside it (in
+        # processing order, earlier symbols first). Fill-stage risk checks still count them: their
+        # slot is freed only later in that minute (audit R2).
+        self._minute_open_ms: int | None = None
+        self._closed_in_minute: list[_Position] = []
         self._outbox: list[tuple[SimEventType, int, Payload]] = []
         self._opened = False
         # Causal sizing inputs: values as of the previous 1m close (see `sizing_basis`).
         self._equity_at_mark = self.starting_equity
         self._cash_at_mark = self.starting_equity
+        self._peak_equity = self.starting_equity  # running peak of the marks (drawdown basis)
+        self._mark_day: int | None = None  # UTC day index of the latest mark
+        self._sod_equity = self.starting_equity  # equity at the last mark before `_mark_day`
 
     # ------------------------------------------------------------ events
     def _emit(self, kind: SimEventType, ts_ms: int, payload: Payload) -> None:
@@ -410,6 +485,12 @@ class Book:
         self.equity_curve.append(EquityPoint(ts_ms, self.starting_equity))
 
     def describe(self) -> Payload:
+        payload = self._describe()
+        if self.kill_switch_drawdown is not None:
+            payload["kill_switch_drawdown"] = dstr(self.kill_switch_drawdown)
+        return payload
+
+    def _describe(self) -> Payload:
         return {
             "book": self.name,
             "starting_equity": dstr(self.starting_equity),
@@ -487,7 +568,7 @@ class Book:
         if req.valid_until_ms < earliest_exec_ms:
             self._reject_request(req, ts, "validity_ends_before_execution")
             return False
-        if not self._risk_allows("submit", req, ts):
+        if not self._risk_allows("submit", req, ts, earliest_exec_ms=earliest_exec_ms):
             return False
         enter = entry_direction(req.side)
         leave = exit_direction(req.side)
@@ -563,19 +644,70 @@ class Book:
         else:
             self._emit(SimEventType.EXIT_REQUESTED, decision_time_ms, {**payload, "action": "none"})
 
+    @staticmethod
+    def _view(pos: _Position) -> PositionView:
+        return PositionView(
+            pos.spec.market,
+            pos.spec.symbol,
+            pos.side,
+            pos.qty,
+            pos.entry_price,
+            pos.entry_notional,
+            pos.last_mark,
+        )
+
+    def risk_check(
+        self, stage: str, req: EntryRequest, ts: int, earliest_exec_ms: int | None = None
+    ) -> RiskCheck:
+        """The book state a risk decision at `ts` may use (see `RiskCheck`)."""
+        equity = self.equity() if stage == "submit" else self.sizing_basis()[0]
+        live = [
+            self._positions[k] for k in sorted(self._positions, key=lambda k: (str(k[0]), k[1]))
+        ]
+        if stage == "fill":
+            live.extend(self._closed_in_minute)
+        views = tuple(self._view(p) for p in live)
+        key = (req.market, req.symbol)
+        pending = sum(1 for k in self._pending if k != key)
+        return RiskCheck(
+            stage,
+            self.name,
+            ts,
+            req,
+            equity,
+            len(views),
+            positions=views,
+            pending_entries=pending,
+            start_of_day_equity=self.start_of_day_equity(ts),
+            peak_equity=max(self._peak_equity, equity),
+            earliest_exec_ms=earliest_exec_ms,
+            risk_per_trade=self.config.risk_per_trade,
+            max_notional_fraction=self.config.max_notional_fraction,
+        )
+
     def _risk_allows(
-        self, stage: str, req: EntryRequest, ts: int, event_ts: int | None = None
+        self,
+        stage: str,
+        req: EntryRequest,
+        ts: int,
+        event_ts: int | None = None,
+        earliest_exec_ms: int | None = None,
     ) -> bool:
         """Ask the risk hook; `ts` goes to the hook, `event_ts` (default `ts`) stamps rejections."""
-        equity = self.equity() if stage == "submit" else self.sizing_basis()[0]
-        check = RiskCheck(stage, self.name, ts, req, equity, len(self._positions))
+        hook_ts = ts
         ts = ts if event_ts is None else event_ts
-        try:
-            decision = self.risk_hook(check)
-            allowed = isinstance(decision, RiskDecision) and decision.allow is True
-            reason = decision.reason if isinstance(decision, RiskDecision) else "invalid_decision"
-        except Exception as exc:  # fail closed: any error blocks the entry
-            allowed, reason = False, f"risk_error:{type(exc).__name__}"
+        if self.halted is not None:
+            allowed, reason = False, f"book_halted:{self.halted}"
+        else:
+            try:
+                check = self.risk_check(stage, req, hook_ts, earliest_exec_ms)
+                decision = self.risk_hook(check)
+                allowed = isinstance(decision, RiskDecision) and decision.allow is True
+                reason = (
+                    decision.reason if isinstance(decision, RiskDecision) else "invalid_decision"
+                )
+            except Exception as exc:  # fail closed: any error blocks the entry
+                allowed, reason = False, f"risk_error:{type(exc).__name__}"
         if not allowed:
             if stage == "submit":
                 self._reject_request(req, ts, f"risk_blocked:{reason}")
@@ -600,14 +732,22 @@ class Book:
     # ------------------------------------------------------------ bar processing
     def on_bar(self, bar: Bar) -> None:
         key = (bar.market, bar.symbol)
-        self._now_ms = max(self._now_ms, bar.close_time_ms + 1)
+        if self._minute_open_ms is None or bar.open_time_ms > self._minute_open_ms:
+            self._minute_open_ms = bar.open_time_ms
+            self._closed_in_minute = []
         spec = self.instruments.get(key)
         if spec is not None:
+            self._now_by_key[key] = bar.close_time_ms + 1
             prev = self._last_open.get(key)
             self._last_open[key] = bar.open_time_ms
-            held = self._positions.get(key)
-            if held is not None and prev is not None and bar.open_time_ms - prev > MS_PER_MINUTE:
-                held.spans_gap = True  # L-04: the position lived through missing 1m bars
+            if prev is not None and bar.open_time_ms - prev > MS_PER_MINUTE:
+                # L-04: a position, or a resting entry, lived through missing 1m bars.
+                held = self._positions.get(key)
+                if held is not None:
+                    held.spans_gap = True
+                waiting = self._pending.get(key)
+                if waiting is not None:
+                    waiting.spans_gap = True
             prices = BarPrices.from_bar(bar)
             quote_volume = to_decimal(bar.quote_volume)
             with localcontext(SIM_CONTEXT):
@@ -622,11 +762,99 @@ class Book:
                     pos.last_mark = prices.close
 
     def mark(self, ts_ms: int) -> None:
-        """Record mark-to-market equity at a 1m close (called once per minute by the engine)."""
+        """Record mark-to-market equity at a 1m close (called once per minute by the engine).
+
+        Also the drawdown kill switch: when the marked equity is at least `kill_switch_drawdown`
+        below the running peak, the book halts (see `halt`).
+        """
         equity = self.equity()
+        day = ts_ms // MS_PER_DAY
+        if day != self._mark_day:
+            self._sod_equity = self._equity_at_mark  # last mark of the previous day (or start)
+            self._mark_day = day
         self.equity_curve.append(EquityPoint(ts_ms, equity))
         self._equity_at_mark = equity
         self._cash_at_mark = self.cash
+        self._peak_equity = max(self._peak_equity, equity)
+        limit = self.kill_switch_drawdown
+        if limit is not None and self.halted is None and self._peak_equity > 0:
+            with localcontext(SIM_CONTEXT):
+                drawdown = q8((self._peak_equity - equity) / self._peak_equity)
+            if drawdown >= limit:
+                self.halt(
+                    ts_ms,
+                    "drawdown_kill_switch",
+                    {
+                        "drawdown": dstr(drawdown),
+                        "limit": dstr(limit),
+                        "peak_equity": dstr(self._peak_equity),
+                        "equity": dstr(equity),
+                    },
+                )
+
+    def start_of_day_equity(self, ts_ms: int) -> Decimal:
+        """Equity at the last 1m mark before the UTC day containing `ts_ms`."""
+        day = ts_ms // MS_PER_DAY
+        if self._mark_day is None:
+            return self.starting_equity
+        if day == self._mark_day:
+            return self._sod_equity
+        return self._equity_at_mark  # no mark yet on this day: the latest mark is the day start
+
+    @property
+    def peak_equity(self) -> Decimal:
+        return self._peak_equity
+
+    # ------------------------------------------------------------ halt / kill switch
+    def halt(self, ts_ms: int, reason: str, details: Payload | None = None) -> None:
+        """Halt the book: cancel resting entries, flatten every position at the next 1m open.
+
+        New entries are blocked (`book_halted:<reason>`) until `reset_halt`. Idempotent while
+        halted.
+        """
+        if self.halted is not None:
+            return
+        self.halted = reason
+        next_open = -(-(ts_ms + 1) // MS_PER_MINUTE) * MS_PER_MINUTE
+        for key in sorted(self._pending, key=lambda k: (str(k[0]), k[1])):
+            self._finish_pending(key, OrderStatus.CANCELLED, ts_ms, f"book_halted:{reason}")
+        flatten: list[str] = []
+        for key in sorted(self._positions, key=lambda k: (str(k[0]), k[1])):
+            pos = self._positions[key]
+            if pos.exit_due_ms is None or pos.exit_due_ms > next_open:
+                pos.exit_due_ms = next_open
+                pos.exit_due_reason = ExitReason.KILL_SWITCH
+            flatten.append(f"{key[0]}:{key[1]}")
+        self._emit(
+            SimEventType.BOOK_HALTED,
+            ts_ms,
+            {
+                "reason": reason,
+                "flatten_at_ms": next_open,
+                "positions": flatten,
+                **(details or {}),
+            },
+        )
+
+    def reset_halt(self, ts_ms: int, operator: str, note: str = "") -> None:
+        """Manual reset of a halted book (logged). The drawdown peak restarts at the last mark."""
+        if self.halted is None:
+            raise ValueError(f"book {self.name} is not halted")
+        if not operator:
+            raise ValueError("a manual reset needs the operator's name")
+        previous = self.halted
+        self.halted = None
+        self._peak_equity = self._equity_at_mark
+        self._emit(
+            SimEventType.BOOK_RESET,
+            ts_ms,
+            {
+                "previous_reason": previous,
+                "operator": operator,
+                "note": note,
+                "peak_equity": dstr(self._peak_equity),
+            },
+        )
 
     def sizing_basis(self) -> tuple[Decimal, Decimal]:
         """(equity, available cash) an entry may be sized with.
@@ -641,7 +869,7 @@ class Book:
     def _process_held(self, pos: _Position, prices: BarPrices, quote_volume: Decimal) -> None:
         due: ExitReason | None = None
         if pos.exit_due_ms is not None and prices.open_time_ms >= pos.exit_due_ms:
-            due = ExitReason.EXIT_SIGNAL
+            due = pos.exit_due_reason
         elif pos.time_exit_due_ms is not None and prices.open_time_ms >= pos.time_exit_due_ms:
             due = ExitReason.TIME_EXIT
         fill = resolve_exit(
@@ -672,9 +900,16 @@ class Book:
             return  # not yet eligible (no execution before the next bar open after the decision)
         valid_until = order.valid_until_ms
         if valid_until is not None and prices.open_time_ms > valid_until:
-            self._finish_pending(
-                key, OrderStatus.EXPIRED, prices.close_time_ms, "valid_until_passed"
-            )
+            reason = "valid_until_passed" if self.observed else "valid_until_passed:downtime"
+            self._finish_pending(key, OrderStatus.EXPIRED, prices.close_time_ms, reason)
+            return
+        if not self.observed:
+            # Downtime resolution (SIMULATION §7): the order was not on any exchange, so it can
+            # neither fill nor "see" these bars (it arrives fresh at the first observed open).
+            if valid_until is not None and prices.close_time_ms >= valid_until:
+                self._finish_pending(
+                    key, OrderStatus.EXPIRED, prices.close_time_ms, "valid_until_passed:downtime"
+                )
             return
         open_ok = valid_until is None or prices.open_time_ms <= valid_until
         intrabar_ok = valid_until is None or prices.close_time_ms <= valid_until
@@ -684,7 +919,10 @@ class Book:
             order.direction,
             order.price,
             spec.tick_size,
-            arrival=order.bars_seen == 0,
+            # Arrival = the order's first eligible minute is this bar. If that minute is missing
+            # (data gap) the order would have been resting since then: resting rules apply, so a
+            # gap-through fills at the limit price, never at the better open (conservative).
+            arrival=order.bars_seen == 0 and prices.open_time_ms == order.earliest_exec_ms,
             open_ok=open_ok,
             intrabar_ok=intrabar_ok,
         )
@@ -762,7 +1000,10 @@ class Book:
         req = pending.request
         key = spec.key
         ts = prices.close_time_ms
-        if not self._risk_allows("fill", req, prices.open_time_ms, event_ts=ts):
+        earliest = pending.order.earliest_exec_ms
+        if not self._risk_allows(
+            "fill", req, prices.open_time_ms, event_ts=ts, earliest_exec_ms=earliest
+        ):
             return
         equity, cash = self.sizing_basis()
         if equity <= 0:
@@ -835,6 +1076,7 @@ class Book:
             tp_order_id=None if pending.take_profit is None else f"{self.name}:{req.request_id}:tp",
             time_exit_due_ms=time_due,
             entry_time_ms=prices.open_time_ms if at_open else prices.close_time_ms,
+            spans_gap=pending.spans_gap,
             best=execution.price,
             worst=execution.price,
             last_mark=execution.price,
@@ -946,6 +1188,7 @@ class Book:
             ExitReason.TAKE_PROFIT: pos.tp_order_id or pos.sl_order_id,
             ExitReason.TIME_EXIT: f"{self.name}:{pos.request.request_id}:time_exit",
             ExitReason.EXIT_SIGNAL: f"{self.name}:{pos.request.request_id}:exit",
+            ExitReason.KILL_SWITCH: f"{self.name}:{pos.request.request_id}:kill",
         }[fill.reason]
         if pos.spec.market is Market.SPOT:
             basis = self.ledger.balance(position_account(*key))
@@ -967,6 +1210,7 @@ class Book:
             ExitReason.TAKE_PROFIT: OrderRole.TAKE_PROFIT,
             ExitReason.TIME_EXIT: OrderRole.TIME_EXIT,
             ExitReason.EXIT_SIGNAL: OrderRole.EXIT,
+            ExitReason.KILL_SWITCH: OrderRole.EXIT,
         }[fill.reason]
         exit_order = Order(
             exit_order_id,
@@ -1039,8 +1283,10 @@ class Book:
             mae_r=q8(max(ZERO, sign * (pos.entry_price - pos.worst)) * pos.qty / risk),
             mfe_r=q8(max(ZERO, sign * (pos.best - pos.entry_price)) * pos.qty / risk),
             alt_r_if_tp_first=alt_r,
+            resolved_from_backfill=not self.observed,
         )
         del self._positions[key]
+        self._closed_in_minute.append(pos)
         self.trades.append(trade)
         self._emit(SimEventType.POSITION_CLOSED, ts, trade.to_payload())
 
@@ -1061,9 +1307,11 @@ class Book:
             raise ValueError(f"funding at {ts_ms} does not follow the entry {pos.entry_time_ms}")
         if pos.last_funding_ms is not None and ts_ms <= pos.last_funding_ms:
             raise ValueError(f"funding at {ts_ms} not after previous funding {pos.last_funding_ms}")
-        if ts_ms > self._now_ms:
+        now = self._now_by_key.get((market, symbol), 0)
+        if ts_ms > now:
             raise ValueError(
-                f"funding at {ts_ms} is in the future of the simulator ({self._now_ms})"
+                f"funding at {ts_ms} is in the future of {market}:{symbol}'s last processed bar"
+                f" (close + 1 = {now})"
             )
         pos.last_funding_ms = ts_ms
         amount = q8(amount)
@@ -1148,6 +1396,7 @@ __all__ = [
     "BookConfig",
     "DrawdownStats",
     "EquityPoint",
+    "PositionView",
     "RejectReason",
     "RiskCheck",
     "RiskDecision",
