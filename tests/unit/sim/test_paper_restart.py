@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from paper_helpers import (
+    ETH,
     ScriptedStrategy,
     config,
     drive,
@@ -255,3 +256,34 @@ def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
     reset_events = [e for b in journal.batches() for e in b if e.type == "sim_book_reset"]
     assert reset_events[0].payload["requested_at_ms"] == minute(7) + 5_000
     assert replay(cfg, journal.batches()).ledger_hashes() == svc.ledger_hashes()
+
+
+def test_partial_backfill_is_refused_whole_and_names_the_missing_symbol() -> None:
+    """All-or-nothing downtime resolution: ETH-only backfill while BTC holds a position is not
+    applied (nothing processed, AWAITING_BACKFILL, BTC minutes 6-9 named); the complete backfill
+    afterwards books the BTC stop on the backfilled path and live processing resumes."""
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1)]})
+    svc, journal = new_service(strat)
+    rows = {7: (995, 996, 985, 986), 8: (986, 990, 984, 988), 9: (990, 1001, 989, 1000)}
+    drive(svc, two_symbol_bars(14, rows), list(range(6)))
+    restored = PaperTradingService.restore(config(), journal, strategy=strat)
+    live = two_symbol_bars(14, rows)
+    drive(restored, live, [10])
+    backfill = two_symbol_bars(14, rows, source=BarSource.REST_BACKFILL)
+    batches = restored.session.batches
+    eth = [b for b in backfill[ETH] if minute(6) <= b.open_time_ms <= minute(9)]
+    assert restored.resume_after_downtime(eth, now_ms=minute(11) + 5_000) == 0
+    assert restored.session.batches == batches
+    assert restored.state is ServiceState.AWAITING_BACKFILL
+    assert restored.status()["awaiting_missing"] == {
+        "spot:BTCUSDT": [minute(6), minute(7), minute(8), minute(9)]
+    }
+    full = [b for seq in backfill.values() for b in seq if minute(6) <= b.open_time_ms <= minute(9)]
+    assert restored.resume_after_downtime(full, now_ms=minute(11) + 6_000) == 8
+    status = restored.session.lifecycle.get(sid(1))
+    assert status is not None
+    assert status.status is SignalStatus.CLOSED
+    drive(restored, live, [11, 12])
+    assert restored.state is ServiceState.RUNNING
+    assert restored.awaiting_missing == {}
+    assert replay(config(), journal.batches()).ledger_hashes() == restored.ledger_hashes()

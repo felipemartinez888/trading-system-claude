@@ -528,6 +528,10 @@ class Book:
     def has_pending(self, market: Market, symbol: str) -> bool:
         return (market, symbol) in self._pending
 
+    def exposed(self) -> set[SymbolKey]:
+        """Instruments with an open position or a resting entry in this book."""
+        return set(self._positions) | set(self._pending)
+
     def holder(self, market: Market, symbol: str) -> str | None:
         """Request id of the open position, or else of the resting entry, on (market, symbol)."""
         pos = self._positions.get((market, symbol))

@@ -173,6 +173,10 @@ class Simulator:
         for bar in bars:
             self.step(bar, observed=observed)
 
+    def last_open(self, market: Market, symbol: str) -> int | None:
+        """Open time of the latest processed bar of (market, symbol), if any."""
+        return self._last_open.get((market, symbol))
+
     @property
     def last_key(self) -> tuple[int, str, str] | None:
         """Delivery key of the latest processed bar (restart: where to resume)."""

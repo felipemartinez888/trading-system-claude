@@ -586,6 +586,8 @@ class PaperTradingService:
         self.fault: str | None = None
         #: set by `restore`: live bars must continue the journal without a gap
         self._check_continuity = False
+        #: while AWAITING_BACKFILL: "market:symbol" -> minute opens still missing
+        self.awaiting_missing: dict[str, list[int]] = {}
 
     @classmethod
     def open(
@@ -693,14 +695,43 @@ class PaperTradingService:
         first = self.clock.earliest_buffered()
         if first is None:
             return False  # nothing to process yet; decide when the first live bar is there
+        missing = self.missing_before(first)
         last = self.session.last_minute_ms
         if last is not None and first > last + MS_PER_MINUTE:
+            missing.setdefault("*", list(range(last + MS_PER_MINUTE, first, MS_PER_MINUTE)))
+        if missing:
             self.state = ServiceState.AWAITING_BACKFILL
+            self.awaiting_missing = missing
             return False
+        self.awaiting_missing = {}
         self._check_continuity = False
         if self.state is ServiceState.AWAITING_BACKFILL:
             self.state = ServiceState.RUNNING
         return True
+
+    def missing_before(self, first_live_ms: int, extra: Sequence[Bar] = ()) -> dict[str, list[int]]:
+        """Minutes before `first_live_ms` that an exposed instrument (open position or resting
+        entry in any book) has not processed, counting the bars in `extra` as processed."""
+        have: dict[tuple[Market, str], set[int]] = {}
+        for b in extra:
+            have.setdefault((b.market, b.symbol), set()).add(b.open_time_ms)
+        out: dict[str, list[int]] = {}
+        sim = self.session.sim
+        keys = sorted(
+            {k for book in sim.books.values() for k in book.exposed()},
+            key=lambda k: (str(k[0]), k[1]),
+        )
+        for market, symbol in keys:
+            last = sim.last_open(market, symbol)
+            start = first_live_ms if last is None else last + MS_PER_MINUTE
+            gaps = [
+                m
+                for m in range(start, first_live_ms, MS_PER_MINUTE)
+                if m not in have.get((market, symbol), set())
+            ]
+            if gaps:
+                out[f"{market}:{symbol}"] = gaps
+        return out
 
     def resume_after_downtime(self, bars: Sequence[Bar], now_ms: int | None = None) -> int:
         """Resolve open positions over backfilled 1m bars of the downtime (SIMULATION §7).
@@ -708,12 +739,32 @@ class PaperTradingService:
         Only bars after the last processed one are used, in clock order, all **unobserved**: no
         signal is computed and no entry fills on them; WATCH/CONFIRMED signals whose validity
         passed become EXPIRED (downtime). Call before feeding live bars of the new session.
+
+        All or nothing: the backfill must give every exposed instrument (open position or resting
+        entry) a bar for every minute up to the first buffered live minute (or, with none
+        buffered yet, up to the last backfilled minute). Otherwise nothing is processed -- bars
+        of one symbol cannot be added later behind another symbol's (clock order) -- the service
+        stays AWAITING_BACKFILL, `awaiting_missing` names the symbols and minutes, and the
+        return value is 0.
         """
         last = self.session.sim.last_key
         todo = sorted(
             (b for b in bars if last is None or order_key(b) > last),
             key=order_key,
         )
+        first_live = self.clock.earliest_buffered()
+        end = (
+            first_live
+            if first_live is not None
+            else (todo[-1].open_time_ms + MS_PER_MINUTE if todo else None)
+        )
+        if end is not None:
+            missing = self.missing_before(end, todo)
+            if missing:
+                if self.state is not ServiceState.FAULTED:
+                    self.state = ServiceState.AWAITING_BACKFILL
+                self.awaiting_missing = missing
+                return 0
         done = 0
         for bar in todo:
             self.tracker.observe_bar(bar)  # backfilled bars are data for the lookback checks
@@ -763,6 +814,7 @@ class PaperTradingService:
             "fault": self.fault,
             "mode": str(self.session.sim.clock.mode),
             "batches": self.session.batches,
+            "awaiting_missing": dict(self.awaiting_missing),
             "last_minute_ms": self.session.last_minute_ms,
             "clock": vars(self.clock.stats).copy(),
             "books": books,
