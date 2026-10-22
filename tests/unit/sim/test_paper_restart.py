@@ -1,0 +1,289 @@
+"""Restart safety (SIMULATION §7) and fault injection: rebuild from the journal, resolve open
+positions over backfilled bars (`resolved_from_backfill`), expire signals whose validity passed
+during downtime, never enter on unobserved minutes; journal failure and a crash mid-fill leave
+the service FAULTED and a restore + re-delivery reproduces the uninterrupted session exactly."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from paper_helpers import (
+    ETH,
+    ScriptedStrategy,
+    config,
+    drive,
+    new_service,
+    record,
+    sid,
+    two_symbol_bars,
+)
+
+from tsclaude.contracts.market import BarSource
+from tsclaude.contracts.signals import EntryRuleKind, SignalStatus
+from tsclaude.sim.book import Book
+from tsclaude.sim.fills import ExitReason
+from tsclaude.sim.journal import MemoryJournal
+from tsclaude.sim.paper import PaperTradingService, ServiceState, replay
+from tsclaude.sim.testing import minute
+
+N = 14
+
+
+def restart_strategy() -> ScriptedStrategy:
+    m = minute
+    return ScriptedStrategy(
+        {
+            (m(1), "BTCUSDT"): [record(1, 1)],  # opens minute 2, stopped in downtime minute 7
+            (m(3), "ETHUSDT"): [
+                record(2, 3, symbol="ETHUSDT", stage=SignalStatus.WATCH, valid_bars=3)
+            ],
+            (m(4), "ETHUSDT"): [
+                record(
+                    3,
+                    4,
+                    symbol="ETHUSDT",
+                    kind=EntryRuleKind.LIMIT,
+                    price=992.0,
+                    stop=960.0,
+                    tp=1060.0,
+                    valid_bars=3,
+                )
+            ],
+            (m(11), "BTCUSDT"): [record(4, 11)],  # after the restart: enters normally
+        }
+    )
+
+
+BTC_ROWS = {7: (995, 996, 985, 986), 8: (986, 990, 984, 988), 9: (990, 1001, 989, 1000)}
+ETH_ROWS = {6: (1000, 1001, 980, 985)}  # trades through the 992 limit while we are down
+
+
+def test_restart_resolves_downtime_on_backfill_without_entries() -> None:
+    strat = restart_strategy()
+    svc, journal = new_service(strat)
+    live_bars = two_symbol_bars(N, BTC_ROWS, ETH_ROWS)
+    drive(svc, live_bars, list(range(6)))  # minutes 0-5 observed, then the process dies
+    assert svc.session.lifecycle.status(sid(1)) is SignalStatus.OPEN
+    assert svc.session.lifecycle.status(sid(3)) is SignalStatus.CONFIRMED
+    del svc
+
+    restored = PaperTradingService.restore(config(), journal, strategy=strat)
+    assert restored.state is ServiceState.RUNNING
+    assert restored.session.lifecycle.status(sid(1)) is SignalStatus.OPEN
+    calls_before = len(strat.calls)
+    backfill = two_symbol_bars(N, BTC_ROWS, ETH_ROWS, source=BarSource.REST_BACKFILL)
+    down = [b for seq in backfill.values() for b in seq if minute(6) <= b.open_time_ms <= minute(9)]
+    assert restored.resume_after_downtime(down) == 8
+    assert len(strat.calls) == calls_before  # no strategy call for an unobserved minute
+
+    lc = restored.session.lifecycle
+    s1, s2, s3 = lc.get(sid(1)), lc.get(sid(2)), lc.get(sid(3))
+    assert s1 is not None
+    assert s1.status is SignalStatus.CLOSED
+    assert s1.outcome is not None
+    assert s1.outcome["exit_reason"] == "stop_loss"
+    assert s1.outcome["resolved_from_backfill"] is True
+    assert s2 is not None
+    assert (s2.status, s2.reason) == (SignalStatus.EXPIRED, "downtime")
+    assert s3 is not None
+    assert (s3.status, s3.reason) == (SignalStatus.EXPIRED, "downtime")
+    books = restored.session.sim.books
+    (trade,) = books["baseline"].trades
+    assert trade.exit_reason is ExitReason.STOP_LOSS
+    assert trade.resolved_from_backfill
+    assert minute(6) <= trade.exit_bar_open_ms <= minute(9)
+    for name in ("baseline", "shadow"):
+        assert all(t.request_id != sid(3) for t in books[name].trades)  # limit never filled
+        assert books[name].open_positions == 0
+
+    # live again from minute 10: new signals enter normally
+    drive(restored, live_bars, list(range(10, N)))
+    assert (minute(11), "BTCUSDT") in strat.calls
+    assert lc.status(sid(4)) is SignalStatus.OPEN
+    # the whole journal (before and after the restart) replays to the same ledgers
+    assert replay(config(), journal.batches()).ledger_hashes() == restored.ledger_hashes()
+    downtime_steps = [
+        b[0].payload for b in journal.batches() if not b[0].payload.get("observed", True)
+    ]
+    assert len(downtime_steps) == 8
+    assert all(p["intents"] == [] for p in downtime_steps)
+
+
+def test_restore_of_empty_journal_starts_fresh() -> None:
+    svc = PaperTradingService.restore(config(), MemoryJournal())
+    assert svc.session.batches == 0
+    assert svc.session.last_minute_ms is None
+
+
+def _reference() -> tuple[PaperTradingService, MemoryJournal]:
+    strat = ScriptedStrategy(
+        {
+            (minute(1), "BTCUSDT"): [record(1, 1)],
+            (minute(3), "ETHUSDT"): [record(2, 3, symbol="ETHUSDT")],
+        }
+    )
+    svc, journal = new_service(strat)
+    drive(svc, two_symbol_bars(10, {6: (1000, 1035, 999, 1030)}), list(range(10)))
+    return svc, journal
+
+
+def _strategy() -> ScriptedStrategy:
+    return ScriptedStrategy(
+        {
+            (minute(1), "BTCUSDT"): [record(1, 1)],
+            (minute(3), "ETHUSDT"): [record(2, 3, symbol="ETHUSDT")],
+        }
+    )
+
+
+@pytest.mark.parametrize("fail_batch", [3, 6, 7, 9])
+def test_journal_failure_faults_and_restore_plus_redelivery_matches(fail_batch: int) -> None:
+    """Fault injection: the journal refuses batch k. The service stops (FAULTED, nothing more is
+    processed); a restore from the journal plus re-delivery of the bars from that minute on
+    reproduces the uninterrupted session's ledgers byte for byte (also mid-minute: k odd)."""
+    ref, _ = _reference()
+    journal = MemoryJournal(fail_when=lambda i, _b: i == fail_batch)
+    bars = two_symbol_bars(10, {6: (1000, 1035, 999, 1030)})
+    svc, _ = new_service(_strategy(), journal=journal)
+    drive(svc, bars, list(range(10)))
+    assert svc.state is ServiceState.FAULTED
+    assert svc.fault is not None
+    assert svc.fault.startswith("journal_failed")
+    assert len(journal.batches()) == fail_batch
+    assert svc.poll(minute(99)) == 0  # fail closed: nothing processed any more
+
+    journal.fail_when = None
+    # same-process recovery keeps the market tracker; a cold restart starts without market
+    # history, so a fill-stage check spanning the fault would (correctly) fail closed instead
+    restored = PaperTradingService.restore(
+        config(), journal, strategy=_strategy(), tracker=svc.tracker
+    )
+    drive(restored, bars, list(range(fail_batch // 2, 10)))
+    assert restored.state is ServiceState.RUNNING
+    assert restored.ledger_hashes() == ref.ledger_hashes()
+    assert restored.session.fingerprint() == ref.session.fingerprint()
+
+
+def test_crash_mid_fill_leaves_no_partial_state() -> None:
+    """Fault injection: the baseline book raises inside the entry fill of signal 1 (after the
+    risk check, before the ledger post). The step is not journaled; the restored session has no
+    trace of the half-done fill, and re-delivery reproduces the uninterrupted session."""
+    ref, _ = _reference()
+    bars = two_symbol_bars(10, {6: (1000, 1035, 999, 1030)})
+    svc, journal = new_service(_strategy())
+    baseline = svc.session.sim.books["baseline"]
+    original = Book._open
+    calls = {"n": 0}
+
+    def exploding_open(self: Book, *args: Any, **kw: Any) -> None:
+        if self is baseline and calls["n"] == 0:
+            calls["n"] += 1
+            raise OSError("disk vanished mid-fill")
+        original(self, *args, **kw)
+
+    baseline._open = exploding_open.__get__(baseline, Book)  # type: ignore[method-assign]
+    drive(svc, bars, list(range(10)))
+    assert svc.state is ServiceState.FAULTED
+    assert svc.fault is not None
+    assert svc.fault.startswith("step_failed:OSError")
+    recorded = journal.batches()
+    entry_id = f"baseline:{sid(1)}:entry"
+    fills = [e.payload["order_id"] for b in recorded for e in b if e.type == "sim_order_filled"]
+    assert entry_id not in fills
+    assert any(e.payload.get("order_id") == entry_id for b in recorded for e in b)  # submitted
+
+    restored = PaperTradingService.restore(
+        config(), journal, strategy=_strategy(), tracker=svc.tracker
+    )
+    assert restored.session.sim.books["baseline"].open_positions == 0
+    first_missing = len(recorded) // 2
+    drive(restored, bars, list(range(first_missing, 10)))
+    assert restored.ledger_hashes() == ref.ledger_hashes()
+
+
+def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
+    """A crash takes the baseline book below -10 %: halted at the mark, flattened at the next
+    open (signal CLOSED by kill_switch), new signals VETOED (book_halted) until the logged manual
+    reset; afterwards the daily loss limit still vetoes until the next UTC day."""
+    from decimal import Decimal as D
+
+    from tsclaude.risk.config import RiskConfig
+
+    cfg = config(risk=RiskConfig(max_risk_per_trade=D("0.5"), max_gross_exposure=D("1")))
+    strat = ScriptedStrategy(
+        {
+            (minute(1), "BTCUSDT"): [record(1, 1, stop=850.0, tp=1400.0)],
+            (minute(5), "BTCUSDT"): [record(2, 5, ref=870.0, stop=860.0, tp=900.0)],
+            (minute(8), "BTCUSDT"): [record(3, 8, ref=870.0, stop=860.0, tp=900.0)],
+        }
+    )
+    svc, journal = new_service(strat, cfg=cfg)
+    crash = {i: (870, 871, 869, 870) for i in range(4, 12)}
+    crash[4] = (880, 881, 869, 870)  # the entry (released after minute 1) fills at minute 3
+    bars = two_symbol_bars(12, crash)
+    with pytest.raises(ValueError, match="not halted"):
+        svc.reset_halt("baseline", "owner", now_ms=1)
+    drive(svc, bars, list(range(7)))
+    baseline = svc.session.sim.books["baseline"]
+    assert baseline.halted == "drawdown_kill_switch"
+    lc = svc.session.lifecycle
+    s1, s2 = lc.get(sid(1)), lc.get(sid(2))
+    assert s1 is not None
+    assert s1.status is SignalStatus.CLOSED
+    assert s1.reason == "kill_switch"
+    assert s2 is not None
+    assert s2.status is SignalStatus.VETOED
+    assert "book_halted" in (s2.reason or "")
+    with pytest.raises(ValueError, match="operator"):
+        svc.reset_halt("baseline", "", now_ms=1)
+    with pytest.raises(ValueError, match="unknown book"):
+        svc.reset_halt("nope", "owner", now_ms=1)
+    assert svc.state is ServiceState.RUNNING
+    assert svc.reset_halt("baseline", "owner", "reviewed", now_ms=minute(7) + 5_000)
+    assert baseline.halted is None
+    drive(svc, bars, list(range(7, 12)))
+    # the reset re-opens the book, but the daily loss limit (independent rule) still blocks
+    # entries until the next UTC day
+    s3 = lc.get(sid(3))
+    assert s3 is not None
+    assert s3.status is SignalStatus.VETOED
+    assert "daily_loss" in (s3.reason or "")
+    assert "book_halted" not in (s3.reason or "")
+    resets = [b[0].payload for b in journal.batches() if b[0].payload["kind"] == "reset"]
+    assert resets[0]["operator"] == "owner"
+    assert resets[0]["requested_at_ms"] == minute(7) + 5_000
+    reset_events = [e for b in journal.batches() for e in b if e.type == "sim_book_reset"]
+    assert reset_events[0].payload["requested_at_ms"] == minute(7) + 5_000
+    assert replay(cfg, journal.batches()).ledger_hashes() == svc.ledger_hashes()
+
+
+def test_partial_backfill_is_refused_whole_and_names_the_missing_symbol() -> None:
+    """All-or-nothing downtime resolution: ETH-only backfill while BTC holds a position is not
+    applied (nothing processed, AWAITING_BACKFILL, BTC minutes 6-9 named); the complete backfill
+    afterwards books the BTC stop on the backfilled path and live processing resumes."""
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1)]})
+    svc, journal = new_service(strat)
+    rows = {7: (995, 996, 985, 986), 8: (986, 990, 984, 988), 9: (990, 1001, 989, 1000)}
+    drive(svc, two_symbol_bars(14, rows), list(range(6)))
+    restored = PaperTradingService.restore(config(), journal, strategy=strat)
+    live = two_symbol_bars(14, rows)
+    drive(restored, live, [10])
+    backfill = two_symbol_bars(14, rows, source=BarSource.REST_BACKFILL)
+    batches = restored.session.batches
+    eth = [b for b in backfill[ETH] if minute(6) <= b.open_time_ms <= minute(9)]
+    assert restored.resume_after_downtime(eth, now_ms=minute(11) + 5_000) == 0
+    assert restored.session.batches == batches
+    assert restored.state is ServiceState.AWAITING_BACKFILL
+    assert restored.status()["awaiting_missing"] == {
+        "spot:BTCUSDT": [minute(6), minute(7), minute(8), minute(9)]
+    }
+    full = [b for seq in backfill.values() for b in seq if minute(6) <= b.open_time_ms <= minute(9)]
+    assert restored.resume_after_downtime(full, now_ms=minute(11) + 6_000) == 8
+    status = restored.session.lifecycle.get(sid(1))
+    assert status is not None
+    assert status.status is SignalStatus.CLOSED
+    drive(restored, live, [11, 12])
+    assert restored.state is ServiceState.RUNNING
+    assert restored.awaiting_missing == {}
+    assert replay(config(), journal.batches()).ledger_hashes() == restored.ledger_hashes()

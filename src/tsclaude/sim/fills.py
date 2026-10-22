@@ -55,6 +55,7 @@ class ExitReason(StrEnum):
     TAKE_PROFIT = "take_profit"
     TIME_EXIT = "time_exit"
     EXIT_SIGNAL = "exit_signal"
+    KILL_SWITCH = "kill_switch"  # book halted: flatten at the next open (risk engine)
 
 
 @dataclass(frozen=True, slots=True)

@@ -285,8 +285,10 @@ def test_runner_rejects_unaligned_or_empty_ranges(tmp_path: Path) -> None:
 # runner, report, simulator, statistics or fixture alters the evidence, update these values in the
 # same commit and say why. Updated for the M2-T4 audit fixes: seed derived from the trial key
 # (control entries change), cost identity / funding / seed source in the manifest, new metrics.
+# M3-T1: metrics gain a zero `kill_switch` exit-reason count (new `ExitReason.KILL_SWITCH`); no
+# trade, equity or other metric changed (diffed against main).
 GOLDEN_MANIFEST = "00cbb07bc049f4e7515bb2a10c8d0b09a8911c2d76b8d3e6ace29cf5988380e7"
-GOLDEN_METRICS = "20e283e7d1ea79ac00b8499f126b9c4479763288bf4ed109fb046a4a14583f36"
+GOLDEN_METRICS = "fe8d3d52cdf185a58dcdd3d20ab50783bf7b041de5196136606f9601b6de0d2e"
 GOLDEN_TRADES = "39ca032989429bb5408d1ee3d7ef95e16ba8e7277a73b8dc0806185b3133ef91"
 
 

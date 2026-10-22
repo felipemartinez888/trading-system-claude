@@ -1,0 +1,40 @@
+# Risk engine configuration (SIMULATION §6, src/tsclaude/risk/). Versioned: change `version`
+# whenever a value changes; the config hash travels with every paper session.
+# Decimals are quoted strings (exact). Fractions: 0.005 = 0.5 %.
+# Changing any value changes the hash: an existing paper session then refuses to restore (its
+# recorded decisions would be recomputed differently). Start a new session in the same store,
+# e.g. PaperTradingService.open(config, store, session_id="paper-<date>") (see sim/paper.py).
+version: risk-config-v2
+
+data_freshness:
+  require_streams_healthy: true   # every stream of the symbol HEALTHY at the cutoff
+  max_open_gap_minutes: 0         # any unresolved gap for the symbol blocks entries
+  max_view_age_ms: 5000           # market view must be this fresh relative to the cutoff
+  max_bar_age_ms: 120000          # latest closed 1m bar must end within this of the cutoff
+  lookback_minutes: 240           # any missing 1m bar of the symbol inside this window blocks
+
+clock_skew_max_ms: 1000           # |local - Binance server| <= 1 s
+clock_offset_max_age_ms: 900000   # a server-clock sample older than 15 min counts as unknown
+
+spread:
+  median_multiple: "2"            # live spread <= max(2 x median spread, cap)
+  cap_bps: "10"
+  median_window_ms: 3600000       # median over the last hour of book_top samples
+  min_samples: 30                 # fewer samples: the median is unknown, only the cap applies
+  max_age_ms: 5000                # latest book_top sample must be this fresh at the cutoff
+
+min_rr_net: "1.5"                 # cost-adjusted reward/risk after fees + slippage
+require_take_profit: true         # no take-profit -> R:R undefined -> blocked (fail closed)
+max_risk_per_trade: "0.005"       # the book's fixed-fractional risk may not exceed this
+
+max_positions: 5                  # per book
+max_positions_per_symbol: 1
+
+correlation:
+  max_per_cluster: 3
+  default_cluster: btc_beta       # every symbol not listed below
+  clusters: {}                    # e.g. {PAXGUSDT: gold}
+
+max_gross_exposure: "1"           # sum of marked notionals + new entry <= 100 % of equity
+daily_loss_limit: "0.02"          # -2 % of start-of-day equity -> no entries until next UTC day
+drawdown_kill_switch: "0.10"      # -10 % from peak -> book halted until manual reset

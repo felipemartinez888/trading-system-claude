@@ -11,6 +11,12 @@ Per closed 1m bar (bars arrive in global order, see `clock`):
 3. When the first bar of a later minute arrives (or at `finish`), every book is marked to market at
    the previous minute's close. Marking is therefore independent of how the stream is chunked.
 
+Downtime resolution (SIMULATION §7). ``step(bar, observed=False)`` processes a backfilled bar of a
+period the app did not observe: open positions resolve their resting stop-loss / take-profit / due
+exits on it (trades tagged ``resolved_from_backfill``), resting entries can only expire, and the
+signal source is **not** called, so no entry is ever created for an unobserved minute. Every switch
+between observed and unobserved processing is an event (`SimEventType.OBSERVATION_CHANGED`).
+
 Events
 ------
 Every state change is an event dict with the fields of `contracts.events.NewEvent` plus a running
@@ -129,6 +135,7 @@ class Simulator:
         self._last_close_ms: int | None = None
         self._started = False
         self._finished = False
+        self._observed = True
 
     # ------------------------------------------------------------ events
     def _append(
@@ -161,10 +168,32 @@ class Simulator:
             self.step(bar)
         return self.finish()
 
-    def feed(self, bars: Iterable[Bar]) -> None:
+    def feed(self, bars: Iterable[Bar], *, observed: bool = True) -> None:
         """Process a chunk of bars (live sessions, chunked replays)."""
         for bar in bars:
-            self.step(bar)
+            self.step(bar, observed=observed)
+
+    def last_open(self, market: Market, symbol: str) -> int | None:
+        """Open time of the latest processed bar of (market, symbol), if any."""
+        return self._last_open.get((market, symbol))
+
+    @property
+    def last_key(self) -> tuple[int, str, str] | None:
+        """Delivery key of the latest processed bar (restart: where to resume)."""
+        return self._last_key
+
+    def _set_observed(self, observed: bool, ts_ms: int) -> None:
+        if observed == self._observed:
+            return
+        self._observed = observed
+        for book in self.books.values():
+            book.observed = observed
+        self._append(
+            SimEventType.OBSERVATION_CHANGED,
+            ts_ms,
+            RUN_AGGREGATE_ID,
+            {"observed": observed, "reason": "live" if observed else "downtime_backfill"},
+        )
 
     def _start(self, ts_ms: int) -> None:
         self._started = True
@@ -190,7 +219,14 @@ class Simulator:
             book.mark(close_ms)
         self._minute = None
 
-    def step(self, bar: Bar) -> None:
+    def step(self, bar: Bar, *, observed: bool = True, not_before_ms: int | None = None) -> None:
+        """Process one closed 1m bar.
+
+        `not_before_ms` (live sessions): the wall time the decision on this bar actually became
+        possible (the bar's release). Requests from this bar then execute no earlier than the first
+        1m open at or after it, on top of `decision_latency_ms` -- a live decision never fills at
+        a price that existed before it was made. Journaled, so replays are deterministic.
+        """
         if self._finished:
             raise ClockError("simulator already finished")
         if bar.interval is not Interval.M1:
@@ -205,6 +241,7 @@ class Simulator:
             self._flush_minute()
         self._minute = bar.open_time_ms
         self._last_close_ms = bar.close_time_ms
+        self._set_observed(observed, bar.open_time_ms)
 
         sym = (bar.market, bar.symbol)
         prev = self._last_open.get(sym)
@@ -226,6 +263,8 @@ class Simulator:
         for book in self.books.values():
             book.on_bar(bar)
         self._drain_books()
+        if not observed:
+            return  # unobserved minute: the signal source never sees it (no entries)
 
         try:
             requests = list(self.source.on_bar(bar, self._view))
@@ -239,6 +278,8 @@ class Simulator:
             requests = []
         decision = bar.close_time_ms
         earliest = earliest_execution_ms(decision, self.decision_latency_ms)
+        if not_before_ms is not None:
+            earliest = max(earliest, -(-not_before_ms // MS_PER_MINUTE) * MS_PER_MINUTE)
         for req in requests:
             self._route(req, decision, earliest)
         self._drain_books()
@@ -279,6 +320,23 @@ class Simulator:
         amount = self.books[book].apply_funding_rate(market, symbol, ts_ms, rate, mark_price)
         self._drain_books()
         return amount
+
+    def halt(self, book: str, ts_ms: int, reason: str) -> None:
+        """Halt a book (manual or external kill switch); see `Book.halt`."""
+        self.books[book].halt(ts_ms, reason)
+        self._drain_books()
+
+    def reset_halt(
+        self,
+        book: str,
+        ts_ms: int,
+        operator: str,
+        note: str = "",
+        requested_at_ms: int | None = None,
+    ) -> None:
+        """Manual reset of a halted book (logged as an event)."""
+        self.books[book].reset_halt(ts_ms, operator, note, requested_at_ms)
+        self._drain_books()
 
     def finish(self) -> SimResult:
         if not self._finished:
