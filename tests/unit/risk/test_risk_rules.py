@@ -111,6 +111,11 @@ GOLDEN: list[tuple[str, Rule, dict[str, object], dict[str, object]]] = [
     ("cluster", Rule.CORRELATED_EXPOSURE, {"positions": [position(f"C{i}") for i in range(3)]}, {}),
     ("gross", Rule.GROSS_EXPOSURE, {"positions": [position("ETHUSDT", "5001")]}, {}),
     ("daily_loss", Rule.DAILY_LOSS, {"equity": D("9800"), "peak_equity": D("9800")}, {}),
+    # recovered to 10 000, but the day's low was -2 %: latched until the next UTC day
+    ("daily_loss_latched", Rule.DAILY_LOSS, {"day_low_equity": D("9800")}, {}),
+    ("gap_in_lookback", Rule.DATA_FRESHNESS, {}, {"lookback_gap_minutes": 1}),
+    ("spread_stale", Rule.SPREAD, {}, {"spread_as_of_ms": DECISION - 5_001}),
+    ("spread_after_cutoff", Rule.SPREAD, {}, {"spread_as_of_ms": DECISION + 1}),
     ("drawdown", Rule.DRAWDOWN, {"peak_equity": D("11112")}, {}),
     ("validity_submit", Rule.SIGNAL_VALIDITY, {"request": request(valid_until_ms=EXEC - 1)}, {}),
     ("validity_unknown_exec", Rule.SIGNAL_VALIDITY, {"earliest_exec_ms": None}, {}),
@@ -170,7 +175,11 @@ def test_fill_stage_uses_previous_close_cutoff_and_validity() -> None:
     assert rules_failing(late.reasons) == ["market_view"]
     expired = ENGINE.evaluate(
         check("fill", ts_ms=minute(21), request=request(valid_until_ms=minute(20))),
-        view(as_of_ms=minute(21) - 500, last_bar_close_ms=minute(21) - 1),
+        view(
+            as_of_ms=minute(21) - 500,
+            last_bar_close_ms=minute(21) - 1,
+            spread_as_of_ms=minute(21) - 600,
+        ),
     )
     assert rules_failing(expired.reasons) == ["signal_validity"]
 

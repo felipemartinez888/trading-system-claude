@@ -99,6 +99,7 @@ def test_fill_stage_reblocks_when_market_turns_bad_after_submit() -> None:
         cut = cutoff_ms(check.stage, check.ts_ms)
         sym = symbol_market(
             last_bar_close_ms=cut,
+            spread_as_of_ms=cut - 10,
             unhealthy_streams=("spot:BTCUSDT:book_ticker",) if bad else (),
         )
         return MarketView(cut, 0, {(sym.market, sym.symbol): sym})

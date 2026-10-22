@@ -322,9 +322,16 @@ class Simulator:
         self.books[book].halt(ts_ms, reason)
         self._drain_books()
 
-    def reset_halt(self, book: str, ts_ms: int, operator: str, note: str = "") -> None:
+    def reset_halt(
+        self,
+        book: str,
+        ts_ms: int,
+        operator: str,
+        note: str = "",
+        requested_at_ms: int | None = None,
+    ) -> None:
         """Manual reset of a halted book (logged as an event)."""
-        self.books[book].reset_halt(ts_ms, operator, note)
+        self.books[book].reset_halt(ts_ms, operator, note, requested_at_ms)
         self._drain_books()
 
     def finish(self) -> SimResult:

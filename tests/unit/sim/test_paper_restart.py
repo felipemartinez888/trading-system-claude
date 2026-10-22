@@ -222,7 +222,7 @@ def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
     crash[4] = (880, 881, 869, 870)  # the entry (released after minute 1) fills at minute 3
     bars = two_symbol_bars(12, crash)
     with pytest.raises(ValueError, match="not halted"):
-        svc.reset_halt("baseline", "owner")
+        svc.reset_halt("baseline", "owner", now_ms=1)
     drive(svc, bars, list(range(7)))
     baseline = svc.session.sim.books["baseline"]
     assert baseline.halted == "drawdown_kill_switch"
@@ -235,11 +235,11 @@ def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
     assert s2.status is SignalStatus.VETOED
     assert "book_halted" in (s2.reason or "")
     with pytest.raises(ValueError, match="operator"):
-        svc.reset_halt("baseline", "")
+        svc.reset_halt("baseline", "", now_ms=1)
     with pytest.raises(ValueError, match="unknown book"):
-        svc.reset_halt("nope", "owner")
+        svc.reset_halt("nope", "owner", now_ms=1)
     assert svc.state is ServiceState.RUNNING
-    assert svc.reset_halt("baseline", "owner", "reviewed")
+    assert svc.reset_halt("baseline", "owner", "reviewed", now_ms=minute(7) + 5_000)
     assert baseline.halted is None
     drive(svc, bars, list(range(7, 12)))
     # the reset re-opens the book, but the daily loss limit (independent rule) still blocks
@@ -251,4 +251,7 @@ def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
     assert "book_halted" not in (s3.reason or "")
     resets = [b[0].payload for b in journal.batches() if b[0].payload["kind"] == "reset"]
     assert resets[0]["operator"] == "owner"
+    assert resets[0]["requested_at_ms"] == minute(7) + 5_000
+    reset_events = [e for b in journal.batches() for e in b if e.type == "sim_book_reset"]
+    assert reset_events[0].payload["requested_at_ms"] == minute(7) + 5_000
     assert replay(cfg, journal.batches()).ledger_hashes() == svc.ledger_hashes()

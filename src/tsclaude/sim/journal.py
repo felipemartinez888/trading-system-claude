@@ -122,9 +122,17 @@ def missing_contract_types() -> list[str]:
 
 class EventStoreJournal:
     """Journal on the hash-chained event store. Batches are consecutive events: the input entry
-    carries ``batch_size`` so a reader can regroup them without any other index."""
+    carries ``batch_size`` so a reader can regroup them without any other index.
 
-    def __init__(self, store: EventStore) -> None:
+    One store can hold several sessions: input entries carry the session id as aggregate id and a
+    journal only reads its own session. `batches` verifies the whole hash chain first and refuses
+    a broken one (`JournalError`), so a restore never builds on edited history.
+    """
+
+    def __init__(self, store: EventStore, session_id: str = SESSION_AGGREGATE_ID) -> None:
+        if not session_id:
+            raise ValueError("session_id is required")
+        self.session_id = session_id
         missing = missing_contract_types()
         if missing:
             raise JournalUnavailable(
@@ -136,6 +144,8 @@ class EventStoreJournal:
         if not batch or batch[0].type != STEP_TYPE:
             raise JournalError("a batch starts with its input entry")
         head = batch[0]
+        if head.aggregate_id != self.session_id:
+            raise JournalError(f"batch of session {head.aggregate_id!r} in {self.session_id!r}")
         first = NewEvent(
             type=EventType(head.type),
             aggregate_type=AggregateType(head.aggregate_type),
@@ -159,8 +169,15 @@ class EventStoreJournal:
             raise JournalError(f"event store append failed: {type(exc).__name__}") from exc
 
     def batches(self) -> list[Batch]:
+        report = self.store.verify()
+        if not report.ok:
+            raise JournalError(
+                f"event store hash chain is broken at seq {report.first_bad_seq}: {report.reason}"
+            )
         out: list[Batch] = []
-        heads = self.store.read(types=[EventType(STEP_TYPE)])
+        heads = self.store.read(
+            types=[EventType(STEP_TYPE)], aggregate=(AggregateType(SIM_AGGREGATE), self.session_id)
+        )
         for head in heads:
             size = int(head.payload["batch_size"])
             payload = {k: v for k, v in head.payload.items() if k != "batch_size"}

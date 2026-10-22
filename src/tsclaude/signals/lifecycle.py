@@ -12,7 +12,10 @@ EXPIRED / INVALIDATED, as append-only events; the current state is a projection.
 - **Shadow outcome.** Vetoed signals keep a hypothetical outcome: the ``shadow`` book takes every
   confirmed signal without the risk gate; when its trade for a VETOED signal closes, a
   ``SIGNAL_SHADOW_OUTCOME`` event ``{signal_id, book, outcome}`` is emitted (not a transition:
-  the status stays VETOED) and applied to the projection (`shadow_outcome`).
+  the status stays VETOED) and applied to the projection (`shadow_outcome`). If the shadow book
+  could not take the signal (symbol busy, order rejected or expired), the event carries
+  ``outcome = {"status": "not_simulated", "reason": ...}`` instead, so veto-quality statistics
+  can account for the excluded subset; simulated outcomes carry ``"status": "simulated"``.
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ class SignalState:
     reason: str | None = None
     outcome: dict[str, Any] | None = None
     shadow_outcome: dict[str, Any] | None = None
+    shadow_refusal: str | None = None  # why the shadow book did not simulate it (derived)
     history: list[tuple[str, str, int, str | None]] = field(default_factory=list)
 
     @property
@@ -85,7 +89,8 @@ class SignalState:
 
 
 def outcome_of(trade_payload: Mapping[str, Any]) -> dict[str, Any]:
-    out = {k: trade_payload.get(k) for k in OUTCOME_FIELDS}
+    out: dict[str, Any] = {"status": "simulated"}
+    out.update({k: trade_payload.get(k) for k in OUTCOME_FIELDS})
     out["resolved_from_backfill"] = bool(trade_payload.get("resolved_from_backfill", False))
     return out
 
@@ -260,8 +265,8 @@ class SignalLifecycle:
         for e in sim_events:
             kind, ts, p = e["type"], int(e["ts_ms"]), e["payload"]
             book = p.get("book")
-            if book == SHADOW_BOOK and kind == "sim_position_closed":
-                shadow = self.shadow_event(str(p.get("request_id")), ts, outcome_of(p))
+            if book == SHADOW_BOOK:
+                shadow = self._from_shadow(kind, ts, p)
                 if shadow is not None:
                     out.append(shadow)
                 continue
@@ -298,7 +303,33 @@ class SignalLifecycle:
                 )
             if event is not None:
                 out.append(event)
+                state = self._signals[sid]
+                if state.status is SignalStatus.VETOED and state.shadow_refusal is not None:
+                    late = self.shadow_event(sid, ts, _not_simulated(state.shadow_refusal))
+                    if late is not None:
+                        out.append(late)
         return out
+
+    def _from_shadow(self, kind: str, ts: int, p: Mapping[str, Any]) -> NewEvent | None:
+        if kind == "sim_position_closed":
+            return self.shadow_event(str(p.get("request_id")), ts, outcome_of(p))
+        refused = kind in ("sim_request_rejected", "sim_order_rejected", "sim_order_expired") or (
+            kind == "sim_order_cancelled" and str(p.get("reason")) != "exit_signal"
+        )
+        if not refused:
+            return None
+        sid = _signal_of(kind, p)
+        state = None if sid is None else self._signals.get(sid)
+        if state is None or state.shadow_outcome is not None:
+            return None
+        state.shadow_refusal = f"{kind}:{p.get('reason')}"
+        if state.status is SignalStatus.VETOED and sid is not None:
+            return self.shadow_event(sid, ts, _not_simulated(state.shadow_refusal))
+        return None  # emitted when (if) the baseline vetoes it
+
+
+def _not_simulated(reason: str) -> dict[str, Any]:
+    return {"status": "not_simulated", "reason": reason}
 
 
 def _entry_signal(order_id: object, book: str) -> str | None:

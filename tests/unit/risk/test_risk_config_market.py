@@ -25,7 +25,7 @@ KEY = (Market.SPOT, "BTCUSDT")
 def test_repository_config_matches_documented_defaults() -> None:
     cfg = load_risk_config(REPO / "configs" / "risk.yaml")
     assert cfg == RiskConfig()
-    assert cfg.version == "risk-config-v1"
+    assert cfg.version == "risk-config-v2"
     assert cfg.max_positions == 5
     assert cfg.drawdown_kill_switch == D("0.10")
     assert len(cfg.config_hash) == 64
@@ -194,3 +194,33 @@ def test_replay_mismatch_and_provider_errors_block() -> None:
     views = RecordedViews([rec])
     with pytest.raises(ReplayMismatch):
         views(check())
+
+
+def test_lookback_gaps_count_missing_bars_inside_the_window_only() -> None:
+    tr = MarketStateTracker(lookback_minutes=10)
+    tr.observe_snapshot(snapshot(minute(9)))
+    for i in (0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):  # minutes 3-4 missing
+        tr.observe_bar(bar(i, 100, 101, 99, 100))
+    tr.observe_snapshot(snapshot(minute(15)))
+    inside = tr.view_at(minute(10) - 1, [KEY])  # window (minute 0, minute 10]: 2 missing
+    assert inside is not None
+    assert inside.symbols[KEY].lookback_gap_minutes == 2
+    later = tr.view_at(minute(16) - 1, [KEY])  # window starts after the gap
+    assert later is not None
+    assert later.symbols[KEY].lookback_gap_minutes == 0
+
+
+def test_clock_offset_older_than_max_age_counts_as_unknown() -> None:
+    now = minute(100)
+    tr = MarketStateTracker(max_offset_age_ms=900_000)
+    snap = snapshot(now)
+    from tsclaude.contracts.provenance import Provenance, Sourced
+
+    for age, known in ((900_000, True), (900_001, False)):
+        off = Sourced[int](value=15, provenance=Provenance.LIVE, as_of_ms=now - age)
+        tr = MarketStateTracker(max_offset_age_ms=900_000)
+        tr.observe_snapshot(snap.model_copy(update={"clock_offset_ms": off}))
+        v = tr.view_at(now, [KEY])
+        assert v is not None
+        assert (v.clock_offset_ms is not None) is known
+        assert v.clock_offset_as_of_ms == now - age

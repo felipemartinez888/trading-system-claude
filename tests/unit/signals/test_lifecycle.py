@@ -190,3 +190,37 @@ def test_shadow_outcome_only_for_vetoed_signals_and_rebuilds() -> None:
         SignalLifecycle.rebuild(
             [events[0], ev.model_copy(update={"payload": {**ev.payload, "signal_id": sid(1)}})]
         )
+
+
+def test_shadow_refusal_yields_not_simulated_outcome_now_or_at_veto() -> None:
+    lc = SignalLifecycle()
+    lc.create(record(1, 1), 0)
+    lc.create(record(2, 1), 0)
+    e = lambda kind, **p: {"type": kind, "ts_ms": 7, "payload": p}  # noqa: E731
+    out = lc.transitions_from_sim(
+        [
+            # signal 1: baseline vetoes, then the shadow refuses (symbol busy) -> event at once
+            e("sim_request_rejected", book="baseline", request_id=sid(1), reason="risk_blocked:x"),
+            e("sim_request_rejected", book="shadow", request_id=sid(1), reason="symbol_busy"),
+            # signal 2: shadow refuses first (still CONFIRMED in baseline) -> event at the veto
+            e("sim_request_rejected", book="shadow", request_id=sid(2), reason="symbol_busy"),
+            e(
+                "sim_order_rejected",
+                book="baseline",
+                order_id=f"baseline:{sid(2)}:entry",
+                reason="risk_blocked:y",
+            ),
+        ]
+    )
+    kinds = [(ev.aggregate_id, str(ev.type)) for ev in out]
+    assert kinds == [
+        (sid(1), "signal_transitioned"),
+        (sid(1), "signal_shadow_outcome"),
+        (sid(2), "signal_transitioned"),
+        (sid(2), "signal_shadow_outcome"),
+    ]
+    for i in (1, 2):
+        assert lc.shadow_outcome(sid(i)) == {
+            "status": "not_simulated",
+            "reason": "sim_request_rejected:symbol_busy",
+        }

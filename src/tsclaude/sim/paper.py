@@ -13,10 +13,20 @@
 
 Every state change goes into the journal as one atomic **batch** per step (`sim.journal`): the input
 entry (bar or funding or manual reset, plus the intents and risk views consumed) followed by every
-simulator and lifecycle event the step produced. `replay` re-runs the inputs of a journal through
-a `HistoricalClock` and verifies that each batch is reproduced exactly;
+simulator and lifecycle event the step produced. `replay` deterministically recomputes a session
+from its journaled inputs (bars, strategy intents, risk market views, release times, funding,
+resets) through a `HistoricalClock` and verifies that each batch is reproduced exactly. This
+is replay parity in the sense of SIMULATION §1 for a *recorded* session: it does not re-run the
+strategy and does not compare against bars from the lake;
 `PaperTradingService.restore` uses it on restart, then resolves the downtime over backfilled
 bars (no entries for unobserved minutes) and resumes live.
+
+Sessions and configuration changes: a journal belongs to one session (`session_id`, the aggregate
+id of its input entries) and records the configuration hash in its first batch. A restore with a
+different `risk.yaml` fails (`RestoreError`: recorded decisions would be recomputed differently).
+To trade under a new configuration, start a **new session** in the same store --
+``PaperTradingService.open(config, store, session_id="paper-<date>")`` -- after flattening or
+abandoning the old one; the old session stays in the hash chain, read-only.
 
 Fail closed: a step that raises, or a journal append that fails, puts the service in ``FAULTED``
 (no further bars processed, so no entries) until it is restored from its journal.
@@ -289,8 +299,10 @@ class PaperSession:
         provider: ViewProvider,
         clock: Clock,
         strategy: LiveStrategy | None = None,
+        session_id: str = SESSION_AGGREGATE_ID,
     ) -> None:
         self.config = config
+        self.session_id = session_id
         self.engine = RiskEngine(config.risk, config.cost_model)
         self.hook = EngineRiskHook(self.engine, provider)
         books = [
@@ -363,7 +375,7 @@ class PaperSession:
             "risk": self.hook.drain(),
         }
         self.source.begin(None)
-        batch: Batch = [JournalEntry(STEP_TYPE, SIM_AGGREGATE, SESSION_AGGREGATE_ID, ts_ms, head)]
+        batch: Batch = [JournalEntry(STEP_TYPE, SIM_AGGREGATE, self.session_id, ts_ms, head)]
         for e in new:
             batch.append(
                 JournalEntry(
@@ -434,11 +446,21 @@ class PaperSession:
         }
         return self._collect(head, ts_ms)
 
-    def reset_halt(self, book: str, ts_ms: int, operator: str, note: str = "") -> Batch:
+    def reset_halt(
+        self,
+        book: str,
+        ts_ms: int,
+        operator: str,
+        note: str = "",
+        requested_at_ms: int | None = None,
+    ) -> Batch:
+        """`ts_ms`: simulator time of the reset (last processed close); `requested_at_ms`: the
+        operator's wall-clock time, recorded in the input entry and the reset event."""
         self.source.begin(None)
-        self.sim.reset_halt(book, ts_ms, operator, note)
+        self.sim.reset_halt(book, ts_ms, operator, note, requested_at_ms)
         head = {"kind": "reset", "book": book, "reset_ts_ms": ts_ms, "operator": operator}
         head["note"] = note
+        head["requested_at_ms"] = requested_at_ms
         return self._collect(head, ts_ms)
 
     # ------------------------------------------------------------ results
@@ -462,15 +484,20 @@ def replay(
     *,
     mode: RunMode = RunMode.REPLAY,
     verify: bool = True,
+    session_id: str | None = None,
 ) -> PaperSession:
-    """Re-run a journal's inputs through a `HistoricalClock`; verify every batch is reproduced.
+    """Deterministic recomputation of a session from its journaled inputs, through a
+    `HistoricalClock`; every batch must be reproduced exactly.
 
-    Strategy intents and risk market views come from the journal; everything else -- fills,
-    ledger, risk decisions, lifecycle -- is recomputed.
+    Bars, strategy intents, risk market views, release times, funding and resets come from the
+    journal; fills, ledger, risk decisions and lifecycle are recomputed. The strategy itself is
+    not re-run and the bars are not re-read from the lake.
     """
     views = RecordedViews()
     clock = HistoricalClock(_bars_of(batches), mode=mode)
-    session = PaperSession(config, views, clock)
+    if session_id is None:
+        session_id = batches[0][0].aggregate_id if batches else SESSION_AGGREGATE_ID
+    session = PaperSession(config, views, clock, session_id=session_id)
     bars = iter(clock)
     for i, batch in enumerate(batches):
         head = batch[0].payload
@@ -497,7 +524,11 @@ def replay(
             )
         elif kind == "reset":
             out = session.reset_halt(
-                str(head["book"]), int(head["reset_ts_ms"]), str(head["operator"]), head["note"]
+                str(head["book"]),
+                int(head["reset_ts_ms"]),
+                str(head["operator"]),
+                head["note"],
+                head.get("requested_at_ms"),
             )
         else:
             raise RestoreError(f"batch {i}: unknown input kind {kind!r}")
@@ -531,6 +562,7 @@ class PaperTradingService:
         observed_sources: frozenset[BarSource] = frozenset({BarSource.WS_LIVE}),
         session: PaperSession | None = None,
         start_ms: int | None = None,
+        session_id: str = SESSION_AGGREGATE_ID,
     ) -> None:
         self.config = config
         self.journal = journal
@@ -538,13 +570,15 @@ class PaperTradingService:
         self.tracker = tracker or MarketStateTracker(
             median_window_ms=config.risk.spread.median_window_ms,
             min_samples=config.risk.spread.min_samples,
+            max_offset_age_ms=config.risk.clock_offset_max_age_ms,
+            lookback_minutes=config.risk.data_freshness.lookback_minutes,
         )
         self.clock = LiveClock(
             [s.key for s in config.instruments], settle_ms=settle_ms, start_ms=start_ms
         )
         provider = tracker_provider(self.tracker)
         if session is None:
-            session = PaperSession(config, provider, self.clock, strategy)
+            session = PaperSession(config, provider, self.clock, strategy, session_id)
         else:
             session.go_live(provider, self.clock, strategy)
         self.session = session
@@ -554,9 +588,17 @@ class PaperTradingService:
         self._check_continuity = False
 
     @classmethod
-    def open(cls, config: PaperConfig, store: EventStore, **kw: Any) -> PaperTradingService:
-        """The production path: journal on the hash-chained event store, restored from it."""
-        return cls.restore(config, EventStoreJournal(store), **kw)
+    def open(
+        cls,
+        config: PaperConfig,
+        store: EventStore,
+        session_id: str = SESSION_AGGREGATE_ID,
+        **kw: Any,
+    ) -> PaperTradingService:
+        """The production path: journal on the hash-chained event store, restored from it after
+        verifying the whole chain (a broken chain raises `JournalError`: fail closed)."""
+        journal = EventStoreJournal(store, session_id)
+        return cls.restore(config, journal, session_id=session_id, **kw)
 
     def latency_ms(self) -> list[int]:
         """Observed release latencies (bar close -> processed) of this session's live steps."""
@@ -575,14 +617,15 @@ class PaperTradingService:
     def restore(cls, config: PaperConfig, journal: Journal, **kw: Any) -> PaperTradingService:
         """Rebuild the session from its journal (verified replay), ready to resume."""
         batches = journal.batches()
-        session = replay(config, batches, mode=RunMode.LIVE)
+        session_id = str(kw.pop("session_id", None) or SESSION_AGGREGATE_ID)
+        session = replay(config, batches, mode=RunMode.LIVE, session_id=session_id)
         last = session.last_minute_ms
         done = {
             (Market(b[0].payload["bar"]["market"]), str(b[0].payload["bar"]["symbol"]))
             for b in batches
             if b[0].payload["kind"] == "bar" and b[0].payload["bar"]["open_time_ms"] == last
         }
-        svc = cls(config, journal, session=session, start_ms=last, **kw)
+        svc = cls(config, journal, session=session, start_ms=last, session_id=session_id, **kw)
         svc._check_continuity = last is not None
         if last is not None:
             svc.clock = LiveClock(
@@ -689,8 +732,9 @@ class PaperTradingService:
         (see `Book.apply_funding`) are skipped and listed in the journal entry."""
         return self._process(lambda: self.session.funding(market, symbol, ts_ms, rate, mark_price))
 
-    def reset_halt(self, book: str, operator: str, note: str = "") -> bool:
-        """Manual kill-switch reset, stamped at the last processed close.
+    def reset_halt(self, book: str, operator: str, note: str = "", *, now_ms: int) -> bool:
+        """Manual kill-switch reset, stamped at the last processed close; `now_ms` (the operator's
+        wall-clock time) is recorded in the journal and in the reset event.
 
         Operator errors (unknown book, book not halted, no operator name) raise `ValueError`
         without touching the session; only a failure while applying the reset faults it.
@@ -704,7 +748,7 @@ class PaperTradingService:
             raise ValueError("a manual reset needs the operator's name")
         last = self.session.last_minute_ms
         ts = 0 if last is None else last + MS_PER_MINUTE - 1
-        return self._process(lambda: self.session.reset_halt(book, ts, operator, note))
+        return self._process(lambda: self.session.reset_halt(book, ts, operator, note, now_ms))
 
     # ------------------------------------------------------------ views
     def ledger_hashes(self) -> dict[str, str]:

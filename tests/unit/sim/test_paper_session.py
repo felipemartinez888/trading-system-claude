@@ -128,8 +128,10 @@ def test_every_state_change_is_journaled_in_order() -> None:
 
 
 def test_replay_parity_identical_ledger_hash_and_fingerprint() -> None:
-    """SIMULATION §1/§9: a recorded live session replayed through `HistoricalClock` reproduces the
-    paper ledger byte for byte (every batch is verified, then the hashes are compared)."""
+    """SIMULATION §1/§9, in the sense used here: deterministic recomputation of a recorded live
+    session from its journaled inputs (bars, intents, risk views, release times) through
+    `HistoricalClock` reproduces every batch and the ledger hashes. It does not re-run the
+    strategy and does not compare against lake bars."""
     svc, journal, _ = run_live()
     replayed = replay(config(), journal.batches())
     assert isinstance(replayed.sim.clock, HistoricalClock)
@@ -153,13 +155,15 @@ def test_replay_parity_hashes_are_pinned() -> None:
 
 # Recorded on Linux (sandbox). If an intentional change to the simulator, risk engine, lifecycle or
 # journal format alters these, update them in the same commit and say why. Journal hash updated
-# for the release-time fields and SIGNAL_SHADOW_OUTCOME events (ledger hashes unchanged).
+# for the release-time fields and SIGNAL_SHADOW_OUTCOME events (ledger hashes unchanged). All
+# updated for the causality-audit fixes: entries execute at the first open after the bar's
+# release (one minute later in this scenario), risk-config-v2, offset/lookback/spread-age views.
 PINNED_LEDGER_HASHES = {
-    "baseline": "514dcc33727311849e90846205afc4c237823f5f8f2b3aa3354b05fc70fc2be5",
-    "shadow": "6673efd89691c46cc42d1bd4988654e4257e5846d7cee3ea8445647c60ac95ce",
-    "benchmark": "1fd2d1d95519a831947e62257082b8b9ca084f20c9aab832451dcba4271730d9",
+    "baseline": "46725adff264a66fbf84334cdcf1afa52ebfc9488202bd397c7fda0b4ba0d70d",
+    "shadow": "7195967d903437ddd34f2ecf576152cba2c0ace55dbec109ec1f1e1d2b6f61da",
+    "benchmark": "fc0652f86f266b154fa038a1ae9fd2206d75bcd449489a060d9f6f6fe80ea608",
 }
-PINNED_JOURNAL_HASH = "bbbb466a973d4d60816b51de181652829572c2a957ff2516b8df9df727ab69bc"
+PINNED_JOURNAL_HASH = "8c325e9a1223d36a839b1e4f50d5c061e305a6718ac670f36a79d02478ae1ab2"
 
 
 def _replace_entry(batches: list, b: int, e: int, payload: dict) -> None:
@@ -169,8 +173,9 @@ def _replace_entry(batches: list, b: int, e: int, payload: dict) -> None:
 
 def test_tampered_journal_fails_restore() -> None:
     """Replay verifies outputs: a changed input that alters any outcome, or a changed output, is
-    detected. (A changed input that alters nothing -- e.g. the close of a bar nobody holds -- is
-    caught by the event store's hash chain, not by replay.)"""
+    detected. A changed input that alters nothing (e.g. the close of a bar nobody holds) is not
+    detected by replay; on the production path `PaperTradingService.open` verifies the event
+    store's hash chain before restoring and refuses a broken one (audit test A6)."""
     _, journal, _ = run_live()
     batches = journal.batches()
     # input: BTC minute 5 no longer reaches the take-profit (batch 10 = minute 5, BTC first)

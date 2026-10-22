@@ -15,7 +15,7 @@ always in minute order. A bar for an already released minute is **late**: it is 
 minute is still open, else it is late as well.
 
 Everything released is recorded (`released`), so ``HistoricalClock(clock.released, REPLAY)``
-reproduces exactly the bar sequence the live session processed (replay parity, ADR-0005).
+reproduces exactly the bar sequence the live session processed (the bar input of a replay).
 """
 
 from __future__ import annotations

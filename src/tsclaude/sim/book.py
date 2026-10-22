@@ -858,8 +858,11 @@ class Book:
             },
         )
 
-    def reset_halt(self, ts_ms: int, operator: str, note: str = "") -> None:
-        """Manual reset of a halted book (logged). The drawdown peak restarts at the last mark."""
+    def reset_halt(
+        self, ts_ms: int, operator: str, note: str = "", requested_at_ms: int | None = None
+    ) -> None:
+        """Manual reset of a halted book (logged, with the operator's wall-clock time when
+        given). The drawdown peak restarts at the last mark."""
         if self.halted is None:
             raise ValueError(f"book {self.name} is not halted")
         if not operator:
@@ -875,6 +878,7 @@ class Book:
                 "operator": operator,
                 "note": note,
                 "peak_equity": dstr(self._peak_equity),
+                **({} if requested_at_ms is None else {"requested_at_ms": requested_at_ms}),
             },
         )
 

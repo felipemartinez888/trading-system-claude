@@ -171,6 +171,8 @@ def rule_data_freshness(
         return f"streams_unhealthy:{','.join(sym.unhealthy_streams)}"
     if sym.open_gap_minutes > f.max_open_gap_minutes:
         return f"unresolved_gap:{sym.open_gap_minutes}m"
+    if sym.lookback_gap_minutes > f.max_open_gap_minutes:
+        return f"gap_in_lookback:{sym.lookback_gap_minutes}m"
     cutoff = cutoff_ms(check.stage, check.ts_ms)
     if sym.last_bar_close_ms is None:
         return "no_closed_bar"
@@ -195,8 +197,13 @@ def rule_spread(
     check: RiskCheck, view: MarketView | None, cfg: RiskConfig, costs: CostModel
 ) -> str | None:
     sym = _symbol(check, view)
-    if sym is None or sym.spread_bps is None:
+    if sym is None or sym.spread_bps is None or sym.spread_as_of_ms is None:
         return "spread_unknown"
+    cutoff = cutoff_ms(check.stage, check.ts_ms)
+    if sym.spread_as_of_ms > cutoff:
+        return "spread_after_cutoff"
+    if cutoff - sym.spread_as_of_ms > cfg.spread.max_age_ms:
+        return f"spread_stale:{cutoff - sym.spread_as_of_ms}ms"
     limit = cfg.spread.cap_bps
     if sym.median_spread_bps is not None:
         limit = max(cfg.spread.median_multiple * sym.median_spread_bps, limit)

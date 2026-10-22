@@ -29,6 +29,7 @@ class FreshnessConfig:
     max_open_gap_minutes: int = 0
     max_view_age_ms: int = 5_000
     max_bar_age_ms: int = 120_000
+    lookback_minutes: int = 240  # missing 1m bars inside this window block the symbol
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ class SpreadConfig:
     cap_bps: Decimal = Decimal("10")
     median_window_ms: int = 3_600_000
     min_samples: int = 30
+    max_age_ms: int = 5_000  # the latest book_top sample must be this fresh at the cutoff
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +53,10 @@ class CorrelationConfig:
 
 @dataclass(frozen=True, slots=True)
 class RiskConfig:
-    version: str = "risk-config-v1"
+    version: str = "risk-config-v2"
     data_freshness: FreshnessConfig = field(default_factory=FreshnessConfig)
     clock_skew_max_ms: int = 1_000
+    clock_offset_max_age_ms: int = 900_000  # an older server-clock sample counts as unknown
     spread: SpreadConfig = field(default_factory=SpreadConfig)
     min_rr_net: Decimal = Decimal("1.5")
     require_take_profit: bool = True
@@ -73,7 +76,10 @@ class RiskConfig:
             ("max_open_gap_minutes", f.max_open_gap_minutes),
             ("max_view_age_ms", f.max_view_age_ms),
             ("max_bar_age_ms", f.max_bar_age_ms),
+            ("lookback_minutes", f.lookback_minutes),
             ("clock_skew_max_ms", self.clock_skew_max_ms),
+            ("clock_offset_max_age_ms", self.clock_offset_max_age_ms),
+            ("spread.max_age_ms", self.spread.max_age_ms),
             ("spread.median_window_ms", self.spread.median_window_ms),
             ("spread.min_samples", self.spread.min_samples),
         ):
@@ -109,13 +115,16 @@ class RiskConfig:
                 "max_open_gap_minutes": f.max_open_gap_minutes,
                 "max_view_age_ms": f.max_view_age_ms,
                 "max_bar_age_ms": f.max_bar_age_ms,
+                "lookback_minutes": f.lookback_minutes,
             },
             "clock_skew_max_ms": self.clock_skew_max_ms,
+            "clock_offset_max_age_ms": self.clock_offset_max_age_ms,
             "spread": {
                 "median_multiple": dstr(s.median_multiple),
                 "cap_bps": dstr(s.cap_bps),
                 "median_window_ms": s.median_window_ms,
                 "min_samples": s.min_samples,
+                "max_age_ms": s.max_age_ms,
             },
             "min_rr_net": dstr(self.min_rr_net),
             "require_take_profit": self.require_take_profit,
@@ -181,6 +190,7 @@ def config_from_mapping(raw: Mapping[str, Any]) -> RiskConfig:
             "version",
             "data_freshness",
             "clock_skew_max_ms",
+            "clock_offset_max_age_ms",
             "spread",
             "min_rr_net",
             "require_take_profit",
@@ -196,11 +206,19 @@ def config_from_mapping(raw: Mapping[str, Any]) -> RiskConfig:
     )
     f = _take(
         top["data_freshness"],
-        {"require_streams_healthy", "max_open_gap_minutes", "max_view_age_ms", "max_bar_age_ms"},
+        {
+            "require_streams_healthy",
+            "max_open_gap_minutes",
+            "max_view_age_ms",
+            "max_bar_age_ms",
+            "lookback_minutes",
+        },
         "data_freshness",
     )
     s = _take(
-        top["spread"], {"median_multiple", "cap_bps", "median_window_ms", "min_samples"}, "spread"
+        top["spread"],
+        {"median_multiple", "cap_bps", "median_window_ms", "min_samples", "max_age_ms"},
+        "spread",
     )
     c = _take(top["correlation"], {"max_per_cluster", "default_cluster", "clusters"}, "correlation")
     clusters = c["clusters"] or {}
@@ -217,13 +235,16 @@ def config_from_mapping(raw: Mapping[str, Any]) -> RiskConfig:
             max_open_gap_minutes=_int(f["max_open_gap_minutes"], "max_open_gap_minutes"),
             max_view_age_ms=_int(f["max_view_age_ms"], "max_view_age_ms"),
             max_bar_age_ms=_int(f["max_bar_age_ms"], "max_bar_age_ms"),
+            lookback_minutes=_int(f["lookback_minutes"], "lookback_minutes"),
         ),
         clock_skew_max_ms=_int(top["clock_skew_max_ms"], "clock_skew_max_ms"),
+        clock_offset_max_age_ms=_int(top["clock_offset_max_age_ms"], "clock_offset_max_age_ms"),
         spread=SpreadConfig(
             median_multiple=_dec(s["median_multiple"], "spread.median_multiple"),
             cap_bps=_dec(s["cap_bps"], "spread.cap_bps"),
             median_window_ms=_int(s["median_window_ms"], "spread.median_window_ms"),
             min_samples=_int(s["min_samples"], "spread.min_samples"),
+            max_age_ms=_int(s["max_age_ms"], "spread.max_age_ms"),
         ),
         min_rr_net=_dec(top["min_rr_net"], "min_rr_net"),
         require_take_profit=_bool(top["require_take_profit"], "require_take_profit"),

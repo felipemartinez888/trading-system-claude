@@ -169,6 +169,31 @@ def test_event_store_journal_rejects_bad_batches(tmp_path: Path) -> None:
         assert j.batches() == []
 
 
+def test_sessions_are_isolated_and_a_config_change_needs_a_new_session(tmp_path: Path) -> None:
+    from decimal import Decimal as D
+
+    from paper_helpers import drive
+
+    from tsclaude.risk.config import RiskConfig
+    from tsclaude.sim.paper import PaperTradingService, RestoreError
+
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1)]})
+    with EventStore(tmp_path / "state.db") as store:
+        first = PaperTradingService.open(config(), store, strategy=strat)
+        drive(first, _bars(4), list(range(4)))
+        changed = config(risk=RiskConfig(min_rr_net=D("2")))
+        with pytest.raises(RestoreError):
+            PaperTradingService.open(changed, store)
+        second = PaperTradingService.open(changed, store, session_id="paper-2")
+        assert second.session.batches == 0
+        drive(second, _bars(3), list(range(3)))
+        assert len(EventStoreJournal(store, "paper-2").batches()) == 6
+        assert len(EventStoreJournal(store).batches()) == 8
+        with pytest.raises(JournalError, match="session"):
+            EventStoreJournal(store, "other").append(EventStoreJournal(store).batches()[0])
+        assert store.verify().ok
+
+
 # ---------------------------------------------------------------- async driver
 class _FakeSubscription:
     def __init__(self, items: list[object]) -> None:
