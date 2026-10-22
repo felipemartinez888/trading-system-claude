@@ -36,6 +36,28 @@ class EventType(StrEnum):
     # research (M2+)
     HOLDOUT_UNLOCKED = "holdout_unlocked"
 
+    # simulator / paper trading (M3+)
+    PAPER_STEP = "paper_step"
+    SIGNAL_SHADOW_OUTCOME = "signal_shadow_outcome"
+    SIM_RUN_STARTED = "sim_run_started"
+    SIM_RUN_COMPLETED = "sim_run_completed"
+    SIM_BAR_GAP = "sim_bar_gap"
+    SIM_REQUEST_REJECTED = "sim_request_rejected"
+    SIM_ORDER_SUBMITTED = "sim_order_submitted"
+    SIM_ORDER_FILLED = "sim_order_filled"
+    SIM_ORDER_CANCELLED = "sim_order_cancelled"
+    SIM_ORDER_EXPIRED = "sim_order_expired"
+    SIM_ORDER_REJECTED = "sim_order_rejected"
+    SIM_POSITION_OPENED = "sim_position_opened"
+    SIM_POSITION_CLOSED = "sim_position_closed"
+    SIM_EXIT_REQUESTED = "sim_exit_requested"
+    SIM_FUNDING_APPLIED = "sim_funding_applied"
+    SIM_LEDGER_POSTED = "sim_ledger_posted"
+    SIM_SOURCE_ERROR = "sim_source_error"
+    SIM_BOOK_HALTED = "sim_book_halted"
+    SIM_BOOK_RESET = "sim_book_reset"
+    SIM_OBSERVATION_CHANGED = "sim_observation_changed"
+
 
 class AggregateType(StrEnum):
     RUNTIME = "runtime"
@@ -44,6 +66,7 @@ class AggregateType(StrEnum):
     MARKET_DATA = "market_data"
     SIGNAL = "signal"
     RESEARCH = "research"
+    SIM = "sim"
 
 
 class NewEvent(BaseModel):
