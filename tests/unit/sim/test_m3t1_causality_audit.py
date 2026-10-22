@@ -282,3 +282,31 @@ def test_restore_from_event_store_verifies_the_hash_chain(tmp_path: Path) -> Non
 
 
 __all__ = ["ETH", "BarClosed"]
+
+
+# ---------------------------------------------------------------- A4b partial backfill (re-audit)
+def test_backfill_missing_a_held_symbol_keeps_the_service_waiting() -> None:
+    """Re-audit of the A4 fix (08dfa4d): continuity after a restore is checked per *minute*, not
+    per instrument. If the backfill covers ETH but not BTC (e.g. REST fails for one symbol), the
+    service goes RUNNING and the BTC position whose stop was hit at minute 7 during the downtime
+    stays OPEN (only `spans_gap`-flagged). Every instrument with a position or resting entry
+    must be contiguous up to the first live minute before live processing resumes."""
+    from tsclaude.contracts.market import BarSource
+
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1)]})
+    svc, journal = new_service(strat)
+    rows = {7: (995, 996, 985, 986), 8: (986, 990, 984, 988), 9: (990, 1001, 989, 1000)}
+    bars = two_symbol_bars(14, rows)
+    drive(svc, bars, list(range(6)))
+    restored = PaperTradingService.restore(config(), journal, strategy=strat)
+    drive(restored, bars, [10])
+    assert restored.state is ServiceState.AWAITING_BACKFILL
+    backfill = two_symbol_bars(14, rows, source=BarSource.REST_BACKFILL)
+    eth_only = [b for b in backfill[ETH] if minute(6) <= b.open_time_ms <= minute(9)]
+    restored.resume_after_downtime(eth_only, now_ms=_close(10) + 2_000)
+    drive(restored, bars, [11, 12, 13])
+    status = restored.session.lifecycle.status(sid(1))
+    assert not (restored.state is ServiceState.RUNNING and status is SignalStatus.OPEN), (
+        "BTC backfill missing: service RUNNING and the BTC position stopped out at minute 7 "
+        "during the downtime is still OPEN"
+    )
