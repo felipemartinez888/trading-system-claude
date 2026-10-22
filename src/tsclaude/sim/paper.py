@@ -390,7 +390,7 @@ class PaperSession:
         """`released_at_ms`: wall time the live clock released the bar (None if unknown); with
         the bar close it gives the decision latency, journaled as ``release_latency_ms``."""
         self.source.begin(recorded, recorded_errors)
-        self.sim.step(bar, observed=observed)
+        self.sim.step(bar, observed=observed, not_before_ms=released_at_ms)
         extra: list[NewEvent] = []
         if not observed:  # WATCH signals whose window passed while we were not watching
             extra = self.lifecycle.expire_due(
@@ -511,6 +511,9 @@ def replay(
 # ---------------------------------------------------------------- the facade
 class ServiceState(StrEnum):
     RUNNING = "RUNNING"
+    #: restored, and the first live bar leaves a gap after the journal: live bars are buffered,
+    #: not processed, until `resume_after_downtime` has resolved the gap (SIMULATION §7)
+    AWAITING_BACKFILL = "AWAITING_BACKFILL"
     FAULTED = "FAULTED"  # a step or a journal write failed: nothing is processed until restore
 
 
@@ -547,6 +550,8 @@ class PaperTradingService:
         self.session = session
         self.state = ServiceState.RUNNING
         self.fault: str | None = None
+        #: set by `restore`: live bars must continue the journal without a gap
+        self._check_continuity = False
 
     @classmethod
     def open(cls, config: PaperConfig, store: EventStore, **kw: Any) -> PaperTradingService:
@@ -578,6 +583,7 @@ class PaperTradingService:
             if b[0].payload["kind"] == "bar" and b[0].payload["bar"]["open_time_ms"] == last
         }
         svc = cls(config, journal, session=session, start_ms=last, **kw)
+        svc._check_continuity = last is not None
         if last is not None:
             svc.clock = LiveClock(
                 [s.key for s in config.instruments],
@@ -625,6 +631,8 @@ class PaperTradingService:
         """Release and process every bar whose minute is complete or due; returns the count."""
         if self.state is ServiceState.FAULTED:
             return 0
+        if not self._contiguous():
+            return 0
         done = 0
         for bar in self.clock.release(now_ms):
             step = partial(
@@ -634,6 +642,22 @@ class PaperTradingService:
                 break
             done += 1
         return done
+
+    def _contiguous(self) -> bool:
+        """After a restore: may live bars be processed (no unresolved gap after the journal)?"""
+        if not self._check_continuity:
+            return True
+        first = self.clock.earliest_buffered()
+        if first is None:
+            return False  # nothing to process yet; decide when the first live bar is there
+        last = self.session.last_minute_ms
+        if last is not None and first > last + MS_PER_MINUTE:
+            self.state = ServiceState.AWAITING_BACKFILL
+            return False
+        self._check_continuity = False
+        if self.state is ServiceState.AWAITING_BACKFILL:
+            self.state = ServiceState.RUNNING
+        return True
 
     def resume_after_downtime(self, bars: Sequence[Bar], now_ms: int | None = None) -> int:
         """Resolve open positions over backfilled 1m bars of the downtime (SIMULATION §7).
@@ -649,6 +673,7 @@ class PaperTradingService:
         )
         done = 0
         for bar in todo:
+            self.tracker.observe_bar(bar)  # backfilled bars are data for the lookback checks
             step = partial(self.session.step_bar, bar, observed=False, released_at_ms=now_ms)
             if not self._process(step):
                 break
@@ -711,7 +736,7 @@ class PaperTradingService:
         poll_s: float = 1.0,
     ) -> None:
         """Consume a market-data `Subscription` until `stop` is set (or the service faults)."""
-        while not stop.is_set() and self.state is ServiceState.RUNNING:
+        while not stop.is_set() and self.state is not ServiceState.FAULTED:
             update = await subscription.get(timeout=poll_s)
             if update is not None:
                 self.on_update(update)

@@ -77,7 +77,12 @@ def test_live_entry_never_executes_before_the_decision_was_released() -> None:
     ]
     assert fills, "the entry did not fill at all"
     pos = svc.session.sim.books["baseline"]
-    trades_and_open = [t.entry_bar_open_ms for t in pos.trades] or [minute(2)]
+    # M3-T1 fix note: the original fallback `or [minute(2)]` hard-coded the pre-fix fill time
+    # for a position that is still open (flat bars never reach its stop/TP), which no correct
+    # fix can satisfy; it now uses the entry fill's own bar (stronger: the real execution time).
+    trades_and_open = [t.entry_bar_open_ms for t in pos.trades] or [
+        int(f.payload["bar_open_ms"]) for f in fills
+    ]
     assert min(trades_and_open) >= released, (
         f"entry executed at bar open {min(trades_and_open)} but the decision was only released "
         f"at {released} (release latency {decision['release_latency_ms']} ms)"
@@ -185,14 +190,33 @@ def test_live_bars_after_restore_are_refused_until_the_downtime_is_resolved() ->
     assert svc.session.lifecycle.status(sid(1)) is SignalStatus.OPEN
     restored = PaperTradingService.restore(config(), journal, strategy=strat)
     calls = len(strat.calls)
+    batches = restored.session.batches
     drive(restored, bars, list(range(10, 14)))  # no resume_after_downtime(...)
     entered = restored.session.lifecycle.status(sid(2)) is SignalStatus.OPEN
-    survived = restored.session.lifecycle.status(sid(1)) is SignalStatus.OPEN
-    assert not (len(strat.calls) > calls or entered or survived), (
-        f"live processing resumed over an unresolved 4-minute downtime: strategy calls "
-        f"+{len(strat.calls) - calls}, new entry={entered}, stopped-out position still open="
-        f"{survived}"
-    )
+    # M3-T1 fix note: the original term `status(sid(1)) is OPEN` cannot be False under any
+    # refuse/fault fix (refusing leaves the unresolved position OPEN, as it must be). It now
+    # counts only if live bars were processed past the gap; resolution is asserted below.
+    processed = restored.session.batches > batches
+    survived = processed and restored.session.lifecycle.status(sid(1)) is SignalStatus.OPEN
+    assert len(strat.calls) == calls, "strategy called over an unresolved downtime"
+    assert not entered, "new entry over an unresolved downtime"
+    assert not processed, "live bars processed over an unresolved downtime"
+    assert not survived
+    assert restored.state is ServiceState.AWAITING_BACKFILL
+    # resolving the downtime with backfilled bars books the stop, then the buffered live bars run
+    from tsclaude.contracts.market import BarSource
+
+    backfill = two_symbol_bars(14, rows, source=BarSource.REST_BACKFILL)
+    down = [b for seq in backfill.values() for b in seq if minute(6) <= b.open_time_ms <= minute(9)]
+    restored.resume_after_downtime(down, now_ms=_close(13) + 2_000)
+    s1 = restored.session.lifecycle.get(sid(1))
+    assert s1 is not None
+    assert s1.status is SignalStatus.CLOSED
+    assert s1.outcome is not None
+    assert s1.outcome["resolved_from_backfill"] is True
+    restored.poll(_close(13) + 3_000)
+    assert restored.state is ServiceState.RUNNING
+    assert (minute(11), "ETHUSDT") in strat.calls
 
 
 # ---------------------------------------------------------------- A5 shadow outcome coverage

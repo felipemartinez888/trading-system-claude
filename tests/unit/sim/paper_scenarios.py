@@ -53,7 +53,7 @@ def random_script(
         for key in SYMBOLS:
             r = rng.random()
             close = float(bars[key][i].close)
-            if r < 0.12:
+            if r < 0.18:
                 count += 1
                 sign = 1
                 risk = rng.choice([3.0, 6.0, 12.0])
@@ -78,12 +78,12 @@ def random_script(
                     tp=round(anchor + sign * risk * rng.choice([1.0, 2.5, 4.0]), 1),
                     kind=kind,
                     price=price,
-                    valid_bars=rng.randint(1, 6),
+                    valid_bars=rng.randint(2, 7),
                 )
                 script.setdefault((minute(i), key[1]), []).append(rec)
                 if stage is SignalStatus.WATCH:
                     watches.append((sid(count), i, key[1]))
-            elif r < 0.16 and count:
+            elif r < 0.22 and count:
                 target = sid(rng.randint(1, count))
                 script.setdefault((minute(i), key[1]), []).append(Invalidate(target))
         for wid, at, symbol in list(watches):

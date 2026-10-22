@@ -215,7 +215,14 @@ class Simulator:
             book.mark(close_ms)
         self._minute = None
 
-    def step(self, bar: Bar, *, observed: bool = True) -> None:
+    def step(self, bar: Bar, *, observed: bool = True, not_before_ms: int | None = None) -> None:
+        """Process one closed 1m bar.
+
+        `not_before_ms` (live sessions): the wall time the decision on this bar actually became
+        possible (the bar's release). Requests from this bar then execute no earlier than the first
+        1m open at or after it, on top of `decision_latency_ms` -- a live decision never fills at
+        a price that existed before it was made. Journaled, so replays are deterministic.
+        """
         if self._finished:
             raise ClockError("simulator already finished")
         if bar.interval is not Interval.M1:
@@ -267,6 +274,8 @@ class Simulator:
             requests = []
         decision = bar.close_time_ms
         earliest = earliest_execution_ms(decision, self.decision_latency_ms)
+        if not_before_ms is not None:
+            earliest = max(earliest, -(-not_before_ms // MS_PER_MINUTE) * MS_PER_MINUTE)
         for req in requests:
             self._route(req, decision, earliest)
         self._drain_books()

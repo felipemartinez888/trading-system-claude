@@ -20,13 +20,21 @@ def test_random_sessions_replay_identically(seed: int) -> None:
 def test_random_sessions_exercise_the_lifecycle() -> None:
     """The generator is not vacuous: across seeds every terminal path occurs."""
     seen: set[str] = set()
-    trades = 0
+    trades = entries = 0
     for seed in range(12):
         svc, _, _ = run_random_session(seed)
         seen |= {str(s.status) for s in svc.session.lifecycle.signals()}
         trades += len(svc.session.sim.books["baseline"].trades)
-    assert {"CLOSED", "VETOED", "EXPIRED", "INVALIDATED"} <= seen
-    assert trades >= 10
+        entries += sum(
+            1
+            for e in svc.session.sim.events
+            if e["type"] == "sim_order_filled"
+            and e["payload"]["book"] == "baseline"
+            and e["payload"]["role"] == "entry"
+        )
+    assert {"CLOSED", "VETOED", "EXPIRED", "INVALIDATED", "OPEN"} <= seen
+    assert entries >= 15
+    assert trades >= 5
 
 
 @pytest.mark.parametrize(("seed", "fail_batch"), [(0, 5), (1, 17), (2, 40), (3, 61), (4, 77)])

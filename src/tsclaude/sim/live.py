@@ -118,6 +118,10 @@ class LiveClock:
         slot[key] = bar
         return "buffered"
 
+    def earliest_buffered(self) -> int | None:
+        """Open time of the earliest buffered (not yet released) minute, if any."""
+        return min(self._buffer) if self._buffer else None
+
     def skip_to(self, minute_ms: int) -> None:
         """Start (or continue) at `minute_ms`: earlier minutes were handled elsewhere (restart:
         resolved over backfilled bars). Buffered bars before it become late."""

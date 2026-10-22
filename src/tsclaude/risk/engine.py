@@ -281,8 +281,12 @@ def rule_daily_loss(
     sod = check.start_of_day_equity
     if sod is None or sod <= 0:
         return "start_of_day_equity_unknown"
+    # Latched for the UTC day: the worst equity of the day so far, not only the current one.
+    worst = (
+        check.equity if check.day_low_equity is None else min(check.equity, check.day_low_equity)
+    )
     with localcontext(SIM_CONTEXT):
-        change = q8((check.equity - sod) / sod)
+        change = q8((worst - sod) / sod)
     if change <= -cfg.daily_loss_limit:
         return f"daily_loss:{dstr(change)}<=-{dstr(cfg.daily_loss_limit)}"
     return None

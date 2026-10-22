@@ -218,8 +218,8 @@ def test_kill_switch_in_session_reset_by_operator_and_replayed() -> None:
         }
     )
     svc, journal = new_service(strat, cfg=cfg)
-    crash = {i: (870, 871, 869, 870) for i in range(3, 12)}
-    crash[3] = (880, 881, 869, 870)
+    crash = {i: (870, 871, 869, 870) for i in range(4, 12)}
+    crash[4] = (880, 881, 869, 870)  # the entry (released after minute 1) fills at minute 3
     bars = two_symbol_bars(12, crash)
     with pytest.raises(ValueError, match="not halted"):
         svc.reset_halt("baseline", "owner")

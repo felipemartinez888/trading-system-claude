@@ -152,7 +152,9 @@ class RiskCheck:
     minute (processed earlier in the same minute): their slot and exposure are freed only after the
     execution time (audit R2). ``open_positions == len(positions)``.
     ``start_of_day_equity`` is the equity at the last 1m mark before the UTC day of ``ts_ms`` (or
-    the starting equity on the book's first day); ``peak_equity`` the running peak of the marks.
+    the starting equity on the book's first day); ``peak_equity`` the running peak of the marks;
+    ``day_low_equity`` the lowest equity of the UTC day of ``ts_ms`` so far (marks of that day and
+    the current equity), so a daily-loss breach stays in force for the rest of the day.
     """
 
     stage: str  # "submit" or "fill"
@@ -168,6 +170,7 @@ class RiskCheck:
     earliest_exec_ms: int | None = None
     risk_per_trade: Decimal | None = None
     max_notional_fraction: Decimal | None = None
+    day_low_equity: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,6 +459,7 @@ class Book:
         self._peak_equity = self.starting_equity  # running peak of the marks (drawdown basis)
         self._mark_day: int | None = None  # UTC day index of the latest mark
         self._sod_equity = self.starting_equity  # equity at the last mark before `_mark_day`
+        self._day_low = self.starting_equity  # lowest mark of `_mark_day` (daily-loss latch)
 
     # ------------------------------------------------------------ events
     def _emit(self, kind: SimEventType, ts_ms: int, payload: Payload) -> None:
@@ -691,6 +695,7 @@ class Book:
             earliest_exec_ms=earliest_exec_ms,
             risk_per_trade=self.config.risk_per_trade,
             max_notional_fraction=self.config.max_notional_fraction,
+            day_low_equity=min(self.day_low_equity(ts), equity),
         )
 
     def _risk_allows(
@@ -779,7 +784,9 @@ class Book:
         day = ts_ms // MS_PER_DAY
         if day != self._mark_day:
             self._sod_equity = self._equity_at_mark  # last mark of the previous day (or start)
+            self._day_low = equity
             self._mark_day = day
+        self._day_low = min(self._day_low, equity)
         self.equity_curve.append(EquityPoint(ts_ms, equity))
         self._equity_at_mark = equity
         self._cash_at_mark = self.cash
@@ -808,6 +815,13 @@ class Book:
         if day == self._mark_day:
             return self._sod_equity
         return self._equity_at_mark  # no mark yet on this day: the latest mark is the day start
+
+    def day_low_equity(self, ts_ms: int) -> Decimal:
+        """Lowest marked equity of the UTC day containing `ts_ms` (the start-of-day equity on a
+        day without marks yet)."""
+        if self._mark_day is not None and ts_ms // MS_PER_DAY == self._mark_day:
+            return self._day_low
+        return self.start_of_day_equity(ts_ms)
 
     @property
     def peak_equity(self) -> Decimal:
