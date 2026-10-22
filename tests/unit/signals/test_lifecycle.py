@@ -156,13 +156,15 @@ def test_sim_event_mapping_and_shadow_outcome() -> None:
             e("sim_order_filled", book="shadow", order_id=f"shadow:{sid(3)}:entry", role="entry"),
         ]
     )
-    assert [(ev.payload["signal_id"], ev.payload["to"]) for ev in out] == [
+    assert [(ev.payload["signal_id"], ev.payload.get("to", str(ev.type))) for ev in out] == [
         (sid(1), "OPEN"),
         (sid(1), "CLOSED"),
         (sid(2), "VETOED"),
         (sid(3), "EXPIRED"),
         (sid(4), "VETOED"),
+        (sid(2), "signal_shadow_outcome"),  # vetoed signal: hypothetical outcome as an event
     ]
+    assert lc.status(sid(2)) is S.VETOED  # not a transition
     s1 = lc.get(sid(1))
     assert s1 is not None
     assert s1.outcome is not None
@@ -171,3 +173,20 @@ def test_sim_event_mapping_and_shadow_outcome() -> None:
     shadow = lc.shadow_outcome(sid(2))
     assert shadow is not None
     assert shadow["exit_reason"] == "take_profit"
+
+
+def test_shadow_outcome_only_for_vetoed_signals_and_rebuilds() -> None:
+    lc = SignalLifecycle()
+    events = [lc.create(record(1, 1), 0), lc.create(record(2, 1), 0)]
+    events.append(lc.transition(sid(2), S.VETOED, 1, "risk_blocked:x"))
+    assert lc.shadow_event(sid(1), 5, {"r": "1"}) is None  # CONFIRMED, not vetoed
+    ev = lc.shadow_event(sid(2), 5, {"r": "1"})
+    assert ev is not None
+    assert ev.type is EventType.SIGNAL_SHADOW_OUTCOME
+    assert lc.shadow_event(sid(2), 6, {"r": "2"}) is None  # only once
+    rebuilt = SignalLifecycle.rebuild([*events, ev])
+    assert rebuilt.shadow_outcome(sid(2)) == {"r": "1"}
+    with pytest.raises(LifecycleError, match="non-vetoed"):
+        SignalLifecycle.rebuild(
+            [events[0], ev.model_copy(update={"payload": {**ev.payload, "signal_id": sid(1)}})]
+        )

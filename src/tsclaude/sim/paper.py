@@ -57,12 +57,14 @@ from tsclaude.sim.journal import (
     SIM_AGGREGATE,
     STEP_TYPE,
     Batch,
+    EventStoreJournal,
     Journal,
     JournalEntry,
 )
 from tsclaude.sim.live import DEFAULT_SETTLE_MS, LiveClock
 from tsclaude.sim.money import ONE, dstr, floor_to
 from tsclaude.sim.orders import EntryRequest, ExitRequest, InstrumentSpec
+from tsclaude.store.eventstore import EventStore
 
 BASELINE = PAPER_STATUS_BOOK
 SHADOW = SHADOW_BOOK
@@ -383,7 +385,10 @@ class PaperSession:
         observed: bool,
         recorded: list[dict[str, Any]] | None = None,
         recorded_errors: Sequence[str] = (),
+        released_at_ms: int | None = None,
     ) -> Batch:
+        """`released_at_ms`: wall time the live clock released the bar (None if unknown); with
+        the bar close it gives the decision latency, journaled as ``release_latency_ms``."""
         self.source.begin(recorded, recorded_errors)
         self.sim.step(bar, observed=observed)
         extra: list[NewEvent] = []
@@ -391,7 +396,15 @@ class PaperSession:
             extra = self.lifecycle.expire_due(
                 bar.close_time_ms, market=str(bar.market), symbol=bar.symbol, downtime=True
             )
-        head = {"kind": "bar", "bar": bar.model_dump(mode="json"), "observed": observed}
+        head = {
+            "kind": "bar",
+            "bar": bar.model_dump(mode="json"),
+            "observed": observed,
+            "released_at_ms": released_at_ms,
+            "release_latency_ms": (
+                None if released_at_ms is None else released_at_ms - bar.close_time_ms
+            ),
+        }
         return self._collect(head, bar.close_time_ms, extra)
 
     def funding(
@@ -472,6 +485,7 @@ def replay(
                 observed=bool(head["observed"]),
                 recorded=head["intents"],
                 recorded_errors=head["intent_errors"],
+                released_at_ms=head.get("released_at_ms"),
             )
         elif kind == "funding":
             out = session.funding(
@@ -535,6 +549,24 @@ class PaperTradingService:
         self.fault: str | None = None
 
     @classmethod
+    def open(cls, config: PaperConfig, store: EventStore, **kw: Any) -> PaperTradingService:
+        """The production path: journal on the hash-chained event store, restored from it."""
+        return cls.restore(config, EventStoreJournal(store), **kw)
+
+    def latency_ms(self) -> list[int]:
+        """Observed release latencies (bar close -> processed) of this session's live steps."""
+        out: list[int] = []
+        for batch in self.journal.batches():
+            head = batch[0].payload
+            if (
+                head.get("kind") == "bar"
+                and head.get("observed")
+                and head.get("release_latency_ms") is not None
+            ):
+                out.append(int(head["release_latency_ms"]))
+        return out
+
+    @classmethod
     def restore(cls, config: PaperConfig, journal: Journal, **kw: Any) -> PaperTradingService:
         """Rebuild the session from its journal (verified replay), ready to resume."""
         batches = journal.batches()
@@ -595,12 +627,15 @@ class PaperTradingService:
             return 0
         done = 0
         for bar in self.clock.release(now_ms):
-            if not self._process(partial(self.session.step_bar, bar, observed=self._observed(bar))):
+            step = partial(
+                self.session.step_bar, bar, observed=self._observed(bar), released_at_ms=now_ms
+            )
+            if not self._process(step):
                 break
             done += 1
         return done
 
-    def resume_after_downtime(self, bars: Sequence[Bar]) -> int:
+    def resume_after_downtime(self, bars: Sequence[Bar], now_ms: int | None = None) -> int:
         """Resolve open positions over backfilled 1m bars of the downtime (SIMULATION §7).
 
         Only bars after the last processed one are used, in clock order, all **unobserved**: no
@@ -614,7 +649,8 @@ class PaperTradingService:
         )
         done = 0
         for bar in todo:
-            if not self._process(partial(self.session.step_bar, bar, observed=False)):
+            step = partial(self.session.step_bar, bar, observed=False, released_at_ms=now_ms)
+            if not self._process(step):
                 break
             done += 1
         if todo:

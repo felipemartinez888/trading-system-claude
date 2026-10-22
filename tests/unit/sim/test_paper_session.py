@@ -62,7 +62,7 @@ def run_live() -> tuple[object, object, ScriptedStrategy]:
 
 
 def test_live_session_lifecycle_books_and_shadow_outcome() -> None:
-    svc, _journal, strat = run_live()
+    svc, journal, strat = run_live()
     assert svc.state is ServiceState.RUNNING, svc.fault
     lc = svc.session.lifecycle
     s1, s2, s3, s4, s5 = (lc.get(sid(i)) for i in range(1, 6))
@@ -80,6 +80,8 @@ def test_live_session_lifecycle_books_and_shadow_outcome() -> None:
     assert s3.reason is not None
     assert "reward_risk:rr_net" in s3.reason
     assert s3.shadow_outcome is not None
+    shadow_events = [e for e in flatten(journal.batches()) if e.type == "signal_shadow_outcome"]
+    assert [e.aggregate_id for e in shadow_events] == [sid(3)]
     assert s3.shadow_outcome["exit_reason"] == "take_profit"
     assert s4 is not None
     assert s4.status is SignalStatus.EXPIRED
@@ -114,6 +116,13 @@ def test_every_state_change_is_journaled_in_order() -> None:
     assert {"sim_order_filled", "sim_position_closed", "sim_ledger_posted"} <= kinds
     lifecycle = [e for e in flatten(batches) if e.aggregate_type == "signal"]
     assert [e.type for e in lifecycle].count("signal_created") == 5
+    lat = [b[0].payload["release_latency_ms"] for b in batches]
+    # drive polls 1.5 s after each close. ETH minute 13 is missing: minute 13 is due 90 s after
+    # its close, i.e. at the poll after minute 15's close, which also releases minute 14 (the
+    # clock releases in minute order) -> BTC 13 waited 121.5 s, minute 14 61.5 s.
+    late = [lat[i] for i in range(len(lat)) if lat[i] != 1_500]
+    assert late == [121_500, 61_500, 61_500]
+    assert svc.latency_ms() == lat
     first = batches[0][0].payload
     assert first["session"]["risk_config_hash"] == config().risk.config_hash
 
@@ -143,13 +152,14 @@ def test_replay_parity_hashes_are_pinned() -> None:
 
 
 # Recorded on Linux (sandbox). If an intentional change to the simulator, risk engine, lifecycle or
-# journal format alters these, update them in the same commit and say why.
+# journal format alters these, update them in the same commit and say why. Journal hash updated
+# for the release-time fields and SIGNAL_SHADOW_OUTCOME events (ledger hashes unchanged).
 PINNED_LEDGER_HASHES = {
     "baseline": "514dcc33727311849e90846205afc4c237823f5f8f2b3aa3354b05fc70fc2be5",
     "shadow": "6673efd89691c46cc42d1bd4988654e4257e5846d7cee3ea8445647c60ac95ce",
     "benchmark": "1fd2d1d95519a831947e62257082b8b9ca084f20c9aab832451dcba4271730d9",
 }
-PINNED_JOURNAL_HASH = "893a9fc2b2ae81495ef0153d85b3c2edda1b889046d89b602bbd63998d2dc082"
+PINNED_JOURNAL_HASH = "bbbb466a973d4d60816b51de181652829572c2a957ff2516b8df9df727ab69bc"
 
 
 def _replace_entry(batches: list, b: int, e: int, payload: dict) -> None:

@@ -5,14 +5,14 @@ EXPIRED / INVALIDATED, as append-only events; the current state is a projection.
   `transition` emits ``SIGNAL_TRANSITIONED`` with ``{signal_id, from, to, reason, book, outcome}``
   and refuses every transition the contract does not allow (`contracts.signals.can_transition`).
 - Both return `contracts.events.NewEvent`s and apply them to the projection; `apply` replays stored
-  events into a fresh projection, and is the only way a status changes.
+  events into a fresh projection, and is the only way the projection changes.
 - The paper book that drives OPEN / CLOSED is ``baseline`` (`PAPER_STATUS_BOOK`). Its simulator
   events map to transitions in `transitions_from_sim` (risk rejections -> VETOED, expiry ->
   EXPIRED, fill -> OPEN, close -> CLOSED with the outcome).
 - **Shadow outcome.** Vetoed signals keep a hypothetical outcome: the ``shadow`` book takes every
-  confirmed signal without the risk gate, and its closed trade for a signal is attached to the
-  projection (`shadow_outcome`). It is derived from simulator events (recomputed when a paper
-  session is restored by replaying its journal); it is not a lifecycle transition.
+  confirmed signal without the risk gate; when its trade for a VETOED signal closes, a
+  ``SIGNAL_SHADOW_OUTCOME`` event ``{signal_id, book, outcome}`` is emitted (not a transition:
+  the status stays VETOED) and applied to the projection (`shadow_outcome`).
 """
 
 from __future__ import annotations
@@ -190,6 +190,23 @@ class SignalLifecycle:
                 out.append(self.transition(s.signal_id, SignalStatus.EXPIRED, ts_ms, reason))
         return out
 
+    def shadow_event(
+        self, signal_id: str, ts_ms: int, outcome: Mapping[str, Any]
+    ) -> NewEvent | None:
+        """``SIGNAL_SHADOW_OUTCOME`` for a VETOED signal without one yet (else None)."""
+        state = self._signals.get(signal_id)
+        if state is None or state.status is not SignalStatus.VETOED or state.shadow_outcome:
+            return None
+        event = NewEvent(
+            type=EventType.SIGNAL_SHADOW_OUTCOME,
+            aggregate_type=AggregateType.SIGNAL,
+            aggregate_id=signal_id,
+            ts_ms=ts_ms,
+            payload={"signal_id": signal_id, "book": SHADOW_BOOK, "outcome": dict(outcome)},
+        )
+        self.apply(event)
+        return event
+
     # ------------------------------------------------------------ projection
     def apply(self, event: NewEvent | Event) -> None:
         if event.type is EventType.SIGNAL_CREATED:
@@ -221,6 +238,12 @@ class SignalLifecycle:
             if p.get("outcome") is not None:
                 state.outcome = dict(p["outcome"])
             state.history.append((str(source), str(target), event.ts_ms, state.reason))
+        elif event.type is EventType.SIGNAL_SHADOW_OUTCOME:
+            p = event.payload
+            state = self._signals.get(str(p["signal_id"]))
+            if state is None or state.status is not SignalStatus.VETOED:
+                raise LifecycleError(f"shadow outcome for a non-vetoed signal {p['signal_id']}")
+            state.shadow_outcome = dict(p["outcome"])
 
     @classmethod
     def rebuild(cls, events: Iterable[NewEvent | Event]) -> SignalLifecycle:
@@ -238,9 +261,9 @@ class SignalLifecycle:
             kind, ts, p = e["type"], int(e["ts_ms"]), e["payload"]
             book = p.get("book")
             if book == SHADOW_BOOK and kind == "sim_position_closed":
-                state = self._signals.get(str(p.get("request_id")))
-                if state is not None and state.shadow_outcome is None:
-                    state.shadow_outcome = outcome_of(p)
+                shadow = self.shadow_event(str(p.get("request_id")), ts, outcome_of(p))
+                if shadow is not None:
+                    out.append(shadow)
                 continue
             if book != PAPER_STATUS_BOOK:
                 continue

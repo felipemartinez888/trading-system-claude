@@ -6,7 +6,16 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from paper_helpers import BTC, ETH, ScriptedStrategy, config, new_service, record, two_symbol_bars
+from paper_helpers import (
+    BTC,
+    ETH,
+    ScriptedStrategy,
+    config,
+    new_service,
+    record,
+    sid,
+    two_symbol_bars,
+)
 
 from tsclaude.contracts.market import Market
 from tsclaude.marketdata.bars import BarClosed
@@ -16,7 +25,6 @@ from tsclaude.sim.journal import (
     EventStoreJournal,
     JournalEntry,
     JournalError,
-    JournalUnavailable,
     MemoryJournal,
     missing_contract_types,
 )
@@ -109,31 +117,56 @@ def test_memory_journal_requires_input_first_and_injects_failures() -> None:
     assert len(j.batches()) == 1
 
 
-def test_event_store_journal_fails_closed_until_contract_types_exist(tmp_path: Path) -> None:
-    missing = missing_contract_types()
-    if not missing:
-        pytest.skip("contract already defines the paper journal types")
-    assert STEP_TYPE in missing
-    assert "aggregate_type:sim" in missing
-    with EventStore(tmp_path / "state.db") as store, pytest.raises(JournalUnavailable) as err:
-        EventStoreJournal(store)
-    assert "sim_order_filled" in str(err.value)
+def test_contract_defines_every_journal_type() -> None:
+    assert missing_contract_types() == []
 
 
-@pytest.mark.skipif(bool(missing_contract_types()), reason="needs the M3-T1 contract change")
-def test_event_store_journal_round_trip_and_restore(tmp_path: Path) -> None:
+def test_event_store_journal_round_trip_and_restore_after_reopen(tmp_path: Path) -> None:
+    """Production path: the paper session journals into the hash-chained event store; a fresh
+    process (store reopened from disk) restores the identical ledgers and keeps the chain valid."""
     from paper_helpers import drive
 
+    from tsclaude.contracts.events import EventType
     from tsclaude.sim.paper import PaperTradingService
 
-    with EventStore(tmp_path / "state.db") as store:
-        journal = EventStoreJournal(store)
-        strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1)]})
-        svc, _ = new_service(strat, journal=journal)  # type: ignore[arg-type]
-        drive(svc, _bars(6), list(range(6)))
+    path = tmp_path / "state.db"
+    strat = ScriptedStrategy(
+        {
+            (minute(1), "BTCUSDT"): [record(1, 1)],
+            (minute(2), "ETHUSDT"): [record(2, 2, symbol="ETHUSDT", tp=1012.0)],  # vetoed
+        }
+    )
+    bars = two_symbol_bars(10, {6: (1000, 1035, 999, 1030)}, {5: (1000, 1015, 999, 1010)})
+    with EventStore(path) as store:
+        svc = PaperTradingService.open(config(), store, strategy=strat)
+        drive(svc, bars, list(range(6)))
+        hashes = svc.ledger_hashes()
         assert store.verify().ok
-        restored = PaperTradingService.restore(config(), journal)
-        assert restored.ledger_hashes() == svc.ledger_hashes()
+        types = {e.type for e in store.read()}
+        assert {EventType.PAPER_STEP, EventType.SIM_ORDER_FILLED, EventType.SIGNAL_CREATED} <= types
+        (shadow,) = store.read(types=[EventType.SIGNAL_SHADOW_OUTCOME])
+        assert shadow.aggregate_id == sid(2)
+        assert shadow.payload["outcome"]["exit_reason"] == "take_profit"
+    with EventStore(path) as store:  # restart: new process, same file
+        restored = PaperTradingService.open(config(), store, strategy=strat)
+        assert restored.ledger_hashes() == hashes
+        s2 = restored.session.lifecycle.get(sid(2))
+        assert s2 is not None
+        assert s2.shadow_outcome is not None
+        drive(restored, bars, list(range(6, 10)))
+        assert store.verify().ok
+        assert len(EventStoreJournal(store).batches()) == restored.session.batches == 20
+        assert restored.latency_ms() == [1_500] * 20  # drive polls 1.5 s after each close
+
+
+def test_event_store_journal_rejects_bad_batches(tmp_path: Path) -> None:
+    with EventStore(tmp_path / "s.db") as store:
+        j = EventStoreJournal(store)
+        with pytest.raises(JournalError, match="input entry"):
+            j.append([JournalEntry("sim_order_filled", "sim", "baseline", 1, {})])
+        with pytest.raises(JournalError, match="append failed"):
+            j.append([JournalEntry(STEP_TYPE, "sim", "paper", 1, {"x": float("nan")})])
+        assert j.batches() == []
 
 
 # ---------------------------------------------------------------- async driver

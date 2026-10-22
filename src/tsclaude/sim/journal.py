@@ -8,10 +8,9 @@ and checks that it reproduces the recorded outputs exactly (`sim.paper`).
 
 Implementations:
 - `MemoryJournal` (tests; optional fault injection);
-- `EventStoreJournal`: the hash-chained `EventStore` (ADR-0003). It needs the event types and the
-  ``sim`` aggregate type in `contracts.events` (contract change requested in M3-T1); until they
-  exist it refuses to start (`JournalUnavailable`), so paper trading fails closed instead of
-  running without durable state.
+- `EventStoreJournal`: the hash-chained `EventStore` (ADR-0003), the production journal. It checks
+  at construction that `contracts.events` defines every type it writes (fails closed with
+  `JournalUnavailable` otherwise).
 """
 
 from __future__ import annotations
@@ -129,8 +128,7 @@ class EventStoreJournal:
         missing = missing_contract_types()
         if missing:
             raise JournalUnavailable(
-                "contracts.events lacks the paper journal types (M3-T1 contract change request): "
-                + ", ".join(missing)
+                "contracts.events lacks the paper journal types: " + ", ".join(missing)
             )
         self.store = store
 
