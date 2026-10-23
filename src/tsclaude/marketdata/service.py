@@ -237,6 +237,7 @@ class MarketDataService:
 
         q = self._cfg.quality
         universe = self._cfg.universe
+        log.info("service start: loading gap events")
         self.gaps.load(self._store.read(types=[EventType.GAP_DETECTED, EventType.GAP_RESOLVED]))
         self._rest = {
             Market.SPOT: BinanceRest(
@@ -267,6 +268,7 @@ class MarketDataService:
             except Exception as exc:  # fail closed: status stays unknown
                 log.error("exchangeInfo failed", extra={"market": str(market), "error": repr(exc)})
 
+        log.info("service start: sampling server clock")
         self._clock_monitor = ClockMonitor(
             self._clock,
             self._rest[Market.SPOT].server_time,
@@ -280,6 +282,14 @@ class MarketDataService:
         # not to startup backfill (REST may not have the final version of them yet).
         watch_from = live_watch_from(server_now, int(q.watermark.grace_s * 1000))
         self._watch_from = watch_from
+        log.info(
+            "service start: clock sampled, watch_from set",
+            extra={
+                "server_now_ms": server_now,
+                "watch_from_ms": watch_from,
+                "offset_ms": self._clock_monitor.offset_ms,
+            },
+        )
 
         keys: list[StreamKey] = []
         for market, symbol in universe.pairs():
@@ -310,6 +320,13 @@ class MarketDataService:
         for symbol in universe.usdm:
             await self._load_premium_index(symbol)
 
+        log.info(
+            "service start: builders created, starting WebSocket groups",
+            extra={
+                "pairs": len(list(universe.pairs())),
+                "builders": len(self.builder.all()),
+            },
+        )
         groups = plan_groups(universe, q.endpoints, q.ws)
         self._ws = WsManager(
             groups,
@@ -323,6 +340,10 @@ class MarketDataService:
         )
         self._running = True
         self._ws.start()
+        log.info(
+            "service start: WebSocket manager started, launching periodic tasks",
+            extra={"groups": len(groups)},
+        )
         self._tasks = [
             asyncio.create_task(self._backfill(watch_from), name="md-backfill"),
             asyncio.create_task(

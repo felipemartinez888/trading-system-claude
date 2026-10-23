@@ -141,6 +141,18 @@ class SymbolBarBuilder:
         if k.interval is not Interval.M1:
             self.stats.ignored += 1
             return
+        is_first_kline = self.stats.ws_closed == 0 and self.stats.ws_partial == 0
+        if is_first_kline:
+            log.info(
+                "first kline received by builder",
+                extra={
+                    "market": str(self.market),
+                    "symbol": self.symbol,
+                    "is_closed": k.is_closed,
+                    "open_time_ms": k.open_time_ms,
+                    "at_ms": self.now_ms(),
+                },
+            )
         if not k.is_closed:
             self._update_partial(k)
             return
@@ -183,12 +195,37 @@ class SymbolBarBuilder:
         if open_time_ms < self._cursor:
             return
         self._settled.add(open_time_ms)
+        prev_cursor = self._cursor
         while self._cursor in self._settled:
             self._settled.discard(self._cursor)
             self._cursor += STEP
+        advanced = (self._cursor - prev_cursor) // STEP
+        total = (self._cursor - self.watch_from_ms) // STEP
+        if advanced > 0 and total % 10 == 0:
+            log.info(
+                "settlement progress",
+                extra={
+                    "market": str(self.market),
+                    "symbol": self.symbol,
+                    "cursor_ms": self._cursor,
+                    "settled_total": total,
+                    "pending": len(self._settled),
+                },
+            )
 
     def _store(self, bar: Bar, session_id: str | None) -> WriteOutcome:
         result = self.store.write(bar, session_id)
+        if result.outcome is WriteOutcome.INSERTED and self.stats.last_closed_open_ms is None:
+            log.info(
+                "first bar stored",
+                extra={
+                    "market": str(self.market),
+                    "symbol": self.symbol,
+                    "open_time_ms": bar.open_time_ms,
+                    "source": str(bar.source),
+                    "at_ms": self.now_ms(),
+                },
+            )
         if result.outcome is WriteOutcome.DUPLICATE:
             self.stats.duplicates += 1
             return result.outcome
@@ -239,6 +276,17 @@ class SymbolBarBuilder:
         due = self.due_minutes()
         if not due:
             return []
+        log.info(
+            "watermark check: overdue minutes",
+            extra={
+                "market": str(self.market),
+                "symbol": self.symbol,
+                "due_count": len(due),
+                "first_due_ms": due[0],
+                "last_due_ms": due[-1],
+                "cursor_ms": self._cursor,
+            },
+        )
         fetched: dict[int, RestKline] = {}
         error: str | None = None
         try:

@@ -61,12 +61,29 @@ class Observer:
         for s in snap.streams:
             key = str(s.state.value)
             states[key] = states.get(key, 0) + 1
+        # Diagnostic: builder stats and bar counts per symbol
+        builder_diag: dict[str, Any] = {}
+        service = context.supervisor.service
+        if service is not None and hasattr(service, "builder"):
+            for b in service.builder.all():
+                sym = f"{b.market}:{b.symbol}"
+                builder_diag[sym] = {
+                    "ws_closed": b.stats.ws_closed,
+                    "ws_partial": b.stats.ws_partial,
+                    "duplicates": b.stats.duplicates,
+                    "late_recovered": b.stats.late_recovered,
+                    "gap_minutes": b.stats.gap_minutes,
+                    "cursor_ms": b.cursor_ms,
+                    "settled_pending": len(b._settled),
+                    "last_closed_open_ms": b.stats.last_closed_open_ms,
+                }
         self.samples.append(
             {
                 "at_ms": snap.as_of_ms,
                 "running": snap.running,
                 "clock_offset_ms": snap.clock_offset_ms.value,
                 "stream_states": states,
+                "builder_stats": builder_diag,
             }
         )
 
@@ -74,6 +91,34 @@ class Observer:
         await self.on_sample(context)
         snap = context.supervisor.snapshot() if context.supervisor else None
         if snap is not None:
+            # Diagnostic: final builder stats
+            final_builder: dict[str, Any] = {}
+            service = context.supervisor.service if context.supervisor else None
+            if service is not None and hasattr(service, "builder"):
+                for b in service.builder.all():
+                    sym = f"{b.market}:{b.symbol}"
+                    final_builder[sym] = {
+                        "ws_closed": b.stats.ws_closed,
+                        "ws_partial": b.stats.ws_partial,
+                        "duplicates": b.stats.duplicates,
+                        "conflicts": b.stats.conflicts,
+                        "late_recovered": b.stats.late_recovered,
+                        "gap_minutes": b.stats.gap_minutes,
+                        "invalid": b.stats.invalid,
+                        "rest_errors": b.stats.rest_errors,
+                        "cursor_ms": b.cursor_ms,
+                        "watch_from_ms": b.watch_from_ms,
+                        "settled_pending": len(b._settled),
+                        "open_gaps": len(b.live_gaps()),
+                        "caught_up": b.caught_up(),
+                    }
+            # Diagnostic: bar store counts per symbol
+            bar_store_counts: dict[str, int] = {}
+            if service is not None and hasattr(service, "_bars"):
+                for b in service.builder.all():
+                    bar_store_counts[f"{b.market}:{b.symbol}"] = service._bars.count(
+                        b.market, b.symbol
+                    )
             self.final = {
                 "connections": [c.model_dump(mode="json") for c in snap.connections],
                 "streams": [
@@ -89,6 +134,8 @@ class Observer:
                 "demo_detector": vars(context.supervisor.detector.stats)
                 if context.supervisor
                 else None,
+                "builder_stats": final_builder,
+                "bar_store_counts": bar_store_counts,
             }
 
     def on_start_error(self, detail: str) -> None:

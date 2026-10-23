@@ -382,7 +382,16 @@ class StreamConnection:
         self.stats.connected_since_ms = self._clock.now_ms()
         if reconnect:
             self.stats.reconnects += 1
-        log.info("websocket connected", extra={"group": self.group.name, "url": live.url})
+        log.info(
+            "websocket connected",
+            extra={
+                "group": self.group.name,
+                "url": live.url,
+                "live_id": live.id,
+                "streams": [str(k) for k in self.group.streams],
+                "reconnect": reconnect,
+            },
+        )
         self._notify(self._on_open, "connected")
 
     def _deactivate(self, reason: str) -> None:
@@ -543,6 +552,11 @@ class StreamConnection:
 
     def _dispatch(self, raw: str | bytes) -> None:
         self.stats.messages += 1
+        if self.stats.messages == 1:
+            log.info(
+                "first websocket message received",
+                extra={"group": self.group.name, "at_ms": self._clock.now_ms()},
+            )
         try:
             env: Envelope = parse_ws_frame(raw, self.group.market)
         except Exception as exc:  # MalformedMessage, or an unexpected parser failure
@@ -568,7 +582,14 @@ class StreamConnection:
             return
         key = key_for(message)
         if key is not None:
-            self.stats.last_message_ms[key] = self._clock.now_ms()
+            now = self._clock.now_ms()
+            prev = self.stats.last_message_ms.get(key)
+            if prev is None:
+                log.info(
+                    "first message for stream",
+                    extra={"group": self.group.name, "stream": str(key), "at_ms": now},
+                )
+            self.stats.last_message_ms[key] = now
         try:
             self._handler(message)
         except Exception:

@@ -218,12 +218,18 @@ class MonitoringSupervisor:
             raise StartFailed("the supervisor was closed")
         if self.running:
             raise StartFailed("market data is already running")
+        t0 = self._clock.now_ms()
+        log.info("supervisor start: creating service", extra={"session_id": session_id})
         if self._service is None:
             try:
                 self._service = self._factory(self._store, self._clock)
             except Exception as exc:
                 log.exception("market data service could not be created")
                 raise StartFailed(f"configuration error: {type(exc).__name__}: {exc}") from exc
+        log.info(
+            "supervisor start: service created, subscribing",
+            extra={"elapsed_ms": self._clock.now_ms() - t0},
+        )
         service = self._service
         subscription = service.subscribe()  # before start: closed by stop(), so one per run
         try:
@@ -239,6 +245,14 @@ class MonitoringSupervisor:
         self._consumer = asyncio.create_task(self._consume(subscription), name="md-consumer")
         self._consumer.add_done_callback(self._consumer_done)
         self.refresh()
+        log.info(
+            "supervisor start: complete",
+            extra={
+                "session_id": session_id,
+                "elapsed_ms": self._clock.now_ms() - t0,
+                "running": self.running,
+            },
+        )
 
     async def stop(self) -> None:
         service = self._service
