@@ -6,9 +6,13 @@ quote volume, ignore. Some files start with a header row; it is skipped only if 
 the known header text (`KNOWN_HEADERS`); any other non-numeric row counts as malformed.
 
 Timestamp unit (M0 spike): spot files are in **microseconds from 2025-01-01**, milliseconds before.
-The unit is detected *per file* from the magnitude of the first row and then enforced for every
-row; the normalized times must fall inside the file's own period (month or day). Any violation is a
-hard `ArchiveFormatError`, so a mis-detected unit can never silently shift bars by 1000x.
+The unit of each row is read from the magnitude of its open time (the ms and µs ranges are
+disjoint, so a value is never ambiguous) and the close time must be in the same unit. A file may
+change unit at most once, ms -> µs, with the first µs row strictly after the last ms row (observed:
+KLAYUSDT-1d-2024-10 after delisting); any other change is a hard `ArchiveFormatError`. The
+normalized times must fall inside the file's own period (month or day), so a mis-detected unit can
+never silently shift bars by 1000x. `ParsedKlines.unit` stays the first row's unit; units seen per
+row and transitions are in `ParseIssues`.
 
 A malformed data row (wrong column count, non-numeric value) is recorded and skipped -- its minute
 becomes a gap in the QA report, nothing is interpolated -- unless malformed rows exceed a small
@@ -54,6 +58,12 @@ class ParseIssues:
     malformed_rows: list[tuple[int, str]] = field(default_factory=list)  # (line number, reason)
     header_skipped: bool = False
     unit_note: str | None = None  # unit differs from the date-based expectation (kept, reported)
+    unit_counts: dict[str, int] = field(default_factory=dict)  # rows per timestamp unit
+    unit_transitions: list[tuple[int, str, str]] = field(default_factory=list)  # (line, from, to)
+
+    @property
+    def mixed_units(self) -> bool:
+        return len(self.unit_counts) > 1
 
 
 @dataclass
@@ -94,13 +104,51 @@ def _unit_of(value: int) -> TimeUnit | None:
     return None
 
 
-def _ts(raw: str, unit: TimeUnit, what: str) -> int:
+def _ts(raw: str, what: str) -> tuple[int, TimeUnit]:
+    """(ms, unit) of one timestamp cell; the unit comes from its magnitude."""
     if _INT.fullmatch(raw) is None:
         raise ValueError(f"{what} is not an integer")
     value = int(raw)
-    if _unit_of(value) != unit:
-        raise ArchiveFormatError(f"{what} {value} does not match the file's unit ({unit})")
-    return value // 1000 if unit == "us" else value
+    unit = _unit_of(value)
+    if unit is None:
+        raise ArchiveFormatError(f"{what} {value} is neither ms nor microseconds")
+    return (value // 1000 if unit == "us" else value), unit
+
+
+class _UnitTracker:
+    """Per-row unit bookkeeping for one file; enforces the single ms -> us transition rule."""
+
+    def __init__(self, issues: ParseIssues, first: TimeUnit) -> None:
+        self._issues = issues
+        self._unit: TimeUnit = first
+        self._last_open_ms: int | None = None
+
+    def times(self, cells: list[str]) -> tuple[int, int, TimeUnit]:
+        open_ms, open_unit = _ts(cells[0], "open time")
+        close_ms, close_unit = _ts(cells[6], "close time")
+        if open_unit != close_unit:
+            raise ArchiveFormatError(
+                f"open time unit ({open_unit}) differs from close time unit ({close_unit})"
+            )
+        return open_ms, close_ms, open_unit
+
+    def accept(self, open_ms: int, unit: TimeUnit, line_no: int) -> None:
+        """Called once the row's open time is inside the file period."""
+        if unit != self._unit:
+            if (self._unit, unit) != ("ms", "us") or self._issues.unit_transitions:
+                raise ArchiveFormatError(
+                    f"line {line_no}: timestamp unit changes {self._unit} -> {unit} "
+                    "(only one ms -> us change per file is accepted)"
+                )
+            if self._last_open_ms is not None and open_ms <= self._last_open_ms:
+                raise ArchiveFormatError(
+                    f"line {line_no}: open time {open_ms} is not after the previous row "
+                    f"({self._last_open_ms}) at the timestamp unit change"
+                )
+            self._issues.unit_transitions.append((line_no, self._unit, unit))
+            self._unit = unit
+        self._issues.unit_counts[unit] = self._issues.unit_counts.get(unit, 0) + 1
+        self._last_open_ms = open_ms
 
 
 def _num(raw: str, what: str) -> float:
@@ -178,14 +226,14 @@ def parse_klines_csv(
         raise ArchiveFormatError("file has no data rows")
     unit = _detect_unit(rows)
     issues.unit_note = _expectation_note(market, unit, period[0])
+    tracker = _UnitTracker(issues, unit)
     out: list[RestKline] = []
     for line_no, c in rows:
         if len(c) < 11:
             issues.malformed_rows.append((line_no, f"{len(c)} columns"))
             continue
         try:
-            open_ms = _ts(c[0], unit, "open time")
-            close_ms = _ts(c[6], unit, "close time")
+            open_ms, close_ms, row_unit = tracker.times(c)
             k = RestKline(
                 open_time_ms=open_ms,
                 open=_num(c[1], "open"),
@@ -205,6 +253,7 @@ def parse_klines_csv(
             issues.malformed_rows.append((line_no, str(exc)))
             continue
         _check_period(open_ms, period, line_no)
+        tracker.accept(open_ms, row_unit, line_no)
         if close_ms != open_ms + interval_ms - 1:
             issues.malformed_rows.append((line_no, "close time != open time + interval - 1"))
             continue
@@ -223,14 +272,14 @@ def parse_price_klines_csv(
         raise ArchiveFormatError("file has no data rows")
     unit = _detect_unit(rows)
     issues.unit_note = _expectation_note(market, unit, period[0])
+    tracker = _UnitTracker(issues, unit)
     out: list[PriceKline] = []
     for line_no, c in rows:
         if len(c) < 7:
             issues.malformed_rows.append((line_no, f"{len(c)} columns"))
             continue
         try:
-            open_ms = _ts(c[0], unit, "open time")
-            close_ms = _ts(c[6], unit, "close time")
+            open_ms, close_ms, row_unit = tracker.times(c)
             k = PriceKline(
                 open_time_ms=open_ms,
                 open=_num(c[1], "open"),
@@ -245,6 +294,7 @@ def parse_price_klines_csv(
             issues.malformed_rows.append((line_no, str(exc)))
             continue
         _check_period(open_ms, period, line_no)
+        tracker.accept(open_ms, row_unit, line_no)
         if close_ms != open_ms + interval_ms - 1:
             issues.malformed_rows.append((line_no, "close time != open time + interval - 1"))
             continue

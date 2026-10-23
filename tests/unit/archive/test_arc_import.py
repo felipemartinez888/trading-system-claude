@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from arc_helpers import (
     MIN,
     FakeArchive,
     FakeRest,
+    klay_2024_10_lines,
     kline_values,
     ms,
     rest_klines,
@@ -89,6 +91,40 @@ def test_ms_and_us_months_give_contiguous_bars_and_manifest(
     rows = lake.read_part(next(ip.part for ip in lake.index() if ip.part.month == 1))
     assert rows[0]["open_time_ms"] == ms(2025, 1)
     assert rows[0]["source"] == "archive"
+
+
+def test_mixed_unit_archive_is_imported_with_provenance(lake: Lake, archive: FakeArchive) -> None:
+    f = ArchiveFile(
+        Market.SPOT, ArchiveDataType.KLINES, "KLAYUSDT", "1d", Period.MONTHLY, "2024-10"
+    )
+    archive.add(f, klay_2024_10_lines())
+    zip_bytes, _ = archive.files[f.relpath]
+    req = ImportRequest(Market.SPOT, LakeKind.KLINES_1D, "KLAYUSDT", f.start_ms, f.end_ms)
+    res = _run(_importer(lake, archive, cross_check_months=0), req)
+    assert res.dataset_id is not None
+    assert res.rows == 28  # 27 ms days + the valid µs day; two malformed rows skipped
+    assert res.qa["summary"]["malformed_rows"] == 2
+    assert [m["line"] for m in res.qa["malformed_rows"]] == [28, 30]
+    manifest = lake.manifest(res.dataset_id)
+    (src,) = [s for s in manifest["sources"] if s["role"] == "data"]
+    assert src["sha256"] == hashlib.sha256(zip_bytes).hexdigest()  # original archive untouched
+    assert src["timestamp_unit"] == "ms"  # existing key keeps its meaning
+    assert src["timestamp_units"] == {"ms": 28, "us": 2}
+    assert src["timestamp_unit_transitions"] == [{"line": 29, "from": "ms", "to": "us"}]
+    assert any("mixed timestamp units" in n for n in res.qa["unit_notes"])
+    lake.refresh()
+    rows = lake.read_part(next(iter(lake.index())).part)
+    assert rows[-1]["open_time_ms"] == ms(2024, 10, 29)
+    assert rows[-1]["close_time_ms"] == ms(2024, 10, 30) - 1
+
+
+def test_homogeneous_archives_have_no_mixed_unit_metadata(lake: Lake, archive: FakeArchive) -> None:
+    archive.add_klines(_file("2025-01"), unit="us")
+    res = _run(_importer(lake, archive, cross_check_months=0), _req(ms(2025, 1), ms(2025, 2)))
+    (src,) = [s for s in res.sources if s["role"] == "data"]
+    assert "timestamp_units" not in src
+    assert "timestamp_unit_transitions" not in src
+    assert res.qa["unit_notes"] == []
 
 
 def test_reimport_is_idempotent(lake: Lake, archive: FakeArchive, tmp_path: Path) -> None:

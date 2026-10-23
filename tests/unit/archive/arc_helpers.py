@@ -77,6 +77,22 @@ def kline_lines(
     return lines
 
 
+def klay_2024_10_lines() -> list[str]:
+    """KLAYUSDT-1d-2024-10 as published: 27 ms days, a truncated ms bar (line 28), then two
+    microsecond rows (lines 29-30); the last has a close time left over from line 28.
+    Time columns are as in the real archive; prices are synthetic."""
+    lines = kline_lines(ms(2024, 10), ms(2024, 10, 28), DAY)
+    flat = "0.12550000,0.12550000,0.12550000,0.12550000,0.00000000"
+    zeros = "0.00000000,0,0.00000000,0.00000000,0"
+    lines.append(
+        "1730073600000,0.12500000,0.12600000,0.12500000,0.12550000,3788005.60000000,"
+        "1730084399999,474751.98435000,2002,1407022.40000000,176645.92583000,0"
+    )
+    lines.append(f"1730160000000000,{flat},1730246399999999,{zeros}")
+    lines.append(f"1730246400000000,{flat},1730084399999000,{zeros}")
+    return lines
+
+
 def _fmt(v: Any) -> str:
     if isinstance(v, float):
         return f"{v:.8f}"

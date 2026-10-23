@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from arc_helpers import DAY, HEADER, MIN, kline_lines, make_zip, ms, price_at
+from arc_helpers import (
+    DAY,
+    HEADER,
+    MIN,
+    klay_2024_10_lines,
+    kline_lines,
+    make_zip,
+    ms,
+    price_at,
+)
 
 from tsclaude.contracts.market import Market
 from tsclaude.marketdata.archive import csvparse
@@ -102,7 +111,7 @@ def test_unit_against_date_expectation_is_noted_not_guessed() -> None:
     assert "expected us" in parsed.issues.unit_note
 
 
-def test_mixed_units_and_wrong_period_are_hard_errors() -> None:
+def test_reverse_unit_change_and_wrong_period_are_hard_errors() -> None:
     ms_lines = kline_lines(JAN25[0], JAN25[0] + 2 * MIN)
     us_lines = kline_lines(JAN25[0] + 2 * MIN, JAN25[0] + 4 * MIN, unit="us")
     with pytest.raises(ArchiveFormatError, match="unit"):
@@ -111,6 +120,73 @@ def test_mixed_units_and_wrong_period_are_hard_errors() -> None:
         csvparse.parse_klines_csv("\n".join(ms_lines), Market.SPOT, DEC24, MIN)
     with pytest.raises(ArchiveFormatError, match="neither"):
         csvparse.parse_klines_csv("12345,1,1,1,1,1,12346,1,1,1,1,0", Market.SPOT, JAN25, MIN)
+
+
+OCT24 = (ms(2024, 10), ms(2024, 11))
+
+
+def test_klayusdt_2024_10_mixed_unit_file_is_normalized_per_row() -> None:
+    parsed = csvparse.parse_klines_csv("\n".join(klay_2024_10_lines()), Market.SPOT, OCT24, DAY)
+    days = [ms(2024, 10, d) for d in range(1, 28)] + [ms(2024, 10, 29)]
+    assert [r.open_time_ms for r in parsed.rows] == days
+    assert parsed.unit == "ms"  # first row; consumers of `unit` see the same value as before
+    assert parsed.issues.unit_counts == {"ms": 28, "us": 2}
+    assert parsed.issues.unit_transitions == [(29, "ms", "us")]
+    assert parsed.issues.mixed_units
+    assert parsed.issues.unit_note is None
+    us_row = parsed.rows[-1]
+    assert (us_row.open_time_ms, us_row.close_time_ms) == (1730160000000, 1730246399999)
+    # the truncated ms bar and the µs row with a stale close time are rejected, not repaired
+    assert [n for n, _ in parsed.issues.malformed_rows] == [28, 30]
+    assert all("close time != open time" in reason for _, reason in parsed.issues.malformed_rows)
+
+
+def test_homogeneous_files_report_a_single_unit() -> None:
+    for unit in ("ms", "us"):
+        lines = kline_lines(*JAN25, unit=unit)[:10]
+        parsed = csvparse.parse_klines_csv("\n".join(lines), Market.SPOT, JAN25, MIN)
+        assert parsed.issues.unit_counts == {unit: 10}
+        assert parsed.issues.unit_transitions == []
+        assert not parsed.issues.mixed_units
+
+
+def _mixed(first: str, second: str, third: str | None = None) -> str:
+    """Three-day blocks in the given units, consecutive in time, within Jan 2025."""
+    units = [u for u in (first, second, third) if u]
+    lines: list[str] = []
+    for i, unit in enumerate(units):
+        lo = JAN25[0] + 3 * i * DAY
+        lines += kline_lines(lo, lo + 3 * DAY, DAY, unit=unit)
+    return "\n".join(lines)
+
+
+def test_mixed_unit_rules_are_strict() -> None:
+    ok = csvparse.parse_klines_csv(_mixed("ms", "us"), Market.SPOT, JAN25, DAY)
+    assert len(ok.rows) == 6
+    assert ok.issues.unit_transitions == [(4, "ms", "us")]
+    for text in (_mixed("us", "ms"), _mixed("ms", "us", "ms")):
+        with pytest.raises(ArchiveFormatError, match="unit changes"):
+            csvparse.parse_klines_csv(text, Market.SPOT, JAN25, DAY)
+    # the change must move forward in time
+    back = kline_lines(JAN25[0] + 5 * DAY, JAN25[0] + 6 * DAY, DAY)
+    fwd = kline_lines(JAN25[0] + 1 * DAY, JAN25[0] + 2 * DAY, DAY, unit="us")
+    with pytest.raises(ArchiveFormatError, match="not after the previous row"):
+        csvparse.parse_klines_csv("\n".join(back + fwd), Market.SPOT, JAN25, DAY)
+
+
+def test_ambiguous_or_out_of_range_timestamps_are_hard_errors() -> None:
+    base = kline_lines(JAN25[0], JAN25[0] + 2 * DAY, DAY)
+    cells = kline_lines(JAN25[0] + 2 * DAY, JAN25[0] + 3 * DAY, DAY, unit="us")[0].split(",")
+    mixed_row = ",".join([*cells[:6], str(int(cells[6]) // 1000), *cells[7:]])
+    with pytest.raises(ArchiveFormatError, match="differs from close time unit"):
+        csvparse.parse_klines_csv("\n".join([*base, mixed_row]), Market.SPOT, JAN25, DAY)
+    junk = ",".join(["12345", *cells[1:6], "12346", *cells[7:]])
+    with pytest.raises(ArchiveFormatError, match="neither ms nor microseconds"):
+        csvparse.parse_klines_csv("\n".join([*base, junk]), Market.SPOT, JAN25, DAY)
+    # a µs row whose normalized time is outside the file period
+    late = kline_lines(JAN25[1], JAN25[1] + DAY, DAY, unit="us")
+    with pytest.raises(ArchiveFormatError, match="outside the file period"):
+        csvparse.parse_klines_csv("\n".join([*base, *late]), Market.SPOT, JAN25, DAY)
 
 
 def test_malformed_rows_counted_until_threshold() -> None:
@@ -142,6 +218,14 @@ def test_daily_kline_files() -> None:
     parsed = csvparse.parse_klines_csv("\n".join(lines), Market.SPOT, DEC24, DAY)
     assert len(parsed.rows) == 31
     assert parsed.rows[0].close_time_ms == DEC24[0] + DAY - 1
+
+
+def test_price_klines_follow_the_same_unit_rules() -> None:
+    parsed = csvparse.parse_price_klines_csv(_mixed("ms", "us"), Market.USDM, JAN25, DAY)
+    assert len(parsed.rows) == 6
+    assert parsed.issues.unit_counts == {"ms": 3, "us": 3}
+    with pytest.raises(ArchiveFormatError, match="unit changes"):
+        csvparse.parse_price_klines_csv(_mixed("us", "ms"), Market.USDM, JAN25, DAY)
 
 
 def test_price_klines() -> None:

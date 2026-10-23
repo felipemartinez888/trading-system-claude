@@ -312,6 +312,11 @@ class Importer:
             collector.malformed.append({"file": vf.file.relpath, "line": line_no, "reason": reason})
         if issues.unit_note:
             collector.unit_notes.append(f"{vf.file.relpath}: {issues.unit_note}")
+        if issues.mixed_units:
+            collector.unit_notes.append(
+                f"{vf.file.relpath}: mixed timestamp units {issues.unit_counts}; each row "
+                f"normalized by magnitude, changes at {_transitions(issues.unit_transitions)}"
+            )
         record = {
             "role": "data",
             "type": f"archive_{vf.file.period}",
@@ -326,6 +331,9 @@ class Importer:
             "from": to_iso(item.start_ms),
             "to": to_iso(item.end_ms),
         }
+        if issues.mixed_units:  # additive; absent for homogeneous files
+            record["timestamp_units"] = dict(issues.unit_counts)
+            record["timestamp_unit_transitions"] = _transitions(issues.unit_transitions)
         return _Chunk(rows, BarSource.ARCHIVE, record)
 
     async def _rest_chunk(
@@ -595,6 +603,10 @@ def _endpoint(market: Market, kind: LakeKind) -> str:
     if kind is LakeKind.MARK_PRICE_1M:
         return "/fapi/v1/markPriceKlines"
     return "/api/v3/klines" if market is Market.SPOT else "/fapi/v1/klines"
+
+
+def _transitions(items: Sequence[tuple[int, str, str]]) -> list[dict[str, Any]]:
+    return [{"line": line, "from": a, "to": b} for line, a, b in items]
 
 
 def _asdict(row: Any) -> dict[str, Any]:
