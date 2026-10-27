@@ -152,7 +152,9 @@ def check_restore_equivalence(seed: int, fail_batch: int) -> list[str]:
     return problems
 
 
-def check_live_clock_order(seed: int, settle_ms: int = 30_000) -> list[str]:
+def check_live_clock_order(
+    seed: int, settle_ms: int = 30_000, start_ms: int | None = None
+) -> list[str]:
     """Any arrival order in which each bar arrives before its minute's deadline releases exactly
     the historical clock order of all delivered bars."""
     rng = random.Random(seed)
@@ -169,7 +171,7 @@ def check_live_clock_order(seed: int, settle_ms: int = 30_000) -> list[str]:
             arrivals.append((close + 1 + rng.randint(0, settle_ms - 1), b))
             delivered.append(b)
     arrivals.sort(key=lambda t: t[0])
-    clock = LiveClock(keys, settle_ms=settle_ms)
+    clock = LiveClock(keys, settle_ms=settle_ms, start_ms=start_ms)
     released: list[Bar] = []
     for t, b in arrivals:
         if clock.offer(b) != "buffered":
