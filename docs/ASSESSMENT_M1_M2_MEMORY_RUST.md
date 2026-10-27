@@ -7,6 +7,17 @@
 **Scope:** M1 root-cause investigation, M2 feasibility, memory/SSD analysis, Rust candidate
 evaluation, architecture independence assessment
 
+> **Erratum (2026-10-27, AP-1).** Two statements below were wrong or misleading:
+> 1. **The research universe is 10 symbols, not 3** (`configs/universe_snapshot_2025-01-01.yaml`), in
+>    spot and USD-M. Every "3-symbol" sizing in this document understates the data volume.
+> 2. **`Semaphore(3)` bounded concurrency, not retention.** `_run_klines` used `asyncio.gather` over
+>    all months and kept each month's merged rows until every month had been fetched, so a 57-month request
+>    held about 2.45 M rows regardless of the semaphore. The "~60 MB per month, ~250-400 MB total" import
+>    estimate in section 4.2 therefore did not hold for long requests. Since the AP-1 change each month
+>    is fetched, merged, validated and staged inside its task and only small summaries survive (tests
+>    `tests/unit/archive/test_arc_import_memory.py`). That bound is measured on synthetic fixtures; it is
+>    **not** evidence about the PyO3 panic seen in `Bar.__init__`, whose root cause is still open.
+
 ---
 
 ## 1. Executive Summary

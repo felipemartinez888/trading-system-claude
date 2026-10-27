@@ -39,7 +39,16 @@ from tsclaude.runtime.settings import Settings  # noqa: E402
 from tsclaude.store.eventstore import EventStore  # noqa: E402
 from tsclaude.store.livebars import LiveBarStore  # noqa: E402
 
-REPORT_VERSION = 1
+REPORT_VERSION = 2  # 2: adds the "duration" block and the duration check to the verdict
+
+# How much shorter than requested the monitored time may be before the run FAILS. The monitoring
+# window cannot be exactly the requested length: the 2 h evidence run (verify-20261023T210257Z)
+# started monitoring ~3.4 s after the observation window opened and still monitored 7200.017 s,
+# so start-up latency costs seconds, and the smallest unit the gate can observe is one 1m bar
+# (60 s). Anything shorter than one bar is indistinguishable from a full run; a run that is a
+# whole bar or more short did not cover the requested duration (the 22-minute run that passed as
+# "2 h" was 5 883 s short).
+DURATION_TOLERANCE_S = 60.0
 
 
 @dataclass
@@ -157,6 +166,23 @@ def _intervals(events: list[Event], window: tuple[int, int]) -> list[tuple[int, 
     return out
 
 
+def _monitored_ms(intervals: list[tuple[int, int]], window: tuple[int, int]) -> int:
+    """Total monitored time: the union of the intervals clipped to the window, so overlapping
+    monitoring sessions are never counted twice."""
+    clipped = sorted(
+        (max(lo, window[0]), min(hi, window[1]))
+        for lo, hi in intervals
+        if min(hi, window[1]) > max(lo, window[0])
+    )
+    merged: list[list[int]] = []
+    for lo, hi in clipped:
+        if merged and lo <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    return sum(hi - lo for lo, hi in merged)
+
+
 def _uptime(events: list[Event], intervals: list[tuple[int, int]]) -> dict[str, dict[str, Any]]:
     """Per stream: share of monitored time in HEALTHY, from STREAM_STATE_CHANGED events."""
     result: dict[str, dict[str, Any]] = {}
@@ -221,9 +247,12 @@ def build_report(
     start_error: str | None,
     retry_budget_ms: int,
     app_exit_code: int = 0,
+    required_s: float | None = None,
 ) -> dict[str, Any]:
     """Build the report. `retry_budget_ms`: how long automatic recovery may take (attempts x
-    retry interval + check interval); a gap still open after that means recovery failed."""
+    retry interval + check interval); a gap still open after that means recovery failed.
+    `required_s`: the requested run length; when given, monitoring that covered
+    less than `required_s - DURATION_TOLERANCE_S` fails the verdict."""
     events = store.read()
     intervals = _intervals(events, window)
     in_window = [e for e in events if window[0] <= e.ts_ms <= window[1]]
@@ -235,6 +264,7 @@ def build_report(
     open_gaps = [g for g in registry.open_gaps() if g.gap_id in detected_ids]
 
     expected = _expected_minutes(intervals)
+    monitored_s = _monitored_ms(intervals, window) / 1000
     per_symbol: dict[str, Any] = {}
     for market, symbol in pairs:
         stored = {
@@ -276,6 +306,11 @@ def build_report(
         failures.append(f"monitoring did not start: {start_error}")
     if not intervals:
         failures.append("no monitoring interval in the window")
+    if required_s is not None and monitored_s < required_s - DURATION_TOLERANCE_S:
+        failures.append(
+            f"monitored {monitored_s:.1f} s < required {required_s:.1f} s "
+            f"(tolerance {DURATION_TOLERANCE_S:.0f} s): requested duration not covered"
+        )
     if unexplained:
         failures.append(f"{unexplained} expected minutes missing without an open gap")
     if unknown_gaps:
@@ -294,6 +329,11 @@ def build_report(
         "generated_at": to_iso(SystemClock().now_ms()),
         "window": {"start": to_iso(window[0]), "end": to_iso(window[1])},
         "monitoring_intervals": [{"start": to_iso(a), "end": to_iso(b)} for a, b in intervals],
+        "duration": {
+            "monitored_s": monitored_s,
+            "required_s": required_s,
+            "tolerance_s": DURATION_TOLERANCE_S,
+        },
         "stream_uptime": _uptime(events, intervals),
         "connections": connections,
         "totals": {
@@ -405,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
             observer.start_error,
             retry_budget_ms(config.quality.watermark),
             app_exit_code=code,
+            required_s=args.hours * 3600,
         )
     report["app_exit_code"] = code
     report["requested_hours"] = args.hours

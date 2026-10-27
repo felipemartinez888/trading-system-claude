@@ -143,7 +143,12 @@ FINAL = {
 
 
 def _report(
-    verify: ModuleType, path: Path, *, budget_ms: int = 60_000, exit_code: int = 0
+    verify: ModuleType,
+    path: Path,
+    *,
+    budget_ms: int = 60_000,
+    exit_code: int = 0,
+    required_s: float | None = None,
 ) -> dict[str, Any]:
     samples = [{"clock_offset_ms": v} for v in (3, -2, 7)]
     with EventStore(path) as store, LiveBarStore(path) as bars:
@@ -157,6 +162,7 @@ def _report(
             None,
             budget_ms,
             app_exit_code=exit_code,
+            required_s=required_s,
         )
     return report
 
@@ -292,3 +298,120 @@ def test_unattended_run_reports_start_failure(tmp_path: Path, verify: ModuleType
     assert "no route to api.binance.com" in observer.start_error
     with EventStore(settings.state_db_path) as store:
         assert EventType.MONITORING_STARTED not in [e.type for e in store.read()]
+
+
+# ---------------------------------------------------------------------- requested duration
+def _report_with(
+    verify: ModuleType, path: Path, *, window: tuple[int, int], required_s: float | None
+) -> dict[str, Any]:
+    with EventStore(path) as store, LiveBarStore(path) as bars:
+        report: dict[str, Any] = verify.build_report(
+            store, bars, [], window, [], FINAL, None, 60_000, required_s=required_s
+        )
+    return report
+
+
+def _monitor(path: Path, spans: list[tuple[str, int, int]]) -> None:
+    with EventStore(path) as store:
+        for mid, start, _ in spans:
+            store.append(_ev(EventType.MONITORING_STARTED, start, {"monitoring_id": mid}))
+        for mid, _, stop in spans:
+            store.append(
+                _ev(EventType.MONITORING_STOPPED, stop, {"monitoring_id": mid, "reason": "x"})
+            )
+
+
+def test_undersized_run_fails_the_requested_duration(tmp_path: Path, verify: ModuleType) -> None:
+    """T8: 610 s of monitoring cannot pass as a 2 h run, whatever else is clean."""
+    path = tmp_path / "state.db"
+    _seed(path, gap="resolved")
+    report = _report(verify, path, required_s=7200.0)
+    assert report["duration"] == {"monitored_s": 610.0, "required_s": 7200.0, "tolerance_s": 60.0}
+    assert report["verdict"]["pass"] is False
+    assert report["verdict"]["failures"] == [
+        "monitored 610.0 s < required 7200.0 s (tolerance 60 s): requested duration not covered"
+    ]
+
+
+def test_full_duration_run_passes_and_none_keeps_the_old_verdict(
+    tmp_path: Path, verify: ModuleType
+) -> None:
+    """T9: a run that covers the request passes (also within the one-bar tolerance); without
+    `required_s` the verdict is exactly what it was before the duration check existed."""
+    path = tmp_path / "state.db"
+    _seed(path, gap="resolved")
+    assert _report(verify, path, required_s=600.0)["verdict"] == {"pass": True, "failures": []}
+    # monitored 610 s: the tolerance is one 1m bar, inclusive of the boundary
+    assert _report(verify, path, required_s=670.0)["verdict"]["pass"] is True
+    assert _report(verify, path, required_s=670.5)["verdict"]["pass"] is False
+    unchanged = _report(verify, path)
+    assert unchanged["verdict"] == {"pass": True, "failures": []}
+    assert unchanged["duration"]["required_s"] is None
+    _seed(tmp_path / "other.db", gap="none")
+    bad = _report(verify, tmp_path / "other.db")  # other failures are still reported alone
+    assert bad["verdict"]["failures"] == ["1 expected minutes missing without an open gap"]
+
+
+def test_overlapping_monitoring_intervals_are_not_double_counted(
+    tmp_path: Path, verify: ModuleType
+) -> None:
+    """Two overlapping monitoring sessions cover 600 s, not 390 + 410 = 800 s."""
+    path = tmp_path / "state.db"
+    s = 1_000
+    _monitor(path, [("A", T0 + 10 * s, T0 + 400 * s), ("B", T0 + 200 * s, T0 + 610 * s)])
+    window = (T0, T0 + 700 * s)
+    report = _report_with(verify, path, window=window, required_s=700.0)
+    assert report["duration"]["monitored_s"] == 600.0
+    assert any("monitored 600.0 s < required 700.0 s" in f for f in report["verdict"]["failures"])
+    assert _report_with(verify, path, window=window, required_s=650.0)["verdict"]["pass"] is True
+
+
+def test_monitored_time_is_clipped_to_the_window(verify: ModuleType) -> None:
+    f = verify._monitored_ms
+    assert f([(0, 100), (50, 150)], (0, 200)) == 150
+    assert f([(0, 100), (100, 160)], (0, 200)) == 160  # touching intervals
+    assert f([(0, 100), (150, 180)], (0, 200)) == 130  # disjoint
+    assert f([(-50, 300)], (0, 200)) == 200  # clipped on both sides
+    assert f([(250, 300)], (0, 200)) == 0
+    assert f([(10, 20), (12, 14), (0, 30)], (0, 200)) == 30  # nested
+    assert f([], (0, 200)) == 0
+
+
+def _iso(text: str) -> int:
+    from datetime import datetime
+
+    return round(datetime.fromisoformat(text).timestamp() * 1000)
+
+
+@pytest.mark.parametrize(
+    ("window", "interval", "passes"),
+    [
+        # evidence/live/verify-20261023T210257Z.json: requested 2 h, monitored 7200.017 s
+        (
+            ("2026-10-23T19:02:48.768+00:00", "2026-10-23T21:02:57.339+00:00"),
+            ("2026-10-23T19:02:52.163+00:00", "2026-10-23T21:02:52.180+00:00"),
+            True,
+        ),
+        # evidence/live/verify-20261023T135943Z.json: requested 2 h, monitored 1316.329 s
+        (
+            ("2026-10-23T13:37:38.377+00:00", "2026-10-23T13:59:43.198+00:00"),
+            ("2026-10-23T13:37:41.841+00:00", "2026-10-23T13:59:38.170+00:00"),
+            False,
+        ),
+    ],
+)
+def test_recorded_m1_runs_under_the_duration_rule(
+    tmp_path: Path,
+    verify: ModuleType,
+    window: tuple[str, str],
+    interval: tuple[str, str],
+    passes: bool,
+) -> None:
+    """The two M1 evidence runs (timestamps copied from their reports; the files are not read):
+    the genuine 2 h run still passes, the 22-minute run recorded as 2 h now fails."""
+    path = tmp_path / "state.db"
+    _monitor(path, [("M", _iso(interval[0]), _iso(interval[1]))])
+    report = _report_with(
+        verify, path, window=(_iso(window[0]), _iso(window[1])), required_s=2 * 3600.0
+    )
+    assert report["verdict"]["pass"] is passes

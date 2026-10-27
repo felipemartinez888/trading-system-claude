@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from arc_helpers import (
@@ -14,20 +15,24 @@ from arc_helpers import (
     MIN,
     FakeArchive,
     FakeRest,
+    JsonLinesCodec,
+    YieldingArchive,
+    edge_lines,
     klay_2024_10_lines,
     kline_values,
     ms,
     rest_klines,
 )
+from legacy_importer import LegacyImporter
 
-from tsclaude.contracts.market import Market
+from tsclaude.contracts.market import Bar, Market
 from tsclaude.contracts.timeutil import ManualClock
 from tsclaude.marketdata.archive.checksum import ChecksumError
 from tsclaude.marketdata.archive.importer import ArchiveImportError, Importer, ImportRequest
 from tsclaude.marketdata.archive.paths import ArchiveDataType, ArchiveFile, Period
 from tsclaude.marketdata.types import FundingRate, PriceKline
 from tsclaude.store.lake import Lake, LakeKind
-from tsclaude.store.lake_writer import LakeWriter
+from tsclaude.store.lake_writer import LakeWriter, Staging
 
 NOW = ms(2026, 10, 20, 12, 30)
 SYM = "BTCUSDT"
@@ -50,6 +55,14 @@ def _importer(
     rests = {Market.SPOT: rest, Market.USDM: rest} if rest else None
     writer = LakeWriter(lake.data_dir, lake.codec)
     return Importer(writer, archive, rests, ManualClock(NOW), **kw)  # type: ignore[arg-type]
+
+
+def _legacy_importer(
+    lake: Lake, archive: FakeArchive, rest: FakeRest | None = None, **kw: object
+) -> Importer:
+    rests = {Market.SPOT: rest, Market.USDM: rest} if rest else None
+    writer = LakeWriter(lake.data_dir, lake.codec)
+    return LegacyImporter(writer, archive, rests, ManualClock(NOW), **kw)  # type: ignore[arg-type]
 
 
 def _run(importer: Importer, req: ImportRequest):  # type: ignore[no-untyped-def]
@@ -436,3 +449,243 @@ def test_unknown_first_row_is_malformed_not_header(lake: Lake, archive: FakeArch
     assert res.qa["summary"]["malformed_rows"] == 1
     data = [s for s in res.sources if s["role"] == "data"]
     assert data[0]["header_row"] is False
+
+
+# ---------------------------------------------------------------------- AP-1: bounded importer
+def _bounded_archive(scenario: str) -> YieldingArchive:
+    """Sparse multi-month archives (edges of each month only) that exercise every QA path."""
+    a = YieldingArchive()
+    if scenario == "open":
+        f = _file("2024-11")
+        lines = edge_lines(f, 200, zero_tail=5)
+        bad = kline_values(f.start_ms + 7 * MIN, MIN)
+        bad[2] = bad[4] - 1.0  # high below close: rejected
+        lines[7] = ",".join(f"{v:.8f}" if isinstance(v, float) else str(v) for v in bad)
+        lines.insert(21, lines[20])  # identical duplicate
+        conflict = lines[40].split(",")
+        conflict[4] = f"{float(conflict[4]) + 0.25:.8f}"
+        conflict[2] = f"{max(float(conflict[2]), float(conflict[4])):.8f}"
+        lines.insert(41, ",".join(conflict))  # differing duplicate
+        a.add(f, lines)
+        f = _file("2024-12")  # microseconds + header; its zero head continues the previous run
+        a.add(f, edge_lines(f, 200, unit="us", zero_head=5), header=True)
+        a.add_klines(_file("2025-01-05"))  # no monthly file: only two daily files exist
+        a.add_klines(_file("2025-01-06"))
+        f = _file("2025-02")
+        a.add(f, edge_lines(f, 200))
+        for label in ("2024-11", "2025-02"):  # native references for the cross-check
+            a.add_klines(_file(label, interval="15m"), step=15 * MIN)
+        a.add_klines(_file("2024-11", interval="1h"), step=HOUR)  # 2025-02 1h is missing
+    else:  # "holdout": an open month followed by two sealed months
+        f = _file("2025-12")
+        a.add(f, edge_lines(f, 200))
+        a.add_klines(_file("2025-12", interval="15m"), step=15 * MIN)
+        a.add_klines(_file("2025-12", interval="1h"), step=HOUR)
+        f = _file("2026-01")
+        a.add(f, edge_lines(f, 200, unit="us"))
+        f = _file("2026-02")
+        bad = kline_values(f.start_ms + 7 * MIN, MIN)
+        bad[2] = bad[4] - 1.0  # violation inside the holdout
+        lines = edge_lines(f, 200, unit="us")
+        fields = [f"{v:.8f}" if isinstance(v, float) else str(v) for v in bad]
+        fields[0] = str(int(fields[0]) * 1000)  # microseconds, like the rest of the file
+        fields[6] = str(int(fields[6]) * 1000 + 999)
+        lines[7] = ",".join(fields)
+        conflict = lines[20].split(",")
+        conflict[4] = f"{float(conflict[4]) + 0.25:.8f}"
+        conflict[2] = f"{max(float(conflict[2]), float(conflict[4])):.8f}"
+        lines.insert(21, ",".join(conflict))  # conflicting duplicate inside the holdout
+        a.add(f, lines)
+    return a
+
+
+_SCENARIOS = {
+    "open": (ms(2024, 11), ms(2025, 3)),
+    "holdout": (ms(2025, 12), ms(2026, 3)),
+}
+
+
+def _lake_at(tmp_path: Path, name: str) -> Lake:
+    return Lake(tmp_path / name, JsonLinesCodec())
+
+
+@pytest.mark.parametrize("scenario", ["open", "holdout"])
+@pytest.mark.parametrize("concurrency", [1, 3])
+def test_bounded_importer_matches_the_legacy_pipeline(
+    tmp_path: Path, scenario: str, concurrency: int
+) -> None:
+    """T2: identical dataset id, part content hashes, manifest, QA report and source records.
+
+    The reference is the frozen pre-change pipeline run sequentially (month_concurrency=1): with
+    concurrent months its QA lists (unit notes, unavailable files) came out in task-completion
+    order, the bounded pipeline always emits them in month order, so its output no longer depends
+    on `month_concurrency`.
+
+    Covers ms/us months, a header row, identical and conflicting duplicates, a rejected row, a
+    missing monthly file (daily fallback, unavailable days), a zero-volume run across a month
+    boundary, a missing native cross-check file, and the sealed holdout months."""
+    start, end = _SCENARIOS[scenario]
+    archive = _bounded_archive(scenario)
+    new_lake = _lake_at(tmp_path, "new")
+    old_lake = _lake_at(tmp_path, "old")
+    new = asyncio.run(
+        _importer(new_lake, archive, month_concurrency=concurrency).run(_req(start, end))
+    )
+    old = asyncio.run(
+        _legacy_importer(old_lake, archive, month_concurrency=1).run(_req(start, end))
+    )
+    assert new.dataset_id is not None
+    assert new.dataset_id == old.dataset_id
+    assert [(p.path, p.content_hash, p.rows) for p in new.parts] == [
+        (p.path, p.content_hash, p.rows) for p in old.parts
+    ]
+    assert new.parts == old.parts  # including file hashes and time ranges
+    assert new.rows == old.rows
+    assert new.qa == old.qa
+    assert new.sources == old.sources
+    dsid = new.dataset_id
+    for name in ("manifest.json", "qa_report.json"):
+        assert (new_lake.imports_dir / dsid / name).read_text() == (
+            old_lake.imports_dir / dsid / name
+        ).read_text()
+    if scenario == "open":
+        s = new.qa["summary"]
+        assert s["rejected_rows"] == 1
+        assert s["duplicates_identical"] == 1
+        assert s["duplicate_conflicts"] == 1
+        assert s["unavailable_files"] == 29  # 31 January days minus the two daily files
+        assert [(r["from"], r["count"]) for r in new.qa["zero_volume_runs"]] == [
+            ("2024-11-30T23:55:00.000Z", 10)  # 5 + 5 minutes, joined across the boundary
+        ]
+        assert any(c["ok"] is None for c in new.qa["cross_checks"])  # the missing 1h reference
+
+
+def test_holdout_months_stay_sealed_over_a_multi_month_request(tmp_path: Path) -> None:
+    """T7: parts of 2026 months land under lake_sealed, nothing of 2026 under lake, and no sealed
+    month is used for the price cross-check or leaks prices into the QA output."""
+    start, end = _SCENARIOS["holdout"]
+    lake = _lake_at(tmp_path, "d")
+    res = asyncio.run(
+        _importer(lake, _bounded_archive("holdout"), month_concurrency=3).run(_req(start, end))
+    )
+    by_month = {(p.year, p.month): p.path.split("/")[0] for p in res.parts}
+    assert by_month == {(2025, 12): "lake", (2026, 1): "lake_sealed", (2026, 2): "lake_sealed"}
+    assert not [p for p in lake.lake_dir.rglob("part-*") if "year=2026" in str(p)]
+    assert {c["month"] for c in res.qa["cross_checks"]} == {"2025-12"}
+    (rejected,) = res.qa["rejected_rows"]
+    assert rejected["redacted"]
+    assert "row" not in rejected
+    (conflict,) = res.qa["duplicate_conflicts"]
+    assert "kept" not in conflict
+    assert "dropped" not in conflict
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_each_row_is_validated_as_one_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    """T5: exactly one `Bar` construction per merged row (accepted or rejected). The frozen
+    pre-change pipeline constructs a second one for every accepted row."""
+    constructed = 0
+    original = Bar.__init__
+
+    def counting(self: Bar, **data: object) -> None:
+        nonlocal constructed
+        constructed += 1
+        original(self, **data)
+
+    monkeypatch.setattr(Bar, "__init__", counting)
+    build = _legacy_importer if legacy else _importer
+    start, end = _SCENARIOS["open"]
+    res = asyncio.run(
+        build(_lake_at(tmp_path, "t5"), _bounded_archive("open"), cross_check_months=0).run(
+            _req(start, end)
+        )
+    )
+    rejected = res.qa["summary"]["rejected_rows"]
+    assert rejected == 1
+    assert constructed == (2 * res.rows if legacy else res.rows) + rejected
+
+
+@pytest.mark.parametrize("concurrency", [1, 3])
+def test_failure_in_month_k_publishes_nothing_and_rerun_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, concurrency: int
+) -> None:
+    """T6: a checksum error in month 4 of 5 leaves no part, manifest or staging directory, no
+    sibling month writes after the abort, and the corrected re-run is idempotent."""
+    labels = ["2024-08", "2024-09", "2024-10", "2024-11", "2024-12"]
+    archive = YieldingArchive()
+    for label in labels:
+        f = _file(label)
+        archive.add(f, edge_lines(f, 100), corrupt_checksum=label == "2024-11")
+    closed_at_write: list[bool] = []
+    original = Staging.write_parts
+
+    def spy(self: Staging, *a: Any, **k: Any) -> Any:
+        closed_at_write.append(self._closed)
+        return original(self, *a, **k)
+
+    monkeypatch.setattr(Staging, "write_parts", spy)
+    lake = _lake_at(tmp_path, "t6")
+    req = _req(ms(2024, 8), ms(2025, 1))
+    with pytest.raises(ChecksumError):
+        asyncio.run(_importer(lake, archive, month_concurrency=concurrency).run(req))
+    if concurrency == 1:
+        assert len(closed_at_write) >= 3  # months 1-3 were staged before month 4 failed
+    assert closed_at_write.count(True) == 0  # nothing wrote after the abort
+    assert lake.dataset_ids() == []
+    assert list(lake.data_dir.rglob("part-*")) == []
+    assert not (lake.data_dir / ".staging").exists()
+
+    f = _file("2024-11")
+    archive.add(f, edge_lines(f, 100))  # corrected publication
+    first = asyncio.run(_importer(lake, archive, month_concurrency=concurrency).run(req))
+    assert first.created
+    assert first.rows == 5 * 200
+    files = sorted(p.name for p in lake.lake_dir.rglob("part-*"))
+    manifest = (lake.imports_dir / str(first.dataset_id) / "manifest.json").read_text()
+    again = asyncio.run(_importer(lake, archive, month_concurrency=concurrency).run(req))
+    assert again.dataset_id == first.dataset_id
+    assert not again.created
+    assert sorted(p.name for p in lake.lake_dir.rglob("part-*")) == files
+    assert (lake.imports_dir / str(first.dataset_id) / "manifest.json").read_text() == manifest
+    fresh = asyncio.run(
+        _importer(_lake_at(tmp_path, "t6-fresh"), archive, month_concurrency=concurrency).run(req)
+    )
+    assert fresh.dataset_id == first.dataset_id  # the failed attempt left no trace in the result
+
+
+def test_failed_request_cancels_the_other_months(tmp_path: Path) -> None:
+    """T6 (cancellation): when one month fails, the months still fetching are cancelled and
+    drained before `run` raises - nothing keeps running against the closed staging area."""
+
+    class SlowArchive(YieldingArchive):
+        fetches_finished = 0
+
+        async def fetch(self, f: ArchiveFile):  # type: ignore[no-untyped-def]
+            if "2024-08" in f.relpath:  # the first month fails immediately
+                return await FakeArchive.fetch(self, f)
+            await asyncio.sleep(0.05)
+            out = await FakeArchive.fetch(self, f)
+            type(self).fetches_finished += 1
+            return out
+
+    archive = SlowArchive()
+    for label in ("2024-08", "2024-09", "2024-10", "2024-11", "2024-12"):
+        f = _file(label)
+        archive.add(f, edge_lines(f, 100), corrupt_checksum=label == "2024-08")
+    lake = _lake_at(tmp_path, "cancel")
+    importer = _importer(lake, archive, month_concurrency=3)
+
+    async def scenario() -> int:
+        with pytest.raises(ChecksumError):
+            await importer.run(_req(ms(2024, 8), ms(2025, 1)))
+        pending = len(asyncio.all_tasks()) - 1  # everything except this coroutine
+        await asyncio.sleep(0.2)  # long enough for un-cancelled siblings to finish fetching
+        return pending
+
+    pending = asyncio.run(scenario())
+    assert pending == 0
+    assert SlowArchive.fetches_finished == 0
+    assert lake.dataset_ids() == []
+    assert not (lake.data_dir / ".staging").exists()
