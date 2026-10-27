@@ -274,11 +274,14 @@ def test_p5_never_delivered_bar_stays_awaiting_and_is_never_auto_resolved(tmp_pa
         assert len(rig.journal()) == 6
         awaiting = rig.runtime.published()[0]["service"]["awaiting_missing"]
         assert T0 + 3 * MS_PER_MINUTE in awaiting["spot:BTCUSDT"]
+        # MVP-2.1: no switch while the old session's consumer is alive (it could still resume)
+        with pytest.raises(PaperActionRefused):
+            rig.runtime.request_new_session("restart ambiguity, start clean", "req-0001")
+        await rig.supervisor.stop()
         record = rig.runtime.request_new_session("restart ambiguity, start clean", "req-0001")
         assert record["created"] is True
         assert record["previous_session_id"] == "paper"
         assert len(rig.journal()) == 6  # the old session is untouched
-        await rig.supervisor.stop()
         await rig.supervisor.start("S3")  # the recorded session opens at the next start
         assert rig.runtime.session_id == record["new_session_id"]
         assert rig.runtime.state is PaperState.RUNNING
@@ -311,12 +314,16 @@ def test_p6_dropped_update_stops_paper_decisions(tmp_path: Path) -> None:
 
 
 def test_p6_lost_subscription_stops_paper_decisions(tmp_path: Path) -> None:
+    """Market data stops underneath paper (like `MarketDataService.stop()`: `running` cleared, then
+    every subscription closed). The real-`Subscription` version of this check is H5 in
+    `test_mvp21_paper_hardening.py`."""
+
     async def scenario() -> None:
         rig = Rig(tmp_path)
         await rig.supervisor.start("S1")
         await rig.minute(0)
-        rig.paper_sub().close()  # closed while market data keeps running
-        await rig.minute(1)
+        await rig.md.stop()  # not through the supervisor: paper is still consuming
+        await asyncio.sleep(POLL * 5)
         assert rig.runtime.state is PaperState.SUBSCRIPTION_LOST
         assert len(rig.journal()) == 2
         await rig.supervisor.close()

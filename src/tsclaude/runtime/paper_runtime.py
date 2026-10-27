@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -96,7 +97,7 @@ class PaperState(StrEnum):
 
 
 #: states in which paper decisions are being made (a new session is refused)
-ACTIVE_STATES = frozenset({PaperState.STARTING, PaperState.RUNNING})
+ACTIVE_STATES = frozenset({PaperState.STARTING, PaperState.RUNNING, PaperState.AWAITING_BACKFILL})
 
 
 class SubscriptionLike(Protocol):
@@ -210,46 +211,187 @@ class PaperActionRefused(Exception):
         self.detail = detail
 
 
+class AuditLogAmbiguous(Exception):
+    """The audit log does not establish the active paper session unambiguously (fail closed)."""
+
+
+@dataclass
+class LogState:
+    """What `paper_sessions.jsonl` establishes.
+
+    `active` is None when the log is ambiguous (`reason` says why). `transitions` are the session
+    changes in order: ``{"line", "ts_ms", "previous", "active"}``. `repairable_line` is set when the
+    only defect is a complete final record without its newline (MVP-2 readers already used it)."""
+
+    active: str | None
+    transitions: list[dict[str, Any]] = field(default_factory=list)
+    reason: str | None = None
+    repairable_line: int | None = None
+    warnings: list[str] = field(default_factory=list)
+    request_records: list[dict[str, Any]] = field(default_factory=list)
+
+
 class SessionLog:
     """Append-only JSON-lines record of operator-created paper sessions (`paper_sessions.jsonl`).
 
     It is an audit aid, not the source of truth: the paper sessions themselves live in the
-    hash-chained event store, and a new session never touches an old one. A malformed log fails
-    closed (the runtime refuses to start rather than guess the active session).
+    hash-chained event store, and a new session never touches an old one. Bytes are never
+    rewritten or removed. Reading fails closed:
+
+    - a complete line that is not a valid record is accepted only if the **next** line is an
+      operator-written quarantine record naming it (`{"kind": "quarantine", "line": n, "sha256":
+      <hex of the line's exact bytes, without the line feed but including any CR>,
+      "active_session_id": ..., "ts_ms": <wall time of the decision>, "note": ...}`); the
+      quarantine then sets the active session explicitly;
+    - an unterminated final line that parses as a session record is *repairable* (every earlier
+      reader already treated it as active): the runtime may terminate it, append a `repair`
+      record, and only after proving journal ownership (`PaperRuntime._resolve_session`);
+    - an unterminated final line that does not parse is **ambiguous**: it may be a session switch
+      that was used and later damaged, so nothing is inferred and paper stays UNAVAILABLE until
+      the operator appends a quarantine record (documented in the MVP-2.1 devlog).
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def records(self) -> list[dict[str, Any]]:
+    def inspect(self, default: str) -> LogState:
+        """Classify the log. Raises `OSError` when it cannot be read."""
         if not self.path.exists():
-            return []
-        out: list[dict[str, Any]] = []
-        for n, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
+            return LogState(active=default)
+        data = self.path.read_bytes()
+        lines = data.split(b"\n")
+        unterminated = lines.pop()  # b"" when the file ends with a newline
+        state = LogState(active=default)
+        active = default
+        pending_invalid: tuple[int, bytes] | None = None
+        for n, raw in enumerate(lines, 1):
+            if not raw.strip():
                 continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{self.path}:{n}: malformed audit record") from exc
-            if not isinstance(rec, dict) or not _SESSION_ID.match(
-                str(rec.get("new_session_id", ""))
-            ):
-                raise ValueError(f"{self.path}:{n}: invalid audit record")
-            out.append(rec)
-        return out
-
-    def active(self, default: str) -> str:
-        records = self.records()
-        return str(records[-1]["new_session_id"]) if records else default
+            rec = _parse(raw)
+            if pending_invalid is not None:
+                bad_n, bad_raw = pending_invalid
+                if rec is None or not _is_quarantine(rec, bad_n, bad_raw):
+                    return _ambiguous(state, f"line {bad_n}: invalid audit record, not quarantined")
+                quarantined = str(rec["active_session_id"])
+                state.transitions.append(
+                    {
+                        "line": n,
+                        "ts_ms": rec.get("ts_ms"),
+                        "store_seq": rec.get("store_seq"),
+                        "previous": active,
+                        "active": quarantined,
+                    }
+                )
+                state.warnings.append(f"line {bad_n} quarantined by the operator (line {n})")
+                active = quarantined
+                pending_invalid = None
+                continue
+            if rec is None:
+                pending_invalid = (n, raw)
+                continue
+            kind = rec.get("kind")
+            if kind == "repair":
+                state.warnings.append(f"line {rec.get('line')} was repaired (line {n})")
+                continue
+            if kind == "quarantine":
+                return _ambiguous(state, f"line {n}: quarantine record without an invalid line")
+            if not _SESSION_ID.match(str(rec.get("new_session_id", ""))):
+                pending_invalid = (n, raw)
+                continue
+            state.transitions.append(
+                {
+                    "line": n,
+                    "ts_ms": rec.get("ts_ms"),
+                    "store_seq": rec.get("store_seq"),
+                    "previous": active,
+                    "active": str(rec["new_session_id"]),
+                }
+            )
+            state.request_records.append(rec)
+            active = str(rec["new_session_id"])
+        if pending_invalid is not None:
+            return _ambiguous(state, f"line {pending_invalid[0]}: invalid audit record")
+        if unterminated and not unterminated.strip():  # stray whitespace, no record in it
+            state.repairable_line = len(lines) + 1
+            state.active = active
+            return state
+        if unterminated.strip():
+            n = len(lines) + 1
+            rec = _parse(unterminated)
+            if rec is None or not _SESSION_ID.match(str(rec.get("new_session_id", ""))):
+                return _ambiguous(
+                    state,
+                    f"line {n}: incomplete final audit record (it may be a session switch that "
+                    "was used and later damaged); explicit operator recovery is required",
+                )
+            state.transitions.append(
+                {
+                    "line": n,
+                    "ts_ms": rec.get("ts_ms"),
+                    "store_seq": rec.get("store_seq"),
+                    "previous": active,
+                    "active": str(rec["new_session_id"]),
+                }
+            )
+            state.request_records.append(rec)
+            active = str(rec["new_session_id"])
+            state.repairable_line = n
+        state.active = active
+        return state
 
     def append(self, record: dict[str, Any]) -> None:
+        """Append one record (fsynced). Refuses a file whose last line is unterminated."""
+        if self.path.exists() and self.path.stat().st_size:
+            with self.path.open("rb") as fh:
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    raise AuditLogAmbiguous("the audit log ends with an unterminated record")
+        self._write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+
+    def repair_unterminated(self, line: int, now_ms: int) -> None:
+        """Terminate a complete-but-unterminated final record and record the repair."""
+        repair = {
+            "v": 1,
+            "kind": "repair",
+            "line": line,
+            "ts_ms": now_ms,
+            "ts": to_iso(now_ms),
+            "note": "terminated a complete final record that lacked its newline",
+        }
+        self._write("\n" + json.dumps(repair, sort_keys=True) + "\n")
+
+    def _write(self, text: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(record, sort_keys=True, ensure_ascii=False)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        with self.path.open("a", encoding="utf-8", newline="") as fh:
+            fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
+
+
+def _parse(raw: bytes) -> dict[str, Any] | None:
+    try:
+        rec = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError):  # bad UTF-8, bad JSON, absurd numbers or nesting
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def _is_quarantine(rec: dict[str, Any] | None, line: int, raw: bytes) -> bool:
+    return (
+        rec is not None
+        and rec.get("kind") == "quarantine"
+        and rec.get("line") == line
+        and rec.get("sha256") == hashlib.sha256(raw).hexdigest()
+        and isinstance(rec.get("ts_ms"), int)
+        and bool(str(rec.get("note", "")).strip())
+        and bool(_SESSION_ID.match(str(rec.get("active_session_id", ""))))
+    )
+
+
+def _ambiguous(state: LogState, reason: str) -> LogState:
+    state.active = None
+    state.reason = reason
+    return state
 
 
 # ---------------------------------------------------------------------- backfill validation
@@ -340,8 +482,12 @@ class PaperRuntime:
         self._sub: SubscriptionLike | None = None
         self._snapshot: Callable[[], MarketSnapshot | None] = lambda: None
         self._market_running: Callable[[], bool] = lambda: False
-        self._published: dict[str, Any] = {}
-        self._published_at_ms: int | None = None
+        #: (snapshot, published_at_ms): one tuple, replaced in a single assignment (H2)
+        self._published: tuple[dict[str, Any], int | None] = ({}, None)
+        self.opened_at_ms: int | None = None
+        self._released_at_open = 0  # LiveClock releases counted when this run opened (H1)
+        self.previous_run: dict[str, Any] | None = None  # kept across a stop (H3)
+        self.audit_warnings: list[str] = []
         self._publish()
 
     @property
@@ -372,6 +518,7 @@ class PaperRuntime:
             return
         self.service = None
         self.observing_since_ms = None
+        self.opened_at_ms = None
         self.backfill = None
         self.dropped_updates = 0
         self._snapshot = snapshot
@@ -409,7 +556,7 @@ class PaperRuntime:
         """Open or restore the session from its journal; False (UNAVAILABLE) on any failure."""
         try:
             config = self._config_factory()
-            session_id = self._log.active(self.settings.session_id)
+            session_id = self._resolve_session()
             tracker = self._seeded_tracker(config)
             strategy = self._strategy_factory() if self._strategy_factory is not None else None
             service = PaperTradingService.open(
@@ -426,6 +573,8 @@ class PaperRuntime:
             return False
         self.service = service
         self.session_id = session_id
+        self.opened_at_ms = self._clock.now_ms()
+        self._released_at_open = service.clock.stats.released
         self._set(PaperState.RUNNING, None)
         return True
 
@@ -450,9 +599,24 @@ class PaperRuntime:
         if self._sub is not None:
             self._sub.close()
             self._sub = None
-        if self.state in (PaperState.RUNNING, PaperState.AWAITING_BACKFILL, PaperState.STARTING):
+        if self.state in (PaperState.DISABLED, PaperState.IDLE):  # nothing ran since the last stop
+            self._publish()
+            return
+        service = self.service
+        self.previous_run = {
+            "state": str(self.state),
+            "reason": self.reason,
+            "awaiting_missing": dict(service.awaiting_missing) if service is not None else {},
+            "stopped_at_ms": self._clock.now_ms(),
+        }
+        if self.state in (PaperState.RUNNING, PaperState.STARTING):
             self._set(PaperState.IDLE, "monitoring stopped")
-        else:
+        elif self.state is PaperState.AWAITING_BACKFILL:
+            self._set(
+                PaperState.IDLE,
+                f"monitoring stopped; the previous run was AWAITING_BACKFILL: {self.reason}",
+            )
+        else:  # a failure state stays as it is: a stop never erases it
             self._publish()
 
     # ------------------------------------------------------------------ consumer
@@ -472,10 +636,13 @@ class PaperRuntime:
                     return
                 if self._overflowed(sub):
                     return
-                if update is None and (getattr(sub, "closed", False) or not self._market_running()):
+                # Deterministic: MarketDataService.stop() clears `running` before it closes the
+                # subscriptions, so a None from a closed subscription always comes with
+                # market_running() == False. A close by anyone else is caught by the watchdog.
+                if update is None and not self._market_running():
                     self._halt(
                         PaperState.SUBSCRIPTION_LOST,
-                        "the market-data subscription closed while monitoring was expected to run",
+                        "market data stopped while paper was consuming (subscription closed)",
                     )
                     return
                 if update is None and loop.time() - last_update > self.settings.silence_s:
@@ -610,23 +777,32 @@ class PaperRuntime:
         if not self.enabled:
             raise PaperActionRefused(409, "paper trading is disabled (configs/paper.yaml)")
         try:
-            records = self._log.records()
-        except ValueError as exc:
-            raise PaperActionRefused(423, str(exc)) from exc
-        for rec in records:
+            state = self._log.inspect(self.settings.session_id)  # read only: nothing written yet
+        except OSError as exc:
+            raise PaperActionRefused(423, f"paper session audit log: {exc}") from exc
+        if state.active is None:
+            raise PaperActionRefused(423, f"paper session audit log: {state.reason}")
+        for rec in state.request_records:
             if rec.get("request_id") == request_id:
                 if rec.get("note") != note:
                     raise PaperActionRefused(409, "request_id was already used with another note")
                 return {**rec, "created": False}
-        if self.state in ACTIVE_STATES:
+        consuming = self._task is not None and not self._task.done()
+        if self.state in ACTIVE_STATES or consuming:
             raise PaperActionRefused(
                 409,
-                f"paper is {self.state}; a new session can only replace a stopped or failed one",
+                f"paper is {self.state}; stop monitoring first: a new session can only replace "
+                "a stopped or failed one",
             )
+        try:  # ownership proof (and a proven repair) only for a request that will be recorded
+            self._resolve_session()
+            state = self._log.inspect(self.settings.session_id)
+        except (AuditLogAmbiguous, OSError) as exc:
+            raise PaperActionRefused(423, f"paper session audit log: {exc}") from exc
         now = self._clock.now_ms()
-        previous = records[-1]["new_session_id"] if records else self.settings.session_id
+        previous = str(state.active)
         stamp = to_iso(now).replace("-", "").replace(":", "").replace(".", "")[:15] + "Z"
-        known = {str(r["new_session_id"]) for r in records} | {self.settings.session_id}
+        known = {str(t["active"]) for t in state.transitions} | {self.settings.session_id}
         candidate, n = f"paper-{stamp}", 1
         while candidate in known or self._has_journal(candidate):
             n += 1
@@ -638,11 +814,15 @@ class PaperRuntime:
             "request_id": request_id,
             "previous_session_id": previous,
             "new_session_id": candidate,
+            "store_seq": self._store.head[0],  # journal position of the switch (ownership proof)
             "state_at_request": str(self.state),
             "reason_at_request": self.reason,
             "note": note,
         }
-        self._log.append(record)
+        try:
+            self._log.append(record)
+        except (AuditLogAmbiguous, OSError) as exc:
+            raise PaperActionRefused(423, f"paper session audit log: {exc}") from exc
         log.warning(
             "new paper session recorded by operator",
             extra={"previous": previous, "new": candidate, "request_id": request_id},
@@ -653,6 +833,69 @@ class PaperRuntime:
         )
         self._publish()
         return {**record, "created": True}
+
+    def _resolve_session(self) -> str:
+        """The active paper session, proven unambiguous; raises `AuditLogAmbiguous` otherwise.
+
+        Proof: the audit log parses (or its only defect is a complete final record without its
+        newline), and journal ownership agrees with it: the newest paper step in the store
+        belongs to a session the log knows, and no superseded session has a paper step after the
+        record that superseded it. Only then is a repairable final record terminated (append-only,
+        with a `repair` record)."""
+        state = self._log.inspect(self.settings.session_id)
+        if state.active is None:
+            raise AuditLogAmbiguous(state.reason or "audit log is ambiguous")
+        problem = self._ownership_problem(state)
+        if problem is not None:
+            raise AuditLogAmbiguous(f"journal ownership ambiguous: {problem}")
+        warnings = list(state.warnings)
+        if state.repairable_line is not None:
+            self._log.repair_unterminated(state.repairable_line, self._clock.now_ms())
+            warnings.append(f"line {state.repairable_line}: missing newline repaired")
+        self.audit_warnings = warnings
+        return state.active
+
+    def _ownership_problem(self, state: LogState) -> str | None:
+        known = {self.settings.session_id} | {str(t["active"]) for t in state.transitions}
+        newest = self._store.read(types=[EventType.PAPER_STEP], descending=True, limit=1)
+        if newest and newest[0].aggregate_id not in known:
+            return f"the journal has paper session {newest[0].aggregate_id!r} unknown to the log"
+        # When was each session last switched away from? A session that is active again later
+        # (or kept active by a quarantine) is only constrained up to that last switch-away.
+        # The switch's store sequence (recorded since MVP-2.1) is exact: no step of the superseded
+        # session may follow it in the journal. Older records only have wall time, compared with
+        # the step's bar close (a weaker check, kept for MVP-2 logs).
+        superseded_at: dict[str, tuple[int, int | None, int]] = {}
+        for t in state.transitions:
+            switched_at = t.get("ts_ms")
+            if not isinstance(switched_at, int):
+                return f"line {t['line']}: session record without an integer ts_ms"
+            seq = t.get("store_seq")
+            previous, active = str(t["previous"]), str(t["active"])
+            if previous != active:
+                superseded_at[previous] = (
+                    switched_at,
+                    seq if isinstance(seq, int) else None,
+                    int(t["line"]),
+                )
+            superseded_at.pop(active, None)  # active again: its earlier end no longer binds
+        for session, (switched_at, seq, line) in sorted(superseded_at.items()):
+            last = self._last_step(session)
+            if last is None:
+                continue
+            after = last.seq > seq if seq is not None else last.ts_ms > switched_at
+            if after:
+                return f"session {session!r} has paper steps after it was superseded (line {line})"
+        return None
+
+    def _last_step(self, session_id: str) -> Event | None:
+        rows = self._store.read(
+            types=[EventType.PAPER_STEP],
+            aggregate=(AggregateType.SIM, session_id),
+            descending=True,
+            limit=1,
+        )
+        return rows[0] if rows else None
 
     def _has_journal(self, session_id: str) -> bool:
         return bool(
@@ -680,9 +923,22 @@ class PaperRuntime:
         """Build the immutable snapshot read by API threads (on the event loop only)."""
         now = self._clock.now_ms()
         try:
-            next_session = self._log.active(self.settings.session_id)
-        except ValueError as exc:
-            next_session = f"unreadable audit log: {exc}"
+            log_state = self._log.inspect(self.settings.session_id)
+            next_session = log_state.active
+            audit = {
+                "ok": log_state.active is not None,
+                "reason": log_state.reason,
+                "warnings": self.audit_warnings or log_state.warnings,
+                "repairable_line": log_state.repairable_line,
+            }
+        except OSError as exc:  # never crash the app on an unreadable log (H4)
+            next_session = None
+            audit = {
+                "ok": False,
+                "reason": f"unreadable: {type(exc).__name__}: {exc}",
+                "warnings": [],
+                "repairable_line": None,
+            }
         snap: dict[str, Any] = {
             "state": str(self.state),
             "reason": self.reason,
@@ -692,6 +948,12 @@ class PaperRuntime:
             "session_id": self.session_id,
             "next_session_id": next_session,
             "observing_since_ms": self.observing_since_ms,
+            "opened_at_ms": self.opened_at_ms,
+            "settle_ms": self.settings.settle_ms,
+            "values_as_of_ms": None,
+            "live_bar_since_start": False,
+            "previous_run": self.previous_run,
+            "audit_log": audit,
             "dropped_updates": self.dropped_updates,
             "backfill": self.backfill,
             "limitations": list(LIMITATIONS),
@@ -701,6 +963,9 @@ class PaperRuntime:
         }
         service = self.service
         if service is not None:
+            last = service.session.last_minute_ms
+            snap["values_as_of_ms"] = None if last is None else last + MS_PER_MINUTE - 1
+            snap["live_bar_since_start"] = service.clock.stats.released > self._released_at_open
             snap["service"] = service.status()
             snap["books"] = {
                 name: {
@@ -721,15 +986,14 @@ class PaperRuntime:
                 {"ts_ms": e["ts_ms"], "aggregate_id": e["aggregate_id"], **e["payload"]}
                 for e in fills[-MAX_FILLS:]
             ]
-        self._published = _frozen(snap)
-        self._published_at_ms = now
+        self._published = (_frozen(snap), now)
         if self.on_change is not None:
             with contextlib.suppress(Exception):
                 self.on_change()
 
     def published(self) -> tuple[dict[str, Any], int | None]:
         """The last published snapshot and when it was taken (safe from any thread)."""
-        return self._published, self._published_at_ms
+        return self._published
 
     def summary(self) -> Sourced[str]:
         """One-line state for the status bar (`StatusResponse.paper`)."""
@@ -774,7 +1038,9 @@ def load_paper_runtime(
 __all__ = [
     "ACTIVE_STATES",
     "AUDIT_FILE",
+    "AuditLogAmbiguous",
     "BarReader",
+    "LogState",
     "PaperActionRefused",
     "PaperRuntime",
     "PaperSettings",

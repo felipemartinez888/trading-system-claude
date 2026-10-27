@@ -3,6 +3,7 @@ paper state in `/api/status`. Fake market data, no network; nothing here can pla
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -12,10 +13,11 @@ import pytest
 from api_testkit import BASE_URL, PORT, TOKEN
 from api_testkit import T0 as _T0
 from fastapi.testclient import TestClient
-from m1t2_fakes import FakeFactory
+from m1t2_fakes import FakeFactory, make_bar
 
 from tsclaude.api.app import create_app
 from tsclaude.api.context import AppContext
+from tsclaude.contracts.market import Market
 from tsclaude.contracts.timeutil import ManualClock
 from tsclaude.runtime.paper_runtime import AUDIT_FILE, PaperRuntime, PaperSettings
 from tsclaude.runtime.supervisor import MonitoringSupervisor
@@ -32,8 +34,9 @@ AUTH = {"X-TSC-Token": TOKEN, "Origin": ORIGIN}
 def _app(tmp_path: Path, *, enabled: bool = True, paper: bool = True) -> TestClient:
     store = EventStore(tmp_path / "state.db")
     clock = ManualClock(T0)
+    factory = FakeFactory()
     supervisor = MonitoringSupervisor(
-        store, clock, service_factory=FakeFactory(), demo=DemoDetectorConfig(enabled=False)
+        store, clock, service_factory=factory, demo=DemoDetectorConfig(enabled=False)
     )
     if paper:
         supervisor.attach_paper(
@@ -60,7 +63,10 @@ def _app(tmp_path: Path, *, enabled: bool = True, paper: bool = True) -> TestCli
     static = tmp_path / "no-static"
     static.mkdir(exist_ok=True)
     app = create_app(ctx, static_dir=static, heartbeat=False, push_interval_s=None)
-    return TestClient(app, base_url=BASE_URL)
+    client = TestClient(app, base_url=BASE_URL)
+    client.fake_factory = factory  # type: ignore[attr-defined]  # test drivers for test_p7
+    client.fake_clock = clock  # type: ignore[attr-defined]
+    return client
 
 
 @pytest.fixture
@@ -89,18 +95,48 @@ def test_p7_status_and_values_are_labelled(client: TestClient) -> None:
     status = client.get("/api/paper/status").json()["status"]
     assert status["value"]["state"] == "RUNNING"
     assert status["value"]["session_id"] == "paper"
+    assert client.get("/api/status").json()["paper"]["value"] == "RUNNING"
+    # 1. RUNNING but no bar processed yet: no value is backed by market data -> UNAVAILABLE
     books = client.get("/api/paper/books").json()["books"]
-    assert books["provenance"] == "SIMULATED"
+    assert books["provenance"] == "UNAVAILABLE"
+    assert "no bar processed" in books["reason"]
+    fills = client.get("/api/paper/fills", params={"limit": 5}).json()["fills"]
+    assert fills["provenance"] == "UNAVAILABLE"
+
+    # 2. a live (ws_live) minute closes for every instrument and the paper consumer processes it
+    clock = client.fake_clock  # type: ignore[attr-defined]
+    md = client.fake_factory.instance  # type: ignore[attr-defined]
+    last_close = T0 + 60_000 - 1
+    clock.set(last_close + 1 + 1_500)
+    for market, symbol in ((Market.SPOT, "BTCUSDT"), (Market.USDM, "BTCUSDT")):
+        bar = make_bar(market, symbol, T0)
+        client.portal.call(md.push_bar, bar)  # type: ignore[union-attr]  # on the app's loop
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        status = client.get("/api/paper/status").json()["status"]["value"]
+        if status["live_bar_since_start"]:
+            break
+        time.sleep(0.02)
+    assert status["live_bar_since_start"] is True
+    assert status["values_as_of_ms"] == last_close
+    books = client.get("/api/paper/books").json()["books"]
+    assert books["provenance"] == "SIMULATED"  # RUNNING, live bar processed, fresh
+    assert books["as_of_ms"] == last_close  # the bar close, not the publication time
     assert set(books["value"]["books"]) == {"baseline", "shadow", "benchmark"}
     fills = client.get("/api/paper/fills", params={"limit": 5}).json()["fills"]
     assert fills["provenance"] == "SIMULATED"
-    assert fills["value"] == []
-    assert client.get("/api/status").json()["paper"]["value"] == "RUNNING"
 
+    # 3./4. after monitoring stops, the last-known values are STALE, stamped with the bar close
     assert client.post("/api/monitoring/stop", headers=AUTH).status_code == 200
+    published_at = client.get("/api/paper/status").json()["status"]["as_of_ms"]
     books = client.get("/api/paper/books").json()["books"]
-    assert books["provenance"] == "STALE"  # last known values once paper stopped
-    assert books["as_of_ms"] is not None
+    assert books["provenance"] == "STALE"
+    assert books["as_of_ms"] == last_close
+    assert books["as_of_ms"] != published_at  # never the API publication time
+    assert "IDLE" in books["reason"]
+    fills = client.get("/api/paper/fills", params={"limit": 5}).json()["fills"]
+    assert fills["provenance"] == "STALE"
+    assert fills["as_of_ms"] == last_close
 
 
 def test_p7_new_session_requires_token_note_and_a_stopped_paper(

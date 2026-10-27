@@ -33,18 +33,33 @@ class NewPaperSession(BaseModel):
     request_id: str = Field(pattern=r"^[0-9A-Za-z_-]{8,64}$")
 
 
-def _values(snap: dict[str, Any], at: int | None, value: Any) -> dict[str, Any]:
-    """SIMULATED while running, else STALE with the publication time."""
+#: how old the last processed bar may be before RUNNING values are no longer labelled fresh
+FRESHNESS_SLACK_MS = 120_000
+
+
+def _values(snap: dict[str, Any], now_ms: int, value: Any) -> dict[str, Any]:
+    """SIMULATED only for values backed by a live bar processed in this run and recent enough;
+    otherwise STALE, stamped with the close of the last processed bar (never the publication
+    time). Restored books therefore stay STALE until the first live bar after a start (H1)."""
     if snap.get("service") is None:
         reason = snap.get("reason") or f"paper is {snap.get('state')}"
         return Sourced[Any].unavailable(f"no paper session: {reason}").model_dump()
-    if snap.get("state") == str(PaperState.RUNNING):
-        return Sourced[Any](value=value, provenance=Provenance.SIMULATED, as_of_ms=at).model_dump()
+    as_of = snap.get("values_as_of_ms")
+    state = snap.get("state")
+    if as_of is None:
+        return Sourced[Any].unavailable("no bar processed in this paper session yet").model_dump()
+    if state != str(PaperState.RUNNING):
+        stamp, why = as_of, f"paper is {state}: last known values"
+    elif not snap.get("live_bar_since_start"):
+        stamp, why = as_of, "restored values; no live bar processed since this start"
+    elif now_ms - as_of > int(snap.get("settle_ms") or 0) + FRESHNESS_SLACK_MS:
+        stamp, why = as_of, f"last processed bar closed {(now_ms - as_of) // 1000} s ago"
+    else:
+        return Sourced[Any](
+            value=value, provenance=Provenance.SIMULATED, as_of_ms=as_of
+        ).model_dump()
     return Sourced[Any](
-        value=value,
-        provenance=Provenance.STALE,
-        as_of_ms=at if at is not None else 0,
-        reason=f"paper is {snap.get('state')}: last known values",
+        value=value, provenance=Provenance.STALE, as_of_ms=stamp, reason=why
     ).model_dump()
 
 
@@ -79,6 +94,11 @@ def paper_router(
                     "session_id",
                     "next_session_id",
                     "observing_since_ms",
+                    "opened_at_ms",
+                    "values_as_of_ms",
+                    "live_bar_since_start",
+                    "previous_run",
+                    "audit_log",
                     "dropped_updates",
                     "backfill",
                     "limitations",
@@ -104,14 +124,14 @@ def paper_router(
         if got is None:
             books = Sourced[Any].unavailable(NOT_CONFIGURED).model_dump()
         else:
-            snap, at = got
+            snap, _at = got
             service = snap.get("service") or {}
             value = {
                 "books": snap.get("books"),
                 "summary": service.get("books"),
                 "ledger_hashes": service.get("ledger_hashes"),
             }
-            books = _values(snap, at, value)
+            books = _values(snap, now, value)
         return {"generated_at": to_iso(now), "books": books}
 
     @router.get("/api/paper/fills")
@@ -121,8 +141,8 @@ def paper_router(
         if got is None:
             fills = Sourced[Any].unavailable(NOT_CONFIGURED).model_dump()
         else:
-            snap, at = got
-            fills = _values(snap, at, list(snap.get("fills") or [])[-limit:])
+            snap, _at = got
+            fills = _values(snap, now, list(snap.get("fills") or [])[-limit:])
         return {"generated_at": to_iso(now), "fills": fills}
 
     # async: runs on the event loop, like the paper consumer, so the runtime is never mutated
