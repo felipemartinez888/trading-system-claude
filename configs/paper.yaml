@@ -16,7 +16,11 @@ session_id: paper            # first session; operator-recorded sessions (data/p
 starting_equity: "10000"
 settle_ms: 90000             # LiveClock deadline after a minute closes
 poll_s: 1.0
-strategy: none               # MVP-2: no strategy (benchmark book only); the reference adapter is MVP-3
+strategy: none               # none (default: benchmark book only) | bracket_reference (REFERENCE / NOT VALIDATED, paper only)
+# bracket_reference needs ~7.8 days of unbroken 1m history per instrument before its first decision;
+# it warms up from the live bar store, filled by the 9-day startup backfill (data_quality.yaml). After
+# the start, any minute the strategy does not see (missing, or REST-recovered: processed unobserved)
+# restarts the warm-up.
 backfill_from_live_bars: true  # one validated, all-or-nothing downtime backfill attempt per monitoring start
 silence_s: 180               # no market-data update this long while monitoring runs -> SUBSCRIPTION_LOST
 backfill_wait_s: 900          # wait for the market-data startup backfill before opening, then UNAVAILABLE

@@ -60,6 +60,7 @@ from tsclaude.sim.clock import order_key
 from tsclaude.sim.live import DEFAULT_SETTLE_MS
 from tsclaude.sim.paper import LiveStrategy, PaperConfig, PaperTradingService, ServiceState
 from tsclaude.store.eventstore import EventStore
+from tsclaude.strategies.live_adapter import ReferenceLiveStrategy
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +81,17 @@ LIMITATIONS = (
     "Each monitoring start restores the active paper session again, also after a failure in the "
     "previous run; a new session is only ever created by the operator.",
     "Instrument filters come from configs/backtest.yaml and are unverified placeholders.",
+    "strategy bracket_reference (if selected) is REFERENCE / NOT VALIDATED: a pipeline strategy, "
+    "not claimed profitable, paper only; its signals are not research results. It needs about 7.8 "
+    "days of unbroken 1m history per instrument before its first decision (warmed up at start "
+    "from the 9-day startup backfill); after the start any minute it does not see (missing, or "
+    "REST-recovered/backfilled: processed unobserved) restarts that ~7.8-day warm-up.",
 )
+
+
+#: "none": no strategy (benchmark book only, the default); "bracket_reference": the
+#: REFERENCE / NOT VALIDATED pipeline strategy, paper only (MVP-3, strategies/live_adapter.py)
+STRATEGIES = frozenset({"none", "bracket_reference"})
 
 
 class PaperState(StrEnum):
@@ -129,9 +140,10 @@ class PaperSettings:
     def __post_init__(self) -> None:
         if not _SESSION_ID.match(self.session_id):
             raise ValueError(f"invalid paper session_id {self.session_id!r}")
-        if self.strategy != "none":
-            # MVP-2: only "none"; the reference strategy is wired by MVP-3 (fail closed)
-            raise ValueError(f"paper strategy {self.strategy!r} is not available in this build")
+        if self.strategy not in STRATEGIES:
+            raise ValueError(
+                f"paper strategy {self.strategy!r} is not available; known: {sorted(STRATEGIES)}"
+            )
         if self.settle_ms < 0 or self.poll_s <= 0 or self.silence_s <= self.poll_s:
             raise ValueError("settle_ms must be >= 0, poll_s > 0 and silence_s > poll_s")
         if self.backfill_wait_s <= 0:
@@ -488,6 +500,7 @@ class PaperRuntime:
         self._released_at_open = 0  # LiveClock releases counted when this run opened (H1)
         self.previous_run: dict[str, Any] | None = None  # kept across a stop (H3)
         self.audit_warnings: list[str] = []
+        self.reference: ReferenceLiveStrategy | None = None
         self._publish()
 
     @property
@@ -558,7 +571,7 @@ class PaperRuntime:
             config = self._config_factory()
             session_id = self._resolve_session()
             tracker = self._seeded_tracker(config)
-            strategy = self._strategy_factory() if self._strategy_factory is not None else None
+            strategy = self._build_strategy(config)
             service = PaperTradingService.open(
                 config,
                 self._store,
@@ -739,6 +752,32 @@ class PaperRuntime:
         result["processed"] = service.resume_after_downtime(check.bars)
         result["ok"] = service.state is not ServiceState.FAULTED
         result["problems"] = []
+
+    def _build_strategy(self, config: PaperConfig) -> LiveStrategy | None:
+        """The configured live strategy (tests may inject one through `strategy_factory`).
+
+        `bracket_reference`: decisions only from the start minute on (`trade_from_ms`); its
+        history is warmed up causally from closed bars of the live bar store that closed before
+        that minute (the market-data startup backfill has completed by now)."""
+        self.reference = None
+        if self._strategy_factory is not None:
+            return self._strategy_factory()
+        if self.settings.strategy == "none":
+            return None
+        now = self._clock.now_ms()
+        start = now - now % MS_PER_MINUTE
+        adapter = ReferenceLiveStrategy.create(
+            config.cost_model, [s.key for s in config.instruments], trade_from_ms=start
+        )
+        if self._bars is not None:
+            span = (adapter.strategy.window_bars + 2) * adapter.strategy.interval.ms
+            begin = start - start % adapter.strategy.interval.ms - span
+            # one instrument at a time (histories are per instrument): peak memory is one
+            # instrument's ~11k bars, not the whole universe's
+            for spec in config.instruments:
+                adapter.warm_up(self._bars(spec.market, spec.symbol, begin, start))
+        self.reference = adapter
+        return adapter
 
     def _seeded_tracker(self, config: PaperConfig) -> MarketStateTracker:
         """Risk tracker with the lookback seeded from the live bar store (observation only: the
@@ -957,6 +996,7 @@ class PaperRuntime:
             "dropped_updates": self.dropped_updates,
             "backfill": self.backfill,
             "limitations": list(LIMITATIONS),
+            "reference": self.reference.describe() if self.reference is not None else None,
             "service": None,
             "books": {},
             "fills": [],

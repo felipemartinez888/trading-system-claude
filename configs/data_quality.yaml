@@ -42,7 +42,13 @@ rest:
   funding_rate_requests_per_5min: 250  # documented separate limit: 500 / 5 min / IP
 
 backfill:
-  lookback_days: 3
+  # Startup REST backfill window. 9 days covers the paper bracket_reference warm-up read (748 x 15m
+  # bars ~ 7.8 days before the paper start, from the live bar store) with headroom. The headroom
+  # does not absorb missing minutes: one missing inside that read leaves the strategy short.
+  # Cost: only minutes not already stored are fetched; a first start fetches 12,960 1m bars per
+  # pair (13 REST pages of <= 1000, under the REST weight budget above), ~78k rows for the 6-pair
+  # universe, written row by row on the event loop (a longer first start; paper waits for it).
+  lookback_days: 9
   max_backfill_days: 30       # older missing history is registered as a gap for the M2 importer
 
 clock:

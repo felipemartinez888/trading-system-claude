@@ -101,6 +101,7 @@ def paper_router(
                     "audit_log",
                     "dropped_updates",
                     "backfill",
+                    "reference",
                     "limitations",
                 )
             }
@@ -114,8 +115,17 @@ def paper_router(
                     "clock": service.get("clock"),
                 }
             )
+            reference = value.get("reference")
+            recent: list[Any] = []
+            if isinstance(reference, dict):
+                # market-derived prices are not SYSTEM values (ADR-0010): served separately
+                reference = {k: v for k, v in reference.items() if k != "recent_signals"}
+                recent = list((snap.get("reference") or {}).get("recent_signals") or [])
+                value["reference"] = reference
             body = Sourced[Any](value=value, provenance=Provenance.SYSTEM, as_of_ms=at).model_dump()
-        return {"generated_at": to_iso(now), "status": body}
+            signals = _values(snap, now, recent) if reference is not None else None
+            return {"generated_at": to_iso(now), "status": body, "reference_signals": signals}
+        return {"generated_at": to_iso(now), "status": body, "reference_signals": None}
 
     @router.get("/api/paper/books")
     def paper_books() -> dict[str, Any]:
