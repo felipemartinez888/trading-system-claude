@@ -717,6 +717,7 @@ class PaperTradingService:
             have.setdefault((b.market, b.symbol), set()).add(b.open_time_ms)
         out: dict[str, list[int]] = {}
         sim = self.session.sim
+        closed = sim.last_key  # the session already advanced past every key up to here
         keys = sorted(
             {k for book in sim.books.values() for k in book.exposed()},
             key=lambda k: (str(k[0]), k[1]),
@@ -724,10 +725,16 @@ class PaperTradingService:
         for market, symbol in keys:
             last = sim.last_open(market, symbol)
             start = first_live_ms if last is None else last + MS_PER_MINUTE
+            # A minute whose delivery key is not after the last processed key was passed while the
+            # session was running (the instrument's bar never arrived: a recorded feed gap, which
+            # the books and the risk engine already handled). It is not downtime and cannot be
+            # backfilled, since bars at or before `last_key` are never processed again. Only
+            # minutes after the journal's last key can be unobserved downtime.
             gaps = [
                 m
                 for m in range(start, first_live_ms, MS_PER_MINUTE)
                 if m not in have.get((market, symbol), set())
+                and (closed is None or (m, str(market), symbol) > closed)
             ]
             if gaps:
                 out[f"{market}:{symbol}"] = gaps

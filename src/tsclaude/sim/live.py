@@ -140,9 +140,11 @@ class LiveClock:
         """Minutes that are complete or past their deadline, in global clock order."""
         out: list[Bar] = []
         while self._buffer:
-            if self._next is None:
-                self._next = min(self._buffer)
-            minute = self._next
+            # Until the first release the position is the earliest buffered minute *as of now*: it
+            # is not committed to `_next` while that minute waits, because an earlier minute may
+            # still arrive within its own settle window (bars of different minutes overlap in
+            # flight) and would otherwise be classified late although it is on time.
+            minute = min(self._buffer) if self._next is None else self._next
             slot = self._buffer.get(minute, {})
             done = self._done if minute == self._done_minute else frozenset()
             complete = self.expected <= set(slot) | done
