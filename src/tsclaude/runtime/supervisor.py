@@ -11,7 +11,13 @@ service (see `marketdata/service.py`):
   the start fails;
 - `snapshot()` stays readable after `stop()` (values turn STALE) until `close()`.
 
-All event-store writes (market data and demo signals) go through the app's single `EventStore`.
+All event-store writes (market data, demo signals and the paper journal) go through the app's single
+`EventStore`.
+
+Paper trading (MVP-2, `runtime/paper_runtime.py`, off by default): when a `PaperRuntime` is attached
+and enabled, it gets its **own** subscription at every start (the demo detector never feeds it), is
+started once market data runs, and is stopped before market data stops. A paper failure never stops
+monitoring; it is shown as the paper state.
 Everything here runs on the server's event loop; `stream_summary` is a plain attribute refreshed
 on the loop so that threads (sync endpoints, heartbeat) can read it without touching the service.
 """
@@ -33,6 +39,7 @@ from tsclaude.contracts.provenance import Provenance, Sourced
 from tsclaude.contracts.timeutil import WallClock
 from tsclaude.marketdata.bars import BarClosed
 from tsclaude.marketdata.models import MarketSnapshot
+from tsclaude.runtime.paper_runtime import PaperRuntime
 from tsclaude.signals.demo import DEFAULT_THRESHOLD, DemoDetector, DemoDetectorConfig
 from tsclaude.store.eventstore import EventStore
 
@@ -183,6 +190,7 @@ class MonitoringSupervisor:
         service_factory: ServiceFactory | None = None,
         demo: DemoDetectorConfig | None = None,
         on_problem: Callable[[str, str], None] | None = None,
+        paper: PaperRuntime | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -202,6 +210,29 @@ class MonitoringSupervisor:
         self.consumer_failures = 0
         self.stream_summary: dict[str, Sourced[str]] = summarize_streams(None, NOT_STARTED)
         self.changes = 0  # bumped on every update; the push loop sends deltas when it moves
+        self.paper: PaperRuntime | None = None
+        if paper is not None:
+            self.attach_paper(paper)
+
+    def attach_paper(self, paper: PaperRuntime) -> None:
+        """Attach the paper runtime (before the first start); its problems go to `on_problem`."""
+        if self.running:
+            raise RuntimeError("attach the paper runtime before monitoring starts")
+        self.paper = paper
+        paper.on_problem = self._paper_problem
+        paper.on_change = self._bump
+
+    def _paper_problem(self, title: str, detail: str) -> None:
+        if self.on_problem is not None:
+            self.on_problem(title, detail)
+
+    def _bump(self) -> None:
+        self.changes += 1
+
+    def paper_summary(self) -> Sourced[str]:
+        if self.paper is None:
+            return Sourced[str].unavailable("paper trading is not configured in this app instance")
+        return self.paper.summary()
 
     # ------------------------------------------------------------------ lifecycle
     @property
@@ -232,18 +263,39 @@ class MonitoringSupervisor:
         )
         service = self._service
         subscription = service.subscribe()  # before start: closed by stop(), so one per run
+        # paper gets its own subscription, also before start, so no closed bar is missed
+        paper = self.paper if self.paper is not None and self.paper.enabled else None
+        paper_subscription = service.subscribe() if paper is not None else None
         try:
             await service.start(session_id=session_id)
         except asyncio.CancelledError:
             subscription.close()
+            if paper_subscription is not None:
+                paper_subscription.close()
             raise
         except Exception as exc:
             subscription.close()
+            if paper_subscription is not None:
+                paper_subscription.close()
             self.refresh()
             raise StartFailed(f"market data failed to start: {type(exc).__name__}: {exc}") from exc
         self._session_id = session_id
         self._consumer = asyncio.create_task(self._consume(subscription), name="md-consumer")
         self._consumer.add_done_callback(self._consumer_done)
+        if paper is not None and paper_subscription is not None:
+            try:
+                # the real service backfills the downtime in the background; paper opens after it
+                wait_backfill = getattr(service, "wait_backfill", None)
+                await paper.start(
+                    paper_subscription,
+                    snapshot=self.snapshot,
+                    market_running=lambda: self.running,
+                    ready=wait_backfill if callable(wait_backfill) else None,
+                )
+            except Exception as exc:  # defensive: PaperRuntime.start reports its own failures
+                paper_subscription.close()
+                log.exception("paper runtime failed to start")
+                self._paper_problem("Paper trading unavailable", f"{type(exc).__name__}: {exc}")
         self.refresh()
         log.info(
             "supervisor start: complete",
@@ -257,6 +309,11 @@ class MonitoringSupervisor:
     async def stop(self) -> None:
         service = self._service
         try:
+            if self.paper is not None:  # paper stops deciding before its data source goes away
+                try:
+                    await self.paper.stop()
+                except Exception:
+                    log.exception("paper runtime failed to stop cleanly")
             if service is not None and service.running:
                 await service.stop()  # closes the subscription -> the consumer ends
         finally:

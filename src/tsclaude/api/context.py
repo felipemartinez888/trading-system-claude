@@ -464,6 +464,11 @@ class AppContext:
                     if self.supervisor is not None
                     else summarize_streams(None, NO_MARKET_DATA)
                 ),
+                paper=(
+                    self.supervisor.paper_summary()
+                    if self.supervisor is not None
+                    else Sourced[str].unavailable(NO_MARKET_DATA)
+                ),
             )
 
     def coverage(self) -> CoverageResponse:

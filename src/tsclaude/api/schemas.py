@@ -85,6 +85,7 @@ class StatusResponse(_Model):
     previous_session: Sourced[PreviousSessionInfo]
     heartbeat: Sourced[str]  # ISO time of the last persisted heartbeat
     streams: dict[str, Sourced[str]]  # stream group (spot, futures) -> summary of stream states
+    paper: Sourced[str]  # paper-trading state and reason (MVP-2); UNAVAILABLE when not configured
 
 
 class CoverageInterval(_Model):

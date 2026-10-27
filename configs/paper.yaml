@@ -1,0 +1,22 @@
+# Paper trading (MVP-2). Simulated and non-production: nothing is ever sent to an exchange.
+# OFF by default. Set `enabled: true` to paper-trade the live universe (configs/universe.yaml) while
+# monitoring runs. Instruments come from configs/backtest.yaml (UNVERIFIED placeholder filters),
+# risk limits from configs/risk.yaml.
+#
+# Known limitations: restart equivalence is not guaranteed, and not every divergence is visible.
+# A bar that never arrives after a restart keeps paper AWAITING_BACKFILL (seed 13073); after a
+# restart the shadow book can differ from an uninterrupted run while paper shows RUNNING / SIMULATED
+# (seed 465923499); a journal that cannot be restored shows UNAVAILABLE. Each monitoring start
+# restores the active session again. The operator may record a new paper session
+# (POST /api/paper/session/new, token + note), which opens at the next monitoring start; old
+# sessions stay read-only in the hash-chained event store. M3 acceptance is not claimed.
+version: paper-config-v1
+enabled: false
+session_id: paper            # first session; operator-recorded sessions (data/paper_sessions.jsonl) take over
+starting_equity: "10000"
+settle_ms: 90000             # LiveClock deadline after a minute closes
+poll_s: 1.0
+strategy: none               # MVP-2: no strategy (benchmark book only); the reference adapter is MVP-3
+backfill_from_live_bars: true  # one validated, all-or-nothing downtime backfill attempt per monitoring start
+silence_s: 180               # no market-data update this long while monitoring runs -> SUBSCRIPTION_LOST
+backfill_wait_s: 900          # wait for the market-data startup backfill before opening, then UNAVAILABLE

@@ -65,6 +65,7 @@ from tsclaude.api.pages import (
     is_safe_relative_path,
     load_index,
 )
+from tsclaude.api.paper import paper_router
 from tsclaude.api.push import PUSH_INTERVAL_S, MarketPusher
 from tsclaude.api.schemas import (
     CoverageResponse,
@@ -289,6 +290,15 @@ def create_app(
 
     # ------------------------------------------------------------------ backtest reads (M2-T4)
     app.include_router(backtests_router(context.store.path.parent / "runs"))
+
+    # ------------------------------------------------------------------ paper trading (MVP-2)
+    app.include_router(
+        paper_router(
+            lambda: context.supervisor.paper if context.supervisor is not None else None,
+            context.clock,
+            token_dep,
+        )
+    )
 
     # ------------------------------------------------------------------ commands
     async def _transition(action: Callable[[], Awaitable[StatusResponse]]) -> StatusResponse:

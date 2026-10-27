@@ -50,10 +50,12 @@ from tsclaude.api.process import InstanceLock, bind_loopback, dashboard_url
 from tsclaude.api.security import TokenRedactionFilter
 from tsclaude.contracts.timeutil import SystemClock
 from tsclaude.runtime.logging import configure_logging
+from tsclaude.runtime.paper_runtime import load_paper_runtime
 from tsclaude.runtime.settings import Settings
 from tsclaude.runtime.supervisor import (
     MonitoringSupervisor,
     ServiceFactory,
+    config_dir,
     default_service_factory,
     demo_config_from_env,
 )
@@ -155,6 +157,16 @@ def _serve(settings: Settings, store: EventStore, sock: socket.socket, options: 
     )
     _install_token_redaction(context.token)
     context.start()
+    # Paper trading (MVP-2): off unless configs/paper.yaml says `enabled: true`.
+    supervisor.attach_paper(
+        load_paper_runtime(
+            config_dir(),
+            settings.data_dir,
+            store,
+            clock,
+            lambda m, s, a, b: [sb.bar for sb in context.bar_store().range(m, s, a, b)],
+        )
+    )
 
     app = create_app(context, on_started=_unattended(context, options))
     config = uvicorn.Config(
