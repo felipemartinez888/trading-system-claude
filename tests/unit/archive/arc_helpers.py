@@ -7,6 +7,7 @@ Values are synthetic.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -75,6 +76,27 @@ def kline_lines(
             lines.append(",".join(_fmt(v) for v in vals))
         t += step
     return lines
+
+
+def edge_lines(
+    f: ArchiveFile, n: int, *, unit: str = "ms", zero_head: int = 0, zero_tail: int = 0
+) -> list[str]:
+    """First and last `n` minutes of a monthly file: a deliberately sparse month whose interior
+    is a (reported) QA gap, so multi-month tests stay fast. `zero_head`/`zero_tail` make that many
+    minutes at the very start/end zero-volume (a run that continues across a month boundary)."""
+    head = kline_lines(
+        f.start_ms,
+        f.start_ms + n * MIN,
+        unit=unit,
+        zero_volume=[f.start_ms + i * MIN for i in range(zero_head)],
+    )
+    tail = kline_lines(
+        f.end_ms - n * MIN,
+        f.end_ms,
+        unit=unit,
+        zero_volume=[f.end_ms - (i + 1) * MIN for i in range(zero_tail)],
+    )
+    return head + tail
 
 
 def klay_2024_10_lines() -> list[str]:
@@ -154,6 +176,15 @@ class FakeArchive:
         if sha256_bytes(data) != expected:
             raise ChecksumError(f"checksum mismatch for {f.relpath}")
         return VerifiedFile(f, data, expected, f.url(), f.checksum_url(), f.relpath, False)
+
+
+@dataclass
+class YieldingArchive(FakeArchive):
+    """FakeArchive whose fetch suspends once, so concurrent month tasks really interleave."""
+
+    async def fetch(self, f: ArchiveFile) -> VerifiedFile:
+        await asyncio.sleep(0)
+        return await super().fetch(f)
 
 
 @dataclass

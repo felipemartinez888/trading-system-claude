@@ -1,6 +1,9 @@
 """Import one (market, kind, symbol, range) from the Binance archive (+ REST) into the lake.
 
-Flow per request, one UTC month at a time (bounded memory):
+Flow per request, one UTC month at a time. Memory is bounded by `month_concurrency` months, not by
+the length of the request: every month is fetched, merged, validated, staged and reduced to a small
+summary (times, zero-volume runs, source records, part infos) inside its own task; its rows are
+dropped as soon as it finishes. Only the cross-check sample months keep their `Bar`s until the end.
 
 1. plan sources (`paths.plan`): monthly zips for complete months, daily zips for the current month,
    REST for today; a missing monthly zip falls back to its daily zips; a missing recent daily zip
@@ -142,6 +145,19 @@ class _Chunk:
     record: dict[str, Any]
 
 
+@dataclass
+class _MonthResult:
+    """What survives of one processed month: small summaries, never its raw rows."""
+
+    label: str
+    times: array[int]
+    zero_runs: list[tuple[int, int]]
+    records: list[dict[str, Any]]
+    parts: list[PartInfo]
+    collector: QACollector
+    bars: list[Bar] | None  # only for cross-check sample months
+
+
 class Importer:
     def __init__(
         self,
@@ -197,52 +213,75 @@ class Importer:
         data_type, interval, step = _KIND_SPEC[req.kind]
         if data_type is None:  # pragma: no cover - funding handled separately
             raise ValueError(req.kind)
-        collector = QACollector()
-        sources: list[dict[str, Any]] = []
         months: dict[str, list[PlanItem]] = {}
         for item in self._plan(req):
             months.setdefault(paths.ms_to_date(item.start_ms).strftime("%Y-%m"), []).append(item)
+        is_bars = req.kind is LakeKind.BARS_1M
+        sample = self._sample_months(req) if is_bars else set()
+        ingested = self._clock.now_ms()
 
-        async def one_month(label: str) -> tuple[str, list[Any], list[dict[str, Any]]]:
+        async def one_month(label: str) -> _MonthResult:
+            # Fetch, merge, validate and stage under the semaphore; the month's raw rows are
+            # unreachable once this returns. `write_parts` is synchronous: writes never interleave.
             async with self._month_sem:
+                local = QACollector()
                 chunks: list[_Chunk] = []
                 for item in months[label]:
-                    chunks.extend(
-                        await self._resolve(req, data_type, interval, step, item, collector)
-                    )
-                rows = self._merge(chunks, req, collector)
-                return label, rows, [c.record for c in chunks]
+                    chunks.extend(await self._resolve(req, data_type, interval, step, item, local))
+                records = [c.record for c in chunks]
+                merged = self._merge(chunks, req, local)
+                del chunks
+                valid, bars = self._validate(req, merged, step, ingested, local)
+                del merged
+                parts = (
+                    staging.write_parts(req.market, req.kind, req.symbol, valid) if valid else []
+                )
+                return _MonthResult(
+                    label,
+                    array("q", (int(r["open_time_ms"]) for r in valid)),
+                    zero_volume_runs(bars, min_run=1) if is_bars else [],
+                    records,
+                    parts,
+                    local,
+                    bars if label in sample else None,
+                )
 
-        results = await asyncio.gather(*(one_month(m) for m in sorted(months)))
+        tasks = [asyncio.ensure_future(one_month(m)) for m in sorted(months)]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            # Fail closed: no sibling month may keep fetching or staging after the first failure.
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        collector = QACollector()
+        sources: list[dict[str, Any]] = []
         parts: list[PartInfo] = []
-        times = array("q")
+        times: array[int] = array("q")
         zero_runs: list[tuple[int, int]] = []
         bars_by_month: dict[str, list[Bar]] = {}
-        sample = self._sample_months(req) if req.kind is LakeKind.BARS_1M else set()
-        ingested = self._clock.now_ms()
-        for label, raw_rows, records in sorted(results, key=lambda r: r[0]):
-            sources.extend(records)
-            valid = self._validate(req, raw_rows, step, ingested, collector)
-            if not valid:
-                continue
-            times.extend(int(r["open_time_ms"]) for r in valid)
-            if req.kind is LakeKind.BARS_1M:
-                bars = [_bar_from_row(req.market, req.symbol, r) for r in valid]
-                zero_runs.extend(zero_volume_runs(bars, min_run=1))
-                if label in sample:
-                    bars_by_month[label] = bars
-            parts.extend(staging.write_parts(req.market, req.kind, req.symbol, valid))
+        for res in sorted(results, key=lambda r: r.label):
+            _absorb(collector, res.collector)
+            sources.extend(res.records)
+            times.extend(res.times)
+            zero_runs.extend(res.zero_runs)
+            parts.extend(res.parts)
+            if res.bars is not None:
+                bars_by_month[res.label] = res.bars
+        del results
         checks: list[dict[str, Any]] = []
         for label in sorted(bars_by_month):
             checks.extend(await self._cross_checks(req, label, bars_by_month[label], sources))
         runs = [r for r in merge_runs(zero_runs) if (r[1] - r[0]) // MS_PER_MINUTE >= 3]
         qa = build_report(
-            bars_times=list(times),
+            bars_times=times,
             start_ms=req.start_ms,
             end_ms=self._effective_end(req, step),
             step_ms=step,
             collector=collector,
-            zero_runs=runs if req.kind is LakeKind.BARS_1M else (),
+            zero_runs=runs if is_bars else (),
             cross_checks=checks,
         )
         return self._commit(req, interval, staging, parts, sources, qa)
@@ -398,12 +437,16 @@ class Importer:
         step: int,
         ingested: int,
         collector: QACollector,
-    ) -> list[Row]:
+    ) -> tuple[list[Row], list[Bar]]:
+        """Validated lake rows, plus (1m klines only) the `Bar` built once per accepted row."""
         out: list[Row] = []
+        bars: list[Bar] = []
         for row, source in rows:
             try:
                 if req.kind is LakeKind.BARS_1M:
-                    out.append(_bar_row(req.market, req.symbol, row, source, ingested))
+                    lake_row, bar = _bar_row(req.market, req.symbol, row, source, ingested)
+                    out.append(lake_row)
+                    bars.append(bar)
                 elif req.kind is LakeKind.KLINES_1D:
                     out.append(_daily_row(row, source, ingested))
                 else:
@@ -417,7 +460,7 @@ class Importer:
                         "row": _asdict(row),
                     }
                 )
-        return out
+        return out, bars
 
     def _sample_months(self, req: ImportRequest) -> set[str]:
         """First and last complete months fully inside the request (for the cross-check)."""
@@ -624,7 +667,20 @@ def _reason(exc: ValueError) -> str:
     return str(exc).strip().splitlines()[0][:200] if str(exc).strip() else repr(exc)
 
 
-def _bar_row(market: Market, symbol: str, k: RestKline, source: BarSource, ingested: int) -> Row:
+def _absorb(total: QACollector, part: QACollector) -> None:
+    """Fold one month's QA facts into the request's collector (called in month order)."""
+    total.duplicates_identical += part.duplicates_identical
+    total.duplicate_conflicts.extend(part.duplicate_conflicts)
+    total.rejected.extend(part.rejected)
+    total.malformed.extend(part.malformed)
+    total.unit_notes.extend(part.unit_notes)
+    total.unavailable.extend(part.unavailable)
+
+
+def _bar_row(
+    market: Market, symbol: str, k: RestKline, source: BarSource, ingested: int
+) -> tuple[Row, Bar]:
+    """The only place a 1m kline becomes a `Bar`: validated once, and the object is returned too."""
     bar = Bar(
         market=market,
         symbol=symbol,
@@ -643,7 +699,7 @@ def _bar_row(market: Market, symbol: str, k: RestKline, source: BarSource, inges
         source=source,
         ingested_at_ms=ingested,
     )
-    return {
+    row: Row = {
         "open_time_ms": bar.open_time_ms,
         "close_time_ms": bar.close_time_ms,
         "open": bar.open,
@@ -658,27 +714,7 @@ def _bar_row(market: Market, symbol: str, k: RestKline, source: BarSource, inges
         "source": str(bar.source),
         "ingested_at_ms": bar.ingested_at_ms,
     }
-
-
-def _bar_from_row(market: Market, symbol: str, r: Row) -> Bar:
-    return Bar(
-        market=market,
-        symbol=symbol,
-        interval=Interval.M1,
-        open_time_ms=r["open_time_ms"],
-        close_time_ms=r["close_time_ms"],
-        open=r["open"],
-        high=r["high"],
-        low=r["low"],
-        close=r["close"],
-        volume=r["volume"],
-        quote_volume=r["quote_volume"],
-        trades=r["trades"],
-        taker_buy_volume=r["taker_buy_volume"],
-        taker_buy_quote_volume=r["taker_buy_quote_volume"],
-        source=BarSource(r["source"]),
-        ingested_at_ms=r["ingested_at_ms"],
-    )
+    return row, bar
 
 
 def _check_prices(o: float, h: float, lo: float, c: float) -> None:
