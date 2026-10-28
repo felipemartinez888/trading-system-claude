@@ -9,18 +9,46 @@ sizes are relative (S/M/L).
 | Milestone | Status | Evidence |
 |---|---|---|
 | P — Planning documents | ✅ Done, approved by owner 2026-10-19 | `docs/`, [decision record](DECISIONS_PENDING.md) |
-| M0 — Foundations | 🔄 Code complete; owner's Windows manual check + Binance spike pending | Core: CI 39351055547. API/dashboard/launcher (M0-T4, `ed0d5d7`): CI 39430972397, review approved after 1 blocking fix |
-| M1 — Live tape (walking skeleton) | 🔄 Code complete (M1-T1 `d9a8890`, M1-T2 merged); **gate pending: owner's 2-hour `scripts/verify_live.ps1` run on Windows** | M1-T1: CI 39432193506; M1-T2: CI 39515178440, review fixes applied |
-| M2 — Historical data + backtest core | ✅ Code complete (importer, lake, simulator, statistics, runner); **gate pending: owner's historical import** | M2-T1 CI 39546228675 · M2-T2 CI 39472703030 · M2-T3 CI 39552397787 · M2-T4 CI 39596166216 · mixed ms/µs archive fix (KLAYUSDT 2024-10): local `pytest tests` 1005 passed, 1 skipped, 2 live deselected; not yet in CI |
-| M3 — Paper trading + risk | 🔄 Engine merged (M3-T1); dashboard/supervisor wiring (M3-T2) next | M3-T1 CI 39706561688, causality re-audit passed (28/28 mutations) |
-| M4 — Research protocol + first strategies | ⏳ | — |
+| M0 — Foundations | 🔄 Code complete; **not formally accepted**: owner's Windows manual check + Binance spike pending | Core: CI 39351055547. API/dashboard/launcher (M0-T4, `ed0d5d7`): CI 39430972397, review approved after 1 blocking fix. Owner launched the app on Windows for the MVP-4 smoke test (2026-10-28) |
+| M1 — Live tape (walking skeleton) | 🔄 Code complete (M1-T1 `d9a8890`, M1-T2 merged); **not formally accepted**: no accepted result of the 2-hour `scripts/verify_live.ps1` gate is recorded (local owner runs exist; the WHEA hardware investigation is open) | M1-T1: CI 39432193506; M1-T2: CI 39515178440, review fixes applied; `verify_live` duration check fixed (`7d615a4`, local) |
+| M2 — Historical data + backtest core | 🔄 Code complete (importer, lake, simulator, statistics, runner); **not formally accepted**: (a) the simulator restore property still fails on two classes (PARTIAL fix `904b84c`); (b) canonical data covers 5 of the frozen Top 10 symbols (2022 → 2026-09; holdout sealed), the batches B01–B12 await acceptance, and USD-M/funding is not imported; (c) **canonical import defect C-1**: 2 source rows missing (XRP 2025-04, SOL 2022-12); (d) data-policy proposals ADR-0013/0014/0015 await approval. **No backtest run recorded locally** | M2-T1 CI 39546228675 · M2-T2 CI 39472703030 · M2-T3 CI 39552397787 · M2-T4 CI 39596166216 · ms/µs archive fix: local `pytest tests` 1005 passed; not yet in CI. AP-1 bounded importer `7d615a4` (local). Data audit: [acceptance matrix](M2_DATASET_ACCEPTANCE.md), [devlog 2026-10-27](devlog/2026-10-27-m2-handover-reconciliation.md), [devlog 2026-10-28](devlog/2026-10-28-m2-policy-design.md) |
+| M3 — Paper trading + risk | 🔄 Engine merged (M3-T1); paper wired into the app, hardened, and fed by a REFERENCE strategy (MVP-2 to MVP-4, local); **not formally accepted**: the gate "recorded live session replays to an identical ledger hash" is not met (restart-equivalence defects, seeds 13073 / 465923499; Part B per-minute close journal designed but not implemented) | M3-T1 CI 39706561688, causality re-audit passed (28/28 mutations); MVP track below (focused local tests only) |
+| M4 — Research protocol + first strategies | ⏳ Not started (M4-T1 brief exists). Prerequisites: P-1 … P-8 data-policy decisions, C-1 repair, Top 10 coverage | — |
 | M5 — Claude signal agents | ⏳ | — |
 | M6 — Performance analytics + evaluation export | ⏳ | — |
 | M7 — Forward trial + hardening | ⏳ | — |
 
-**Current work:** M0-T4 (API/dashboard), M1-T1 (Binance ingestion), M2-T2 (simulator core),
-M2-T3 (statistics for certified win rates) — in parallel, each in its own branch. **Blockers:** none for M0; live Binance verification needs the
-D-01 domain allowlist (owner action) or a run of the verification script on Windows.
+### Shortest-safe-path MVP track (owner direction, 2026-10-27; local branches, not pushed)
+A demonstrable local Windows app, strictly paper-only, built in small approved steps. Every step is **MVP
+readiness only**: none of these items is M1–M4 acceptance, and none is evidence of strategy performance.
+Results come from focused tests only and are provisional while the WHEA hardware investigation is open.
+
+| Step | Status | Commit | Evidence |
+|---|---|---|---|
+| MVP-1: integration branch (AP-1 bounded importer, `verify_live` duration check, PARTIAL simulator property fix) | ✅ Committed locally | `7be73eb` (`integrate/mvp-1`) | [devlog 2026-10-27](devlog/2026-10-27.md), [sim property devlog](devlog/2026-10-27-sim-property-defects.md) |
+| MVP-2: paper trading wired into the app, off by default | ✅ Committed locally | `6628a2e` | [devlog](devlog/2026-10-27-mvp2-paper-wiring.md) |
+| MVP-2.1: paper runtime hardening (freshness labels, atomic snapshot, fail-closed audit log, subscription loss) | ✅ Committed locally | `11fd12e` | [devlog](devlog/2026-10-28-mvp21-paper-hardening.md) |
+| MVP-3: live `bracket_reference` adapter (REFERENCE / NOT VALIDATED, CONFIRMED-only intents), 9-day startup history | ✅ Committed locally | `3f03b46` | [devlog](devlog/2026-10-28-mvp3-reference-adapter.md) |
+| MVP-4: Paper and Backtests dashboard pages; read-only trade, rejection and warm-up details | ✅ Committed locally; owner Windows smoke test passed (disabled paper, empty backtests) | `7295082` (+ `27d4f52` M2 reconciliation docs) | [devlog](devlog/2026-10-28-mvp4-dashboard.md) |
+
+Open limitations carried by the track:
+- restart equivalence is not guaranteed;
+- an unobserved live minute restarts the ~7.8-day reference warm-up;
+- the real 9-day first start is unmeasured;
+- RUNNING paper has not been checked in the real app;
+- no backtest run exists.
+
+**Current work:** the M2 data-policy design (ADR-0013/0014/0015, acceptance matrix; documentation only).
+**Blockers:**
+- **Owner decisions:**
+  - the data-policy decisions P-1 … P-9 ([devlog](devlog/2026-10-28-m2-policy-design.md));
+  - the RESEARCH_PROTOCOL §6 clarification for reference-only grade X;
+  - merging and pushing the local MVP branches (D-07);
+  - Part B (restart equivalence).
+- **Owner actions:**
+  - the M1 2-hour run once the hardware allows;
+  - the canonical row audit (O-2), B10 verify (O-3) and a timed paper first start (O-1).
+- **Live Binance verification:** still needs the D-01 domain allowlist or a run on Windows.
 
 ## Dependency graph
 
