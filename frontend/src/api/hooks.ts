@@ -25,7 +25,15 @@ export const queryKeys = {
   bars: ["bars"] as const,
   signals: ["signals"] as const,
   notifications: ["notifications"] as const,
+  paperStatus: ["paper", "status"] as const,
+  paperBooks: ["paper", "books"] as const,
+  paperFills: ["paper", "fills"] as const,
+  paperActivity: ["paper", "activity"] as const,
+  backtests: ["backtests"] as const,
 };
+
+/** Paper values change at most once per 1m bar; the labels say how fresh they are. */
+export const PAPER_POLL_MS = 2_000;
 
 /** Chart window: the last six hours of stored 1m bars. */
 export const BARS_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -111,6 +119,65 @@ export function useNotifications() {
     queryKey: queryKeys.notifications,
     queryFn: ({ signal }) => api.notifications(signal),
     refetchInterval: 30_000,
+  });
+}
+
+export function usePaperStatus() {
+  return useQuery({
+    queryKey: queryKeys.paperStatus,
+    queryFn: ({ signal }) => api.paperStatus(signal),
+    refetchInterval: PAPER_POLL_MS,
+  });
+}
+
+export function usePaperBooks() {
+  return useQuery({
+    queryKey: queryKeys.paperBooks,
+    queryFn: ({ signal }) => api.paperBooks(signal),
+    refetchInterval: PAPER_POLL_MS,
+  });
+}
+
+export function usePaperFills() {
+  return useQuery({
+    queryKey: queryKeys.paperFills,
+    queryFn: ({ signal }) => api.paperFills(signal),
+    refetchInterval: PAPER_POLL_MS,
+  });
+}
+
+export function usePaperActivity() {
+  return useQuery({
+    queryKey: queryKeys.paperActivity,
+    queryFn: ({ signal }) => api.paperActivity(signal),
+    refetchInterval: PAPER_POLL_MS,
+  });
+}
+
+export function useNewPaperSessionMutation() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ note, requestId }: { note: string; requestId: string }) =>
+      api.newPaperSession(note, requestId),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.paperStatus });
+    },
+  });
+}
+
+export function useBacktests() {
+  return useQuery({
+    queryKey: queryKeys.backtests,
+    queryFn: ({ signal }) => api.backtests(signal),
+    refetchInterval: 60_000,
+  });
+}
+
+export function useBacktest(runId: string | null) {
+  return useQuery({
+    queryKey: [...queryKeys.backtests, runId],
+    queryFn: ({ signal }) => api.backtest(runId ?? "", signal),
+    enabled: runId !== null,
   });
 }
 

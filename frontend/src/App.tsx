@@ -2,9 +2,11 @@ import { useLiveStatus } from "./api/hooks";
 import { EmptyState } from "./components/EmptyState";
 import { StatusBar } from "./components/StatusBar";
 import { DEFAULT_PATH, WORKSPACES, findPage, usePath } from "./navigation";
+import { BacktestsPage } from "./pages/BacktestsPage";
 import { HealthPage } from "./pages/HealthPage";
 import { LogsPage } from "./pages/LogsPage";
 import { MarketsPage } from "./pages/MarketsPage";
+import { PaperPage } from "./pages/PaperPage";
 import { SignalsPage } from "./pages/SignalsPage";
 
 function PageContent({ path }: { path: string }) {
@@ -21,6 +23,8 @@ function PageContent({ path }: { path: string }) {
   if (page.id === "markets") return <MarketsPage />;
   if (page.id === "signals") return <SignalsPage />;
   if (page.id === "logs") return <LogsPage />;
+  if (page.id === "portfolio") return <PaperPage />;
+  if (page.id === "backtests") return <BacktestsPage />;
   const workspace = WORKSPACES.find((w) => w.pages.includes(page));
   return (
     <div className="page">

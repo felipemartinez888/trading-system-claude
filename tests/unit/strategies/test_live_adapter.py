@@ -333,3 +333,18 @@ def test_a_missing_minute_in_the_startup_history_resets_readiness() -> None:
     adapter.warm_up([b for b in bars if b.close_time_ms < start])
     assert adapter.history_breaks == 1
     assert all(p["ready"] for p in adapter.warmup_progress().values())
+
+
+def test_a_history_break_during_warm_up_is_reported_per_instrument() -> None:
+    """B-3: the warm-up progress says which instrument restarted, when it was detected and in
+    which phase; the reason is the existing aggregation rule (an incomplete 15m bucket)."""
+    bars = series()
+    trade_from = T0 + 2000 * M  # after the spot gap at minutes 1500-1503
+    adapter = ReferenceLiveStrategy(BracketReference(PARAMS), COSTS, trade_from_ms=trade_from)
+    adapter.warm_up([b for b in bars if b.close_time_ms < trade_from])
+    spot = adapter.warmup_progress()["spot:BTCUSDT"]
+    assert spot["history_breaks"] == 1
+    assert spot["last_break_phase"] == "warm-up"
+    assert T0 + 1500 * M < spot["last_break_detected_at_ms"] < trade_from
+    assert adapter.warmup_progress()["usdm:BTCUSDT"]["history_breaks"] == 0
+    assert adapter.history_breaks == 1

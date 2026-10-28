@@ -67,10 +67,13 @@ log = logging.getLogger(__name__)
 PAPER_CONFIG_VERSION = "paper-config-v1"
 AUDIT_FILE = "paper_sessions.jsonl"
 MAX_FILLS = 200
+MAX_TRADES = 200  # closed trades kept per book in the snapshot (B-1)
+MAX_REJECTIONS = 200  # request-level rejections kept in the snapshot (B-2)
 MAX_NOTE = 500
 _SESSION_ID = re.compile(r"^paper[-0-9A-Za-z]{0,60}$")
 _REQUEST_ID = re.compile(r"^[0-9A-Za-z_-]{8,64}$")
 FILL_TYPE = "sim_order_filled"
+REQUEST_REJECTED_TYPE = "sim_request_rejected"
 
 LIMITATIONS = (
     "Paper trading is simulated (non-production); no order is ever sent to an exchange.",
@@ -1000,6 +1003,8 @@ class PaperRuntime:
             "service": None,
             "books": {},
             "fills": [],
+            "trades": [],
+            "request_rejections": [],
         }
         service = self.service
         if service is not None:
@@ -1021,11 +1026,30 @@ class PaperRuntime:
                 }
                 for name, book in service.session.sim.books.items()
             }
-            fills = [e for e in service.session.sim.events if e.get("type") == FILL_TYPE]
+            # read-only views of what the simulator already recorded (no new simulation state);
+            # `sim.events` returns a copy, so it is taken once and scanned once per publish
+            fills: list[dict[str, Any]] = []
+            rejected: list[dict[str, Any]] = []
+            for e in service.session.sim.events:
+                kind = e.get("type")
+                if kind == FILL_TYPE:
+                    fills.append(e)
+                elif kind == REQUEST_REJECTED_TYPE:
+                    rejected.append(e)
             snap["fills"] = [
                 {"ts_ms": e["ts_ms"], "aggregate_id": e["aggregate_id"], **e["payload"]}
                 for e in fills[-MAX_FILLS:]
             ]
+            snap["request_rejections"] = [
+                {"ts_ms": e["ts_ms"], "aggregate_id": e["aggregate_id"], **e["payload"]}
+                for e in rejected[-MAX_REJECTIONS:]
+            ]
+            trades = [
+                t.to_payload()
+                for book in service.session.sim.books.values()
+                for t in book.trades[-MAX_TRADES:]
+            ]
+            snap["trades"] = sorted(trades, key=lambda t: (t["exit_bar_open_ms"], t["book"]))
         self._published = (_frozen(snap), now)
         if self.on_change is not None:
             with contextlib.suppress(Exception):

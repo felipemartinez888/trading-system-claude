@@ -359,3 +359,220 @@ export type LiveMessage =
   | { type: "delta"; data: DeltaMessage }
   | { type: "shutting_down"; data: { reason: string } }
   | { type: "shutdown"; data: ShutdownInfo };
+
+// ---------------------------------------------------------------------- paper (MVP-2..4)
+// /api/paper/*: runtime state is SYSTEM; book values, fills, activity and reference signals are
+// SIMULATED / STALE / UNAVAILABLE. Decimal amounts arrive as exact strings.
+
+export interface PaperWarmup {
+  strategy_bars: number;
+  needed: number;
+  ready: boolean;
+  history_breaks?: number;
+  last_break_detected_at_ms?: number | null;
+  last_break_phase?: string | null;
+  last_break_reason?: string | null;
+}
+
+export interface PaperReference {
+  id: string;
+  version: string;
+  params_hash: string;
+  interval: string;
+  label: string;
+  validation: string;
+  evidence_grade: string;
+  trade_from_ms: number;
+  warmup_needed_strategy_bars: number;
+  warmup_1m_bars_fed: number;
+  bars_seen: number;
+  warmup_progress: Record<string, PaperWarmup>;
+  note: string;
+  history_breaks: number;
+  watch_proposals: number;
+  confirmed_intents: number;
+}
+
+export interface PaperPreviousRun {
+  state: string;
+  reason: string | null;
+  awaiting_missing: Record<string, number[]>;
+  stopped_at_ms: number;
+}
+
+export interface PaperAuditLog {
+  ok: boolean;
+  reason: string | null;
+  warnings: string[];
+  repairable_line: number | null;
+}
+
+export interface PaperStatusValue {
+  state: string;
+  reason: string | null;
+  enabled: boolean;
+  settings_source: string | null;
+  strategy: string;
+  session_id: string | null;
+  next_session_id: string | null;
+  observing_since_ms: number | null;
+  opened_at_ms: number | null;
+  values_as_of_ms: number | null;
+  live_bar_since_start: boolean;
+  previous_run: PaperPreviousRun | null;
+  audit_log: PaperAuditLog | null;
+  dropped_updates: number;
+  backfill: { ok?: boolean; processed?: number; problems?: string[] } | null;
+  reference: PaperReference | null;
+  limitations: string[];
+  service_state: string | null;
+  fault: string | null;
+  awaiting_missing: Record<string, number[]> | null;
+  last_minute_ms: number | null;
+  batches: number | null;
+}
+
+export interface ReferenceSignal {
+  signal_id: string;
+  market: Market;
+  symbol: string;
+  decision_time_ms: number;
+  side: string;
+  ref_price: number;
+  stop_price: number;
+  take_profit_price: number | null;
+  valid_until_ms: number;
+  label: string;
+  validation: string;
+}
+
+export interface PaperStatusResponse {
+  generated_at: string;
+  status: Sourced<PaperStatusValue>;
+  reference_signals: Sourced<ReferenceSignal[]> | null;
+}
+
+export interface PaperBook {
+  equity: string;
+  cash: string;
+  unrealized_pnl: string;
+  open_positions: number;
+  positions: Record<string, string>;
+  halted: boolean;
+  ledger_reconciled: boolean;
+}
+
+export interface PaperBookSummary {
+  trades: number;
+  flagged_trades: number;
+  rejections_by_reason: Record<string, number>;
+  max_drawdown: string;
+  ledger_ok: boolean;
+}
+
+export interface PaperBooksValue {
+  books: Record<string, PaperBook> | null;
+  summary: Record<string, PaperBookSummary> | null;
+  ledger_hashes: Record<string, string> | null;
+}
+
+export interface PaperBooksResponse {
+  generated_at: string;
+  books: Sourced<PaperBooksValue>;
+}
+
+export interface PaperFill {
+  ts_ms: number;
+  aggregate_id: string;
+  order_id?: string;
+  role?: string;
+  direction?: string;
+  price?: string;
+  qty?: string;
+  fee?: string;
+}
+
+export interface PaperFillsResponse {
+  generated_at: string;
+  fills: Sourced<PaperFill[]>;
+}
+
+export interface PaperTrade {
+  trade_id: string;
+  book: string;
+  market: Market;
+  symbol: string;
+  side: string;
+  signal_id: string | null;
+  entry_bar_open_ms: number;
+  entry_price: string;
+  qty: string;
+  exit_bar_open_ms: number;
+  exit_price: string;
+  exit_reason: string;
+  net_pnl: string;
+  fees: string;
+  r_multiple: string;
+  gap_fill: boolean;
+  ambiguous_bar: boolean;
+  spans_gap: boolean;
+  /** Set only when the exit was resolved on backfilled bars while the app was down. */
+  resolved_from_backfill?: boolean;
+}
+
+export interface PaperRequestRejection {
+  ts_ms: number;
+  aggregate_id: string;
+  /** null for engine-level rejections (invalid request before any book). */
+  request_id: string | null;
+  reason: string;
+}
+
+export interface PaperActivityResponse {
+  generated_at: string;
+  activity: Sourced<{ trades: PaperTrade[]; request_rejections: PaperRequestRejection[] }>;
+}
+
+export interface NewPaperSessionResult {
+  new_session_id: string;
+  previous_session_id: string | null;
+  /** false: an idempotent replay of an already recorded request. */
+  created: boolean;
+  [key: string]: unknown;
+}
+
+// ---------------------------------------------------------------------- backtests (M2-T4)
+// /api/backtests: every value is BACKTEST. Fields absent from a run stay absent (never invented).
+
+export interface BacktestSummary {
+  run_id: string;
+  created_at: string | null;
+  strategy_id: string | null;
+  strategy_version: string | null;
+  params_hash: string | null;
+  symbols: string[] | null;
+  from: string | null;
+  to: string | null;
+  segment: string | null;
+  evidence_grade: string | null;
+  n_trades: number | null;
+  win_rate: number | null;
+  win_rate_ci: { lower: number; upper: number } | null;
+  p_star: number | null;
+  margin_lcb: number | null;
+  n_trials: number | null;
+  recomputed: boolean;
+  metrics_verified: boolean | null;
+}
+
+export interface BacktestsResponse {
+  provenance: Provenance;
+  runs: Sourced<BacktestSummary>[];
+}
+
+export interface BacktestDetailResponse {
+  provenance: Provenance;
+  summary: Sourced<BacktestSummary>;
+  manifest: Sourced<Record<string, unknown>>;
+  metrics: Sourced<Record<string, unknown>>;
+}

@@ -5,6 +5,9 @@ objects. Labels (ADR-0010): the runtime state is ``SYSTEM``; book values and fil
 ``SIMULATED`` while paper is RUNNING, otherwise ``STALE`` (last known values, stamped with the time
 they were published). Nothing here can place an order.
 
+``GET /api/paper/activity`` (MVP-4, read-only) serves the books' closed trades and the request-level
+rejections (risk gate, validation) already recorded by the simulator, labelled like books and fills.
+
 ``POST /api/paper/session/new`` (token-protected, note required, idempotent by ``request_id``)
 records a new paper session that opens at the next monitoring start; it is refused while paper is
 processing and never overwrites an existing session.
@@ -154,6 +157,23 @@ def paper_router(
             snap, _at = got
             fills = _values(snap, now, list(snap.get("fills") or [])[-limit:])
         return {"generated_at": to_iso(now), "fills": fills}
+
+    @router.get("/api/paper/activity")
+    def paper_activity(limit: int = Query(100, ge=1, le=200)) -> dict[str, Any]:
+        """Closed trades of every book and request-level rejections (risk gate, validation),
+        newest last, with the same freshness labelling as books and fills."""
+        now = clock.now_ms()
+        got = _snapshot()
+        if got is None:
+            activity = Sourced[Any].unavailable(NOT_CONFIGURED).model_dump()
+        else:
+            snap, _at = got
+            value = {
+                "trades": list(snap.get("trades") or [])[-limit:],
+                "request_rejections": list(snap.get("request_rejections") or [])[-limit:],
+            }
+            activity = _values(snap, now, value)
+        return {"generated_at": to_iso(now), "activity": activity}
 
     # async: runs on the event loop, like the paper consumer, so the runtime is never mutated
     # from a worker thread

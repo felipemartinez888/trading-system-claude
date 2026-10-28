@@ -64,6 +64,10 @@ RATIONALE = (
 #: far beyond any session: a live source never runs into the backtest's flat-at-end boundary
 _NEVER_MS = 2**62
 MAX_RECENT = 50
+BREAK_REASON = (
+    "an incomplete 15m bucket (a missing 1m bar, or one the paper engine processed unobserved) "
+    "restarted this instrument's history"
+)
 WARMUP_NOTE = (
     "bracket_reference needs about 741 contiguous 15m bars (about 7.8 days of unbroken 1m bars) "
     "per instrument before its first decision. At paper start it warms up from the live bar store, "
@@ -108,6 +112,7 @@ class ReferenceLiveStrategy:
         )
         self._costs = dict(costs)
         self._last_open: dict[SymbolKey, int] = {}
+        self._breaks: dict[SymbolKey, dict[str, Any]] = {}
         self.stats = ReferenceStats()
 
     @classmethod
@@ -168,7 +173,13 @@ class ReferenceLiveStrategy:
             return False
         self._last_open[key] = bar.open_time_ms
         # the backtest adapter never reads the view; it is passed through unchanged
+        before = self._source.breaks
         self._source.on_bar(bar, cast(SimView, view))
+        if self._source.breaks != before:
+            info = self._breaks.setdefault(key, {"count": 0})
+            info["count"] += self._source.breaks - before
+            info["detected_at_ms"] = bar.close_time_ms
+            info["phase"] = "warm-up" if bar.close_time_ms < self.trade_from_ms else "live"
         return True
 
     # ------------------------------------------------------------------ mapping
@@ -250,10 +261,16 @@ class ReferenceLiveStrategy:
         histories = getattr(self._source, "_hist", {})  # read-only view of the backtest adapter
         for key in sorted(self._costs, key=lambda k: (str(k[0]), k[1])):
             held = int(getattr(histories.get(key), "n", 0))
+            info = self._breaks.get(key, {})
             out[f"{key[0]}:{key[1]}"] = {
                 "strategy_bars": held,
                 "needed": self.strategy.warmup_bars,
                 "ready": held >= self.strategy.warmup_bars,
+                # B-3: why and when this instrument's history last restarted (None: never)
+                "history_breaks": int(info.get("count", 0)),
+                "last_break_detected_at_ms": info.get("detected_at_ms"),
+                "last_break_phase": info.get("phase"),
+                "last_break_reason": BREAK_REASON if info else None,
             }
         return out
 

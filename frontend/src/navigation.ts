@@ -67,10 +67,13 @@ export const WORKSPACES: WorkspaceDef[] = [
     pages: [
       {
         id: "portfolio",
-        title: "Portfolio",
+        title: "Paper",
         path: "/paper/portfolio",
-        willShow: "Equity per paper book (baseline, agent-gated, benchmark) and the kill switch.",
-        arrives: "M3 — Paper trading and risk engine.",
+        willShow:
+          "Paper runtime state, books (baseline, shadow, benchmark), positions, fills, trades, " +
+          "risk rejections and the REFERENCE strategy's warm-up and signals.",
+        arrives: "MVP-4 — paper dashboard (MVP readiness; not M3 acceptance).",
+        implemented: true,
       },
       {
         id: "positions",
@@ -114,6 +117,7 @@ export const WORKSPACES: WorkspaceDef[] = [
           "Backtest runs with grade chips; run detail with equity, drawdown, trades, costs, " +
           "bootstrap confidence intervals and the reproducibility manifest.",
         arrives: "M2 — Historical data and backtest core.",
+        implemented: true,
       },
       {
         id: "validation",
