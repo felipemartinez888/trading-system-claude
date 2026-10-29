@@ -19,12 +19,24 @@ dropped as soon as it finishes. Only the cross-check sample months keep their `B
 
 Any `ChecksumError` (or a kline format error) aborts the whole request: parts written by this run
 are removed again and no manifest is committed, so nothing from it becomes visible.
+
+Row accounting (M2-E3, fail closed; C-1: rows once vanished silently between a verified archive
+and the lake):
+- per archive file, the data lines are counted again from an independent decompression of the
+  verified zip, and must equal parsed rows + malformed rows;
+- per month, every parsed row must be accounted for: kept, an identical duplicate, a differing
+  duplicate, outside the request, or rejected; and the staged parts must hold exactly the kept rows;
+- staged parts are re-read before they are published (`Staging.commit`).
+Any mismatch raises `ArchiveImportError`, so nothing from the request is committed. The manifest
+records the importing code's commit and dirty state (`code_provenance`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import zipfile
 from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -39,6 +51,7 @@ from tsclaude.marketdata.archive.checksum import ChecksumError
 from tsclaude.marketdata.archive.csvparse import ArchiveFormatError
 from tsclaude.marketdata.archive.download import ArchiveNotFound, VerifiedFile
 from tsclaude.marketdata.archive.paths import ArchiveDataType, ArchiveFile, PlanItem, PlanKind
+from tsclaude.marketdata.archive.provenance import code_provenance
 from tsclaude.marketdata.archive.qa import (
     QACollector,
     build_report,
@@ -179,6 +192,7 @@ class Importer:
         self._prefer_rest_current_month = prefer_rest_current_month
         self._cross_check_months = cross_check_months
         self._month_sem = asyncio.Semaphore(month_concurrency)
+        code_provenance()  # resolved now (git subprocesses), never inside the event loop later
 
     # ------------------------------------------------------------------ entry point
     async def run(self, req: ImportRequest) -> ImportResult:
@@ -229,12 +243,31 @@ class Importer:
                 for item in months[label]:
                     chunks.extend(await self._resolve(req, data_type, interval, step, item, local))
                 records = [c.record for c in chunks]
+                parsed = sum(len(c.rows) for c in chunks)
+                outside = sum(
+                    1
+                    for c in chunks
+                    for r in c.rows
+                    if not req.start_ms <= r.open_time_ms < req.end_ms
+                )
                 merged = self._merge(chunks, req, local)
                 del chunks
+                kept = len(merged)
                 valid, bars = self._validate(req, merged, step, ingested, local)
                 del merged
                 parts = (
                     staging.write_parts(req.market, req.kind, req.symbol, valid) if valid else []
+                )
+                _check_month_accounting(
+                    label,
+                    parsed=parsed,
+                    outside=outside,
+                    kept=kept,
+                    duplicates=local.duplicates_identical,
+                    conflicts=len(local.duplicate_conflicts),
+                    rejected=len(local.rejected),
+                    valid=len(valid),
+                    staged=sum(p.rows for p in parts),
                 )
                 return _MonthResult(
                     label,
@@ -347,6 +380,19 @@ class Importer:
         else:
             kl = csvparse.parse_klines_csv(text, req.market, period, step)
             rows, unit, issues = list(kl.rows), kl.unit, kl.issues
+        data_lines, has_header = source_data_lines(vf.data)
+        if has_header != issues.header_skipped:
+            raise ArchiveImportError(
+                f"{vf.file.relpath}: source row reconciliation failed: header detected "
+                f"independently={has_header}, by the parser={issues.header_skipped}; nothing from "
+                "this request is committed"
+            )
+        if data_lines != len(rows) + len(issues.malformed_rows):
+            raise ArchiveImportError(
+                f"{vf.file.relpath}: source row reconciliation failed: {data_lines} data lines in "
+                f"the verified archive, but {len(rows)} parsed + {len(issues.malformed_rows)} "
+                "malformed rows; nothing from this request is committed"
+            )
         for line_no, reason in issues.malformed_rows:
             collector.malformed.append({"file": vf.file.relpath, "line": line_no, "reason": reason})
         if issues.unit_note:
@@ -367,6 +413,7 @@ class Importer:
             "timestamp_unit": unit,
             "header_row": issues.header_skipped,
             "rows": len(rows),
+            "source_data_lines": data_lines,
             "from": to_iso(item.start_ms),
             "to": to_iso(item.end_ms),
         }
@@ -631,6 +678,7 @@ class Importer:
             "created_at_ms": now,
             "created_at": to_iso(now),
             "tool": f"tsclaude {__version__}",
+            "code_provenance": code_provenance(),
             "sources": sources,
             "gaps": qa.get("gaps", []),
         }
@@ -639,6 +687,70 @@ class Importer:
             return ImportResult(req, None, False, 0, qa, sources)
         dsid, created = committed
         return ImportResult(req, dsid, created, rows, qa, sources, parts)
+
+
+# ---------------------------------------------------------------------- row accounting
+def source_data_lines(zip_bytes: bytes) -> tuple[int, bool]:
+    """(data lines, header present) of the archive's single CSV, from a second decompression,
+    streamed line by line and independent of the parser.
+
+    A physical line counts unless it is blank or only commas. The first non-blank line is a header
+    only if it is exactly a known header (`csvparse.KNOWN_HEADERS`, decided here, not taken from the
+    parser) and is then not counted. This is deliberately simpler than the CSV parser, so a row lost
+    by parsing, or by a transient fault in the first decompression, cannot hide behind the same code
+    path. It can only disagree with the parser towards a failure (quoted multi-line fields, `""`
+    lines, Unicode-whitespace lines), never towards a silent pass; Binance archives contain none.
+    """
+    lines = 0
+    first: bytes | None = None
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = [n for n in zf.namelist() if not n.endswith("/")]
+        if len(names) != 1:
+            raise ArchiveImportError(f"zip must contain exactly one CSV, found {names}")
+        with zf.open(names[0]) as fh:
+            for line in fh:
+                if not line.replace(b",", b"").strip():
+                    continue
+                if first is None:
+                    first = line
+                lines += 1
+    has_header = first is not None and _is_known_header(first)
+    return (lines - 1 if has_header else lines), has_header
+
+
+def _is_known_header(line: bytes) -> bool:
+    try:
+        text = line.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return ",".join(c.strip().lower() for c in text.split(",")) in csvparse.KNOWN_HEADERS
+
+
+def _check_month_accounting(
+    label: str,
+    *,
+    parsed: int,
+    outside: int,
+    kept: int,
+    duplicates: int,
+    conflicts: int,
+    rejected: int,
+    valid: int,
+    staged: int,
+) -> None:
+    """Every parsed row of the month is accounted for, and the staged parts hold the kept rows."""
+    problems = []
+    if parsed != kept + duplicates + conflicts + outside:
+        problems.append(
+            f"parsed {parsed} != kept {kept} + identical duplicates {duplicates} + "
+            f"differing duplicates {conflicts} + outside the request {outside}"
+        )
+    if kept != valid + rejected:
+        problems.append(f"kept {kept} != valid {valid} + rejected {rejected}")
+    if staged != valid:
+        problems.append(f"staged rows {staged} != valid rows {valid}")
+    if problems:
+        raise ArchiveImportError(f"{label}: row accounting failed: {'; '.join(problems)}")
 
 
 # ---------------------------------------------------------------------- row conversion
