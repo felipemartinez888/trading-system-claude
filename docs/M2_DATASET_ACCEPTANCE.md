@@ -40,7 +40,7 @@
 | B07 DOGE 2024–25 | `a010f302…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | **24/24 = canonical** | none needed | PENDING | Accept |
 | B08 XRP 2024–25 | `10c2c062…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | **23/24 = canonical; 2025-04 differs**: batch 43,200 rows vs canonical 43,199 from the **same** source file (SHA-256 `a3619422…`) | the batch is complete; **canonical lost the 2025-04-03 17:24 row** (import defect in the older canonical import) | PENDING | Accept B08. **Repair canonical XRP 2025-04** (see the canonical findings below) |
 | B09 ADA 2024–25 | `d72aa5d9…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | no reference | none needed | PENDING | Accept on the QA, verify and re-hash evidence |
-| B10 AVAX 2024–25 | `d10de5e2…` | 1,052,640 | NORMAL | **FAIL**: 3 × 15m open (2025-12) | **not run** | 24+4 | — | no reference | all 3 explained as `leading_zero_trade_open` (ADR-0015 proposal), source-level, every other field equal | PENDING | Run `data verify` (O-3; it also re-hashes the sources); after ADR-0015, re-run QA (read-only); then decide |
+| B10 AVAX 2024–25 | `d10de5e2…` | 1,052,640 | NORMAL | **FAIL**: 3 × 15m open (2025-12) | **ok** (owner O-3, 2026-10-28: 24 parts, 1,052,640 rows, 0 errors) | 24+4 | verify: 28/28 | no reference | all 3 explained as `leading_zero_trade_open` (ADR-0015 proposal), source-level, every other field equal | PENDING | After ADR-0015, re-run QA (isolated re-import from the cached archives); then decide |
 | B11 TRX 2024–25 | `f89e172f…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | **Claude: 28/28 = manifest** (the per-batch cache; the wrapper's path was wrong); verify: 28/28 | no reference | none needed | PENDING | Accept on the QA, verify and re-hash evidence |
 | B12 HBAR 2024–25 | `3d67799f…` | 1,052,640 | NORMAL | **FAIL**: 2 × 15m open (2024-01, 2025-12); Z1 445 min / 134 runs | ok | 24+4 | verify: 28/28 | no reference | both explained as `leading_zero_trade_open` (ADR-0015); zero-volume minutes are genuine no-trade (ADR-0014 Z1; sampled runs of 3–5 min) | PENDING | After ADR-0014/0015, re-run QA; the audit already found all 445 zero-volume minutes Z1-shaped (0 class A); then decide |
 
@@ -70,6 +70,14 @@ canonical:
     - the canonical XRP and SOL datasets each lack one real minute;
     - any backtest range containing those minutes grades X;
     - parity claims against canonical for those months are invalid.
+  - **O-2 sweep (owner, 2026-10-28, report `evidence/owner_checks/o2_canonical_rows_20261028T014419Z.*`, HEAD
+    `ebefbc1`):**
+    - 240 canonical source archives (5 symbols × 2022-01 → 2025-12; the 2026 holdout was not opened);
+    - 233 OK; 5 OK with the known malformed 2023-03 halt line; **exactly 2 mismatches**, the two rows above
+      (XRP line 3925, SOL line 29724);
+    - **no other count-level row loss** within that scope.
+    - The sweep cannot detect a value altered without a row lost. Value-level verification still needs parity
+      with an independent re-import (see the C-1 plan in `devlog/2026-10-28-m2-decision-recommendations.md`).
 - **C-2, genuine source gap:** SOL 2023-02-14 16:39 is absent from the source file itself. It is a real missing
   observation (class M), not an interruption.
 - **C-3, the canonical 2023-03-24 signature:** identical in all five symbols (see ADR-0013).

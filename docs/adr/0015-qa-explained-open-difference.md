@@ -1,6 +1,7 @@
 # ADR-0015: A narrow, evidence-bound QA exception for native-versus-derived open differences
 
-- **Status:** Proposed (2026-10-28). It needs owner approval before any implementation. Until then `qa.cross_check`
+- **Status:** Accepted in principle (owner decision D-13/P-5, 2026-10-28). Implementation (E-2) is not yet
+  authorized. Until then `qa.cross_check`
   is unchanged (exact equality), and B10 and B12 keep `cross_checks_ok = false`.
 - **Relates to:** ADR-0004 (derived timeframes and the consistency check), ADR-0014 (zero-volume candles).
 

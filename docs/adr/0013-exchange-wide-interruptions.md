@@ -1,6 +1,7 @@
 # ADR-0013: Exchange-wide interruptions are registered non-trading periods, not missing data
 
-- **Status:** Proposed (2026-10-28). It needs owner approval before any implementation. Until then the current
+- **Status:** Accepted in principle (owner decisions D-09/P-1 and D-10/P-2, 2026-10-28). Implementation (E-1) is
+  **not yet authorized**, and its execution semantics depend on D-12 (P-4). Until it is implemented, the current
   rule applies unchanged: any missing 1m bar in a backtest range gives grade X (`configs/backtest.yaml`
   `max_missing_share: 0.0`).
 - **Relates to:**

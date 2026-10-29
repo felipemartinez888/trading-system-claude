@@ -1,7 +1,10 @@
 # ADR-0014: Zero-volume candles are classified, never imputed or removed
 
-- **Status:** Proposed (2026-10-28). It needs owner approval before any implementation. Nothing changes until
-  then: today zero-volume candles are kept as published, counted by QA in runs of at least 3 minutes, and
+- **Status:**
+  - The classification (rules 1–3, 5, 6) is **Accepted** (owner decision D-11/P-3, 2026-10-28).
+  - Rule 4 (no fills on zero-trade candles) is **accepted as a policy principle only** (D-12/P-4). Its final
+    execution semantics need the O-4 live evidence, causality testing and separate approval.
+  - Implementation is not yet authorized. Nothing changes until then: today zero-volume candles are kept as published, counted by QA in runs of at least 3 minutes, and
   treated as ordinary bars by features and the simulator.
 - **Relates to:** ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0013 (exchange interruptions),
   ADR-0015 (QA open exception).

@@ -18,6 +18,23 @@ That priority is formalized in [ADR-0012](adr/0012-win-rate-margin-objective.md)
 
 New decisions that require the owner will be appended below.
 
+### 2026-10-28: M2 data-policy decisions (P-1 … P-9)
+Evidence: [policy design](devlog/2026-10-28-m2-policy-design.md),
+[recommendations](devlog/2026-10-28-m2-decision-recommendations.md),
+[acceptance matrix](M2_DATASET_ACCEPTANCE.md), and owner checks O-2/O-3 (PASS).
+
+| ID | Decision | Status | Resolution |
+|---|---|---|---|
+| **D-09** (P-1) | Registry of exchange-wide interruptions ([ADR-0013](adr/0013-exchange-wide-interruptions.md)) | ✅ Approved in principle | Versioned, independently auditable registry; implementation (E-1) needs separate approval |
+| **D-10** (P-2) | First registry entry | ✅ Approved | Binance spot `[2023-03-24 11:28, 14:00) UTC`, including the 71-minute zero-trade period, subject to the ADR-0013 evidence and causal safeguards |
+| **D-11** (P-3) | Zero-volume classification ([ADR-0014](adr/0014-zero-volume-candles.md)) | ✅ Approved | Genuine zero-trade, outage filler, missing and anomalous are distinguished; raw observations are never synthesized or removed |
+| **D-12** (P-4) | No simulated fills on zero-trade candles or inside registered outages | ✅ Approved as a policy principle | Final execution semantics and implementation need the O-4 evidence, causality testing and separate approval |
+| **D-13** (P-5) | Narrow QA open exception ([ADR-0015](adr/0015-qa-explained-open-difference.md)) | ✅ Approved in principle | Only under ADR-0015's exact safeguards, with mutation tests and visible QA exceptions; implementation (E-2) needs separate approval |
+| **D-14** (P-6) | Reference-only grade X | ✅ Approved, applied | RESEARCH_PROTOCOL §6 clarified; the signal contract is unchanged; no reference promotion |
+| **D-15** (P-7) | B01–B12 formal acceptance | ⏸ Deferred | No classification changes |
+| **D-16** (P-8) | Canonical defect C-1 | ✅ Approved for diagnosis and prevention design only | No canonical repair or replacement is authorized |
+| **D-17** (P-9) | Promotion of isolated datasets into canonical | ⏸ Deferred | No promotion |
+
 ## Lead decisions (technical, within approved scope)
 
 | ID | Date | Decision | Context |

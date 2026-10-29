@@ -82,6 +82,16 @@ Every run gets a machine-assigned grade with listed reasons:
 | `D – rejected` | Failed rejection criteria. |
 | `X – invalid` | Integrity failure: data gaps in range, look-ahead canary failure, missing manifest fields. |
 
+**Reference-only records** (owner decision D-14, 2026-10-28):
+- **What X means here.** Signals and runs of a strategy labelled `REFERENCE` (for example `bracket_reference`,
+  which exercises the paper-trading pipeline) carry grade `X` because no graded evidence exists for them, not
+  because an integrity check failed. For such records `X` means **absence of validated evidence**.
+- **Never a validation result.** It still blocks promotion to the live scanner, since §7 requires grade ≥ C.
+- **Label first.** Every consumer, the dashboard included, must check the `REFERENCE` label before interpreting
+  the grade, and must show such records as "REFERENCE / NOT VALIDATED".
+- **Everything else is unchanged.** For any record without the `REFERENCE` label, `X` keeps its
+  integrity-failure meaning. The signal contract (`evidence_grade` one of A/B/C/D/X) is unchanged.
+
 ## 7. Promotion to live scanning
 
 A strategy version runs in the live scanner only if frozen, its preregistration is committed, and it
