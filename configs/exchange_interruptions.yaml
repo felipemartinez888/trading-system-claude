@@ -1,18 +1,24 @@
-# Registry of exchange-wide interruptions (ADR-0013; owner decisions D-09, D-10; 2026-10-28).
-# Historical knowledge for BACKTESTS ONLY. Minutes inside an entry are reported as exchange downtime
-# instead of missing data; the simulator fills nothing inside it and closes exposed positions at the
-# first traded open afterwards. Any other missing minute still grades a run X.
+# Registry of exchange-wide interruptions (ADR-0013; owner decisions D-09, D-10, D-09A, D-10A).
+# Historical knowledge for BACKTESTS ONLY. The simulator fills nothing inside [from, to) and closes
+# exposed positions at the first traded open afterwards. Only the documented absence period
+# [absent_from, to) is registered downtime: a minute missing before absent_from (where candles were
+# published) is genuine missing data, and any other missing minute still grades a run X.
+#
+# Schema 2 (D-09A): every entry needs approved_at (ISO date) and absent_from; an interval longer
+# than 24 h is refused unless exceptional_override {approved_by, approved_at, reason, reference} is
+# present; unknown fields are refused.
 #
 # Admission rule (ADR-0013 §2): identical pattern in every symbol of the market (>= 5 symbols,
 # separate source-verified datasets), confirmed in the source archives, an external report of the
 # halt, and owner approval BEFORE any result using it is examined. Never edited because of a result.
 # The file's SHA-256 is recorded in every run manifest.
-schema: 1
+schema: 2
 interruptions:
   - id: binance-spot-2023-03-24
     market: spot
     from: "2023-03-24T11:28:00Z"   # first minute of the market-wide zero-trade run
     to: "2023-03-24T14:00:00Z"     # first minute in which trading resumed in all symbols
+    absent_from: "2023-03-24T12:39:00Z"   # D-10A: 11:28-12:38 published (Z1/Z2 fillers); 12:39-13:59 absent
     scope: exchange-wide
     signature:
       symbols_checked: [BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT, XRPUSDT]   # canonical data/, plus batch B03 (BTC)
@@ -26,3 +32,4 @@ interruptions:
       - "Forklog, 2023-03-24: maintenance completed, trading resumes 14:00 UTC"
       - "FinanceFeeds, 2023-03-24: two-hour outage, cancel-only until 13:40 UTC"
     approved_by: "owner (D-10, 2026-10-28)"
+    approved_at: "2026-10-28"

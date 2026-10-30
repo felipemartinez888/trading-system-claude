@@ -50,7 +50,7 @@ def test_cli_refuses_a_malformed_exchange_interruption_registry(
     """M2-E1: the registry next to the config is validated first; a broken one refuses the run
     (exit 5) before anything is simulated or written."""
     (tmp_path / "exchange_interruptions.yaml").write_text(
-        "schema: 1\ninterruptions:\n  - id: x\n    market: spot\n", encoding="utf-8"
+        "schema: 2\ninterruptions:\n  - id: x\n    market: spot\n", encoding="utf-8"
     )
     code, out = _run(
         capsys,

@@ -236,6 +236,35 @@ def test_a_stop_crossed_by_a_traded_looking_candle_inside_an_interruption_does_n
     assert exits[0]["exit_reason"] == ExitReason.EXCHANGE_DOWNTIME
 
 
+def test_the_registry_freezes_the_whole_interval_including_its_observed_part() -> None:
+    """D-10A changes integrity accounting only: a schema-2 registry entry whose absence period
+    starts at minute 5 still hands the simulator [3, 6), so a traded-looking candle at minute 3
+    (in the observed part) cannot fill the stop; the position closes at the minute-6 open."""
+    from datetime import UTC, datetime
+
+    from tsclaude.quality.interruptions import parse_registry
+
+    def iso(t: int) -> str:
+        return datetime.fromtimestamp(t / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    halt = {
+        "id": "test-outage", "market": "spot", "from": iso(minute(3)), "to": iso(minute(6)),
+        "absent_from": iso(minute(5)), "scope": "exchange-wide", "signature": {"a": 1},
+        "external_sources": ["s"], "approved_by": "owner", "approved_at": "2026-10-29",
+    }  # fmt: skip
+    reg = parse_registry({"schema": 2, "interruptions": [halt]}, sha256=None, source=None)
+    bars = [*_held_bars(), bar(2, 1002, 1003, 1001, 1002), bar(3, 1000, 1001, 980, 985)]
+    bars += [bar(6, 995, 996, 994, 995), bar(7, 995, 996, 994, 995)]
+    book = Book("baseline", D(10_000), CostModel(), instruments=[SPOT])
+    script = ScriptedSource({(T0, "BTCUSDT"): [entry()]})
+    sim = Simulator(
+        HistoricalClock(bars), [book], script, exchange_interruptions=reg.simulator_intervals()
+    )
+    exits = closed(sim.run())
+    assert [e["exit_bar_open_ms"] for e in exits] == [minute(6)]
+    assert exits[0]["exit_reason"] == ExitReason.EXCHANGE_DOWNTIME
+
+
 def test_a_position_opened_after_an_interruption_is_not_closed_by_it() -> None:
     bars = [bar(0, 1000, 1001, 999, 1000), no_trade(3, 1000)]
     bars += [bar(6, 1000, 1001, 999, 1000), bar(7, 1000, 1005, 998, 1002)]

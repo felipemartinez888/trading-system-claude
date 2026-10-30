@@ -249,6 +249,9 @@ blocking findings.**
     documented as defensive.
 
 ## Owner decisions of 2026-10-29 and proposed E-1b
+> **Update (2026-10-30):** the owner authorized E-1b for D-10A and D-09A. They are implemented and committed
+> locally after owner review, see the [E-1b devlog](2026-10-29-m2-e1b-registry-governance.md). The D-12A breakdown below stays a proposal;
+> the owner judged the existing per-trade flags sufficient for now.
 The owner approved the E-1 local commit and decided the three open policy points (DECISIONS_PENDING D-09A, D-10A,
 D-12A). They are recorded here. Any code beyond the reviewed E-1 diff is **proposed, not implemented**, as the
 owner asked.

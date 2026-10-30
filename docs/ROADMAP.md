@@ -38,10 +38,10 @@ Open limitations carried by the track:
 - RUNNING paper has not been checked in the real app;
 - no backtest run exists.
 
-**Current work:** E-1 (exchange-interruption registry and no simulated fills on zero-trade candles), implemented in the isolated worktree and committed locally on `task/m2-e1` after owner review (not merged; owner policy decisions D-09A/D-10A/D-12A recorded, E-1b proposed): [E-1 devlog](devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md). O-4 passed: [results](devlog/2026-10-28-o4-owner-capture.md). E-0 and E-4(a) committed (`e18f15a`, `c327bbd`); E-3 committed on `task/m2-e3` (`e5a5e2e`). See the [approval package](devlog/2026-10-28-m2-approval-package.md).
+**Current work:** E-1 (exchange-interruption registry and no simulated fills on zero-trade candles), implemented in the isolated worktree and committed locally on `task/m2-e1` after owner review (not merged; owner policy decisions D-09A/D-10A/D-12A recorded): [E-1 devlog](devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md). E-1b (D-09A registry governance, D-10A observed/absent split) committed locally on top of it after owner review: [E-1b devlog](devlog/2026-10-29-m2-e1b-registry-governance.md). O-4 passed: [results](devlog/2026-10-28-o4-owner-capture.md). E-0 and E-4(a) committed (`e18f15a`, `c327bbd`); E-3 committed on `task/m2-e3` (`e5a5e2e`). See the [approval package](devlog/2026-10-28-m2-approval-package.md).
 **Blockers:**
 - **Owner decisions:**
-  - the E-1b proposal (registry governance, observed/absent split, deferred breakdown); integrating `task/m2-e1` and `task/m2-e3`; the authorization of E-2; the deferred decisions D-15 (P-7) and D-17 (P-9);
+  - integrating `task/m2-e1` and `task/m2-e3`; the authorization of E-2; the deferred decisions D-15 (P-7) and D-17 (P-9);
   - merging and pushing the local MVP branches (D-07);
   - Part B (restart equivalence).
 - **Owner actions:**

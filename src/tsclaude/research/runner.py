@@ -70,7 +70,8 @@ from tsclaude.store.lake_reader import LakeReader
 from tsclaude.strategies.base import PlanningCosts, Strategy
 
 #: runner-v2: registered exchange interruptions (ADR-0013) reported as downtime, not missing data
-RUNNER_VERSION = "runner-v2"
+#: runner-v3: registry schema 2; only the documented absence period [absent_from, to) is downtime
+RUNNER_VERSION = "runner-v3"
 MANIFEST_SCHEMA = 1
 DEV_START_MS = from_iso("2022-01-01T00:00:00Z")
 DEV_END_MS = from_iso("2025-01-01T00:00:00Z")

@@ -12,7 +12,8 @@
   - inside an interval, observed zero-trade minutes are distinguished from absent minutes, and a missing
     bar in the observed part counts as missing data.
 
-  These are not yet implemented; they are proposed as E-1b.
+  These are implemented in E-1b (registry schema 2, runner-v3), committed locally on `task/m2-e1` after
+  owner review ([E-1b devlog](../devlog/2026-10-29-m2-e1b-registry-governance.md)).
 - **Relates to:**
   - ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0009 (holdout guard);
   - RESEARCH_PROTOCOL §6 (grades);

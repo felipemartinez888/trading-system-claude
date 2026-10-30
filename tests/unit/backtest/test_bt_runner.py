@@ -297,8 +297,11 @@ def test_runner_rejects_unaligned_or_empty_ranges(tmp_path: Path) -> None:
 # `exchange_interruptions_in_warmup = []`: removing that key gives 0b96116b... trades.parquet
 # gains the explicit bool columns deferred_no_trade and spans_exchange_downtime (all False here);
 # rewriting the same rows without them gives the previous 39ca0329... byte for byte.
-GOLDEN_MANIFEST = "f77a88bbf8df41560350e51ba184a49cb98898ed33cb76c76a0317b5352a1495"
-GOLDEN_METRICS = "ef8abc59e7b55b720ddd42410df552c6a25a1c8b98bf482124c99a70d222c24e"
+# M2-E1b: runner-v3 and registry schema 2 (empty registry here). Reverting exactly those two values
+# gives the previous manifest hash f77a88bb...; metrics differ only by the embedded manifest_hash
+# (restoring it gives ef8abc59...); trades unchanged.
+GOLDEN_MANIFEST = "519558a8e71ffd4d25c97adac31ebc378ce406160f5398f899d4b30ddb7b58c5"
+GOLDEN_METRICS = "e32098e50ff964c9fff8309fbe102eded8952a430e2014b965610e053e7c7000"
 GOLDEN_TRADES = "2dff9ce66a73112467f1a42ec5605c22735793d40788e32a6d6bc58d9052e6e6"
 
 
