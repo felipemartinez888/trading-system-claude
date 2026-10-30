@@ -27,7 +27,7 @@ The preflight measures that from the last 24 hours of public REST data.
 
 ```powershell
 # NORMAL — no administrator. Read-only REST queries; writes nothing.
-cd C:\Users\felip\Projects\trading-system-claude
+cd $HOME\Projects\trading-system-claude
 .\.venv\Scripts\python.exe -I scripts\owner_checks\o4_zero_trade_capture.py preflight --symbols HBARUSDT,<SYMBOL2>,<SYMBOL3>,<SYMBOL4>,<SYMBOL5>
 ```
 - **Which symbols to try:** any spot USDT pairs you suspect are thin, up to 5 per run. You can repeat the
@@ -38,7 +38,7 @@ cd C:\Users\felip\Projects\trading-system-claude
 ## Step 2: capture (60 minutes, unattended)
 ```powershell
 # NORMAL — no administrator. Read-only live capture; writes one new folder under evidence\owner_checks\.
-cd C:\Users\felip\Projects\trading-system-claude
+cd $HOME\Projects\trading-system-claude
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 .\.venv\Scripts\python.exe -I scripts\owner_checks\o4_zero_trade_capture.py capture --symbols <CHOSEN,SYMBOLS> --minutes 60 --out-dir "evidence\owner_checks\o4_$stamp"
 ```

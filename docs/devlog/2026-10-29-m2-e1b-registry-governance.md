@@ -3,7 +3,7 @@
 - **Authorization:** owner message "OWNER AUTHORIZATION — E-1b POLICY COMPLETION" (2026-10-29). It closes the
   implementation gaps of D-10A and D-09A, recorded at the E-1 final review.
 - **Base:** E-1 commit `4e88ba0` on `task/m2-e1`, in an isolated git worktree. E-1b was reviewed by the owner
-  ("E-1b FINAL REVIEW — LOCAL COMMIT APPROVED") and committed locally on top of `4e88ba0`; not merged or pushed.
+  ("E-1b FINAL REVIEW — LOCAL COMMIT APPROVED") and committed locally on top of `4e88ba0` as `5f623e9`; integrated locally into `feat/mvp-4-dashboard` (merge `03c9158`, 2026-10-30; not pushed, not in `main`).
 - **Optional scope not taken:** D-12A's waiting-time and deferred-versus-other metrics. The owner judged the
   existing per-trade `deferred_no_trade` flags sufficient for now; the proposal stays in the
   [E-1 devlog](2026-10-28-m2-e1-no-fill-and-interruptions.md#owner-decisions-of-2026-10-29-and-proposed-e-1b).
@@ -178,7 +178,7 @@ requirements it was made against:
   - `tests/unit/sim/test_e1_no_trade_and_outage.py`
   - `docs/DECISIONS_PENDING.md`, `docs/ROADMAP.md`, `docs/adr/0013-exchange-wide-interruptions.md`
   - `docs/devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md`, this devlog, `docs/devlog/metrics.csv`
-  - optionally `docs/tasks/M2-E1-E3-integration-plan.md` (a plan only, marked NOT EXECUTED)
+  - optionally `docs/tasks/M2-E1-E3-integration-plan.md` (then a plan only, marked NOT EXECUTED; executed on 2026-10-30, merge `03c9158`)
 - **Never staged:** `docs/tasks/M2-E1-checkpoint.md` (session note) and any data, evidence or cache.
 - **Pre-commit checks:** `git diff --cached --stat` lists only the paths above; the focused backtest/sim chunk,
   ruff, format and mypy pass again on the staged tree.

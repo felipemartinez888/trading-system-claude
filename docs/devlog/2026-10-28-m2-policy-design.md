@@ -127,7 +127,7 @@ O-2 is read-only and writes one report to `%TEMP%`. O-3 is read-only on the data
 every canonical source's recorded row count with the data lines in its cached archive.
 ```powershell
 # NORMAL — no administrator. Read-only: reads data\imports manifests and data\archive_cache ZIPs; writes one report in %TEMP%.
-cd C:\Users\felip\Projects\trading-system-claude
+cd $HOME\Projects\trading-system-claude
 @'
 import io, json, sys, zipfile
 from pathlib import Path
@@ -160,7 +160,7 @@ for b in bad: print(*b)
 **O-3: B10 integrity and source re-check** (seconds):
 ```powershell
 # NORMAL — no administrator. Verifies the B10 lake files and cached sources (read-only); writes verify.json into evidence.
-cd C:\Users\felip\Projects\trading-system-claude
+cd $HOME\Projects\trading-system-claude
 .\.venv\Scripts\python.exe -m tsclaude.cli data verify --data-dir data_batches\b10_spot_avax_2024_2025 --all --summary evidence\imports\b10_spot_avax_2024_2025\verify.json
 ```
 Send back the printed summary (`ok`, parts, rows, errors, `sources_checked`).

@@ -41,7 +41,7 @@ Note the current WHEA count, so a run can be told apart from a hardware event:
 
 ```powershell
 # NORMAL — no administrator. Read-only audit; writes two new files under evidence\owner_checks\.
-cd C:\Users\felip\Projects\trading-system-claude
+cd $HOME\Projects\trading-system-claude
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 New-Item -ItemType Directory -Force evidence\owner_checks | Out-Null
 git rev-parse HEAD | Out-File -Encoding utf8 "evidence\owner_checks\o2_$stamp.git_head.txt"
@@ -78,7 +78,7 @@ five symbols (the truncated 12:39 candle on line 33880).
 
 ```powershell
 # NORMAL — no administrator. Read-only verification of the B10 lake parts and cached sources; writes one new verify.json.
-cd C:\Users\felip\Projects\trading-system-claude
+cd $HOME\Projects\trading-system-claude
 $out = 'evidence\imports\b10_spot_avax_2024_2025\verify.json'
 if (Test-Path -LiteralPath $out) { throw "refusing to overwrite $out" }
 .\.venv\Scripts\python.exe -m tsclaude.cli data verify --data-dir data_batches\b10_spot_avax_2024_2025 --all --summary $out

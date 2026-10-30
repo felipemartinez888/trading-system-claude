@@ -6,7 +6,9 @@
   [0014](../adr/0014-zero-volume-candles.md) rule 4 and rule 5.
 - **Branch:** `task/m2-e1` in an isolated git worktree, from `c327bbd`.
   Kept uncommitted until the owner reviewed this report; the owner then approved one local commit
-  (2026-10-29). No merge, cherry-pick or push.
+  (2026-10-29). No merge, cherry-pick or push at that time.
+- **Integrated (2026-10-30):** after E-1b (`5f623e9`), integrated locally into `feat/mvp-4-dashboard` (merge `03c9158`, 2026-10-30; not pushed, not in `main`); see the
+  [integration record](../tasks/M2-E1-E3-integration-plan.md).
 - **Not touched:**
   - canonical data, `data_batches/`, the 2026 holdout and its guard;
   - acceptance classifications (B01–B12), the QA rules and the E-2 open exception;
@@ -267,11 +269,12 @@ Scope of E-1b: `quality/interruptions.py`, `research/runner.py`, `research/repor
 the owner's approval before any code is written.
 
 ## Open items and next approvals
-- **Owner review of this implementation:** then a local commit of `task/m2-e1` (no merge, no push).
-- **Owner decisions raised by the review:** decided on 2026-10-29 (D-12A, D-10A, D-09A). Their code is the
-  proposed E-1b above, awaiting approval.
-- **After integration:** sim-v0 paper journals do not replay, so the owner starts a new paper session.
-- **Integration with `task/m2-e3`** (`e5a5e2e`): separate branches; no merge without approval.
+- **Owner review of this implementation:** done; local commit `4e88ba0`.
+- **Owner decisions raised by the review:** decided on 2026-10-29 (D-12A, D-10A, D-09A). D-10A and D-09A are
+  implemented in E-1b (`5f623e9`); the D-12A breakdown was not taken.
+- **After integration (now applies):** sim-v0 paper journals do not replay, so the owner starts a new paper
+  session. No existing session was opened, migrated or reset.
+- **Integration with `task/m2-e3`** (`e5a5e2e`): done, merge `03c9158` (2026-10-30, owner-approved, local).
 - **USD-M archives** follow the same zero-trade convention: still unverified (ADR-0014 "Still to verify").
 - **Not authorized:** E-2 (QA open exception), C-1 parity imports (O-5/O-6), D-15 and D-17, and any historical
   backtest.

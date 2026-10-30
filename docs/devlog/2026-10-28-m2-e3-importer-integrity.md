@@ -1,12 +1,14 @@
 # Devlog — 2026-10-28 — M2-E3: importer integrity safeguards (C-1 prevention)
 
 - **Authorization:** owner, 2026-10-28: E-3 only, in an isolated worktree, uncommitted, while O-4 runs.
-- **Worktree:** `C:\Users\felip\Projects\tsc-e3`, branch `task/m2-e3`, from `ebefbc1`.
+- **Worktree:** an isolated git worktree (`tsc-e3`, a sibling of the repository folder), branch `task/m2-e3`,
+  from `ebefbc1`.
   - The owner's main tree (`feat/mvp-4-dashboard`, with uncommitted E-0/E-4(a)) and the running O-4 capture
     were not touched.
 - **Not done, and not authorized:** E-1, E-2, imports, live calls, canonical repair (D-16) and promotion
   (D-17). The import log from the brief was **omitted**, because evidence folders must not be modified.
-- **Status:** uncommitted, pending owner review. No merge or push.
+- **Status:** committed on `task/m2-e3` as `e5a5e2e`; integrated locally into `feat/mvp-4-dashboard` (merge `03c9158`, 2026-10-30; not pushed, not in `main`). It prevents a recurrence of
+  C-1; it does not repair C-1, and it is not formal M2 acceptance.
 
 ## What changed
 | File | Change |
@@ -75,10 +77,10 @@ re-read only inside `store`, like `verify`), `contracts/`, the simulator, resear
   - memory and CLI: 5 passed;
   - ruff and mypy clean.
 
-## Resumption checkpoint (if a session ends before review is complete)
-1. The worktree `C:\Users\felip\Projects\tsc-e3` holds all E-3 changes, uncommitted (`git -C ../tsc-e3 status`).
-   Pre-change copies of `importer.py` and `lake.py`:
-   `C:\Users\felip\AppData\Local\Temp\claude\C--Users-felip-Projects-trading-system-claude\bak\e3\`.
+## Resumption checkpoint (historical; superseded by the commit and the integration above)
+1. The worktree `tsc-e3` (a sibling of the repository folder) held all E-3 changes, uncommitted
+   (`git -C ../tsc-e3 status`). Pre-change copies of `importer.py` and `lake.py` were kept in a session temp
+   backup directory outside the repository (`bak/e3/`).
 2. Re-run (low CPU):
    `cd ../tsc-e3; PYTHONPATH=<abs>/src ../trading-system-claude/.venv/Scripts/python.exe -m pytest tests/unit/archive/test_arc_import_integrity.py -q -p no:cacheprovider`.
 3. Remaining: apply the review findings; then the owner reviews. A local commit needs owner approval. Merging

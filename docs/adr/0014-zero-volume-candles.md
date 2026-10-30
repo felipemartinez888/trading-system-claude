@@ -4,10 +4,11 @@
   - The classification (rules 1–3, 5, 6) is **Accepted** (owner decision D-11/P-3, 2026-10-28).
   - Rule 4 (no fills on zero-trade candles) is **approved for implementation, subject to validation** (D-12/P-4,
     2026-10-28, after the O-4 live evidence passed). Rules 4 and 5 are implemented in E-1 (`task/m2-e1`,
-    simulator `sim-v1`), committed locally on `task/m2-e1` after owner review (2026-10-29), not merged; see the
-    [E-1 devlog](../devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md). Until that branch is committed and integrated, the committed code still
-    treats zero-volume candles as ordinary bars.
-  - The QA classification itself (rule 2, a marketdata change) is not part of E-1 and is not implemented.
+    simulator `sim-v1`, `4e88ba0`), integrated locally into `feat/mvp-4-dashboard` (merge `03c9158`, 2026-10-30; not pushed, not in `main`); see the
+    [E-1 devlog](../devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md). On that branch the simulator fills
+    nothing on zero-trade candles. Implemented policy, still subject to validation; not formal M2 acceptance.
+  - The QA classification itself (rule 2, a marketdata change) is not part of E-1 and is not implemented; it is
+    E-2, not yet authorized.
 - **Relates to:** ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0013 (exchange interruptions),
   ADR-0015 (QA open exception).
 
