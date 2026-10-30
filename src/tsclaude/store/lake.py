@@ -279,6 +279,10 @@ class Staging:
                 final.parent.mkdir(parents=True, exist_ok=True)
                 if final.exists():
                     staged.unlink(missing_ok=True)
+                    # an existing file reused by content hash must really hold that content before
+                    # a manifest refers to it (M2-E3); a newly renamed part was re-read in
+                    # `verify_staged` and a rename does not change its bytes
+                    self._lake._check_part_content(part, final)
                 else:
                     os.replace(staged, final)
                 published.append(_with_file_hash(part, _file_sha256(final)))
@@ -293,7 +297,16 @@ class Staging:
         if not self._staged:
             self.abort()
             return None
+        self.verify_staged()
         return self._lake.commit_dataset(self.publish(), meta, qa)
+
+    def verify_staged(self) -> None:
+        """Re-read every staged part before publishing (M2-E3, fail closed): its file hash, row
+        count and content hash must match what was written. Rows never leave the lake module."""
+        for part, staged in self._staged:
+            if _file_sha256(staged) != part.file_sha256:
+                raise LakeError(f"staged part {part.path} changed after it was written")
+            self._lake._check_part_content(part, staged)
 
     def abort(self) -> None:
         self._closed = True
@@ -391,6 +404,22 @@ class Lake:
             last_time_ms=times[-1],
         )
         return part, staged
+
+    def _check_part_content(self, part: PartInfo, path: Path) -> None:
+        """Read a written part back and compare its row count and content hash (integrity only)."""
+        rows = self.codec.read(path, SCHEMAS[LakeKind(part.kind)])
+        n = len(rows)
+        same = (
+            content_hash(part.market, LakeKind(part.kind), part.symbol, rows) == part.content_hash
+        )
+        del rows
+        if n != part.rows or not same:
+            raise LakeError(
+                f"part {part.path} does not read back as written "
+                f"(rows {n} vs {part.rows}, content hash {'ok' if same else 'differs'}); "
+                "nothing was committed. Run `tsclaude data verify` and repair the lake file "
+                "through an approved procedure before importing again"
+            )
 
     def commit_dataset(
         self, parts: Sequence[PartInfo], meta: Mapping[str, Any], qa: Mapping[str, Any] | None
