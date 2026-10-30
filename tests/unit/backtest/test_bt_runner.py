@@ -287,9 +287,19 @@ def test_runner_rejects_unaligned_or_empty_ranges(tmp_path: Path) -> None:
 # (control entries change), cost identity / funding / seed source in the manifest, new metrics.
 # M3-T1: metrics gain a zero `kill_switch` exit-reason count (new `ExitReason.KILL_SWITCH`); no
 # trade, equity or other metric changed (diffed against main).
-GOLDEN_MANIFEST = "00cbb07bc049f4e7515bb2a10c8d0b09a8911c2d76b8d3e6ace29cf5988380e7"
-GOLDEN_METRICS = "fe8d3d52cdf185a58dcdd3d20ab50783bf7b041de5196136606f9601b6de0d2e"
-GOLDEN_TRADES = "39ca032989429bb5408d1ee3d7ef95e16ba8e7277a73b8dc0806185b3133ef91"
+# M2-E1: runner-v2 / sim-v1 (versions in the manifest and in the max-loss source text), the
+# manifest's `exchange_interruptions` (empty registry here), zero-valued new metrics
+# (deferred_no_trade_*, exchange_downtime_*, the `exchange_downtime` exit-reason count) and the sim
+# fingerprint (version + summary counters). trades.parquet is byte-identical (diffed against
+# c327bbd). Then the ADR-0014 rule 5 integrity fields (zero_trade_minutes_in_range = 0,
+# zero_trade_share = 0.0, zero_trade_minutes_by_symbol = {}): removing exactly those three keys
+# gives the previous metrics hash b17de44f...; manifest and trades unchanged. Then the review fix
+# `exchange_interruptions_in_warmup = []`: removing that key gives 0b96116b... trades.parquet
+# gains the explicit bool columns deferred_no_trade and spans_exchange_downtime (all False here);
+# rewriting the same rows without them gives the previous 39ca0329... byte for byte.
+GOLDEN_MANIFEST = "f77a88bbf8df41560350e51ba184a49cb98898ed33cb76c76a0317b5352a1495"
+GOLDEN_METRICS = "ef8abc59e7b55b720ddd42410df552c6a25a1c8b98bf482124c99a70d222c24e"
+GOLDEN_TRADES = "2dff9ce66a73112467f1a42ec5605c22735793d40788e32a6d6bc58d9052e6e6"
 
 
 def test_golden_hashes_identical_across_platforms(run1: tuple[RunOutcome, Path]) -> None:

@@ -1,0 +1,28 @@
+# Registry of exchange-wide interruptions (ADR-0013; owner decisions D-09, D-10; 2026-10-28).
+# Historical knowledge for BACKTESTS ONLY. Minutes inside an entry are reported as exchange downtime
+# instead of missing data; the simulator fills nothing inside it and closes exposed positions at the
+# first traded open afterwards. Any other missing minute still grades a run X.
+#
+# Admission rule (ADR-0013 §2): identical pattern in every symbol of the market (>= 5 symbols,
+# separate source-verified datasets), confirmed in the source archives, an external report of the
+# halt, and owner approval BEFORE any result using it is examined. Never edited because of a result.
+# The file's SHA-256 is recorded in every run manifest.
+schema: 1
+interruptions:
+  - id: binance-spot-2023-03-24
+    market: spot
+    from: "2023-03-24T11:28:00Z"   # first minute of the market-wide zero-trade run
+    to: "2023-03-24T14:00:00Z"     # first minute in which trading resumed in all symbols
+    scope: exchange-wide
+    signature:
+      symbols_checked: [BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT, XRPUSDT]   # canonical data/, plus batch B03 (BTC)
+      zero_trade_run: "11:28-12:38 UTC, 71 minutes, identical in every symbol (flat at the previous close)"
+      truncated_candle: "12:39 UTC, line 33880 of each monthly archive, rejected as malformed"
+      absent_minutes: "12:40-13:59 UTC (81 missing including the rejected 12:39)"
+      source_archives: "data/spot/monthly/klines/<SYMBOL>/1m/<SYMBOL>-1m-2023-03.zip (SHA-256 verified at import)"
+      evidence: "docs/devlog/2026-10-27-m2-handover-reconciliation.md; docs/devlog/2026-10-28-m2-policy-design.md"
+    external_sources:
+      - "TechCrunch, 2023-03-24: Binance temporarily suspends spot trading (matching engine, trailing stop order bug)"
+      - "Forklog, 2023-03-24: maintenance completed, trading resumes 14:00 UTC"
+      - "FinanceFeeds, 2023-03-24: two-hour outage, cancel-only until 13:40 UTC"
+    approved_by: "owner (D-10, 2026-10-28)"

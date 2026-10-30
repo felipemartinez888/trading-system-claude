@@ -1,9 +1,18 @@
 # ADR-0013: Exchange-wide interruptions are registered non-trading periods, not missing data
 
-- **Status:** Accepted in principle (owner decisions D-09/P-1 and D-10/P-2, 2026-10-28). Implementation (E-1) is
-  **not yet authorized**, and its execution semantics depend on D-12 (P-4). Until it is implemented, the current
-  rule applies unchanged: any missing 1m bar in a backtest range gives grade X (`configs/backtest.yaml`
+- **Status:** Accepted in principle (owner decisions D-09/P-1 and D-10/P-2, 2026-10-28). Implemented in E-1
+  together with ADR-0014 rule 4 (D-12 approved for implementation after O-4): `configs/exchange_interruptions.yaml`,
+  runner-v2, sim-v1, committed locally on `task/m2-e1` after owner review (2026-10-29), not merged
+  ([E-1 devlog](../devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md)). Until that branch is committed and integrated, the committed rule applies
+  unchanged: any missing 1m bar in a backtest range gives grade X (`configs/backtest.yaml`
   `max_missing_share: 0.0`).
+- **Governance additions** (owner, 2026-10-29: D-09A, D-10A):
+  - every entry needs an approval date;
+  - an interval longer than 24 h fails closed unless a documented exceptional override approves it;
+  - inside an interval, observed zero-trade minutes are distinguished from absent minutes, and a missing
+    bar in the observed part counts as missing data.
+
+  These are not yet implemented; they are proposed as E-1b.
 - **Relates to:**
   - ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0009 (holdout guard);
   - RESEARCH_PROTOCOL §6 (grades);

@@ -44,6 +44,27 @@ def _run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, object]:
     return code, json.loads(capsys.readouterr().out)
 
 
+def test_cli_refuses_a_malformed_exchange_interruption_registry(
+    data_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M2-E1: the registry next to the config is validated first; a broken one refuses the run
+    (exit 5) before anything is simulated or written."""
+    (tmp_path / "exchange_interruptions.yaml").write_text(
+        "schema: 1\ninterruptions:\n  - id: x\n    market: spot\n", encoding="utf-8"
+    )
+    code, out = _run(
+        capsys,
+        "backtest", "run", "--strategy", "bracket_reference", "--params", PARAMS,
+        "--symbols", "spot:BTCUSDT", "--from", "2024-03-03", "--to", "2024-03-06",
+        "--seed", "7", "--config", str(tmp_path / "bt.yaml"),
+    )  # fmt: skip
+    assert code == 5
+    assert isinstance(out, dict)
+    assert out["ok"] is False
+    assert out["refused"] == "exchange_interruptions"
+    assert not (data_dir / "runs").exists()
+
+
 def test_cli_run_show_list_trials(
     data_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

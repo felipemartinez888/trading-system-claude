@@ -108,7 +108,10 @@ def test_golden_fingerprint_is_pinned() -> None:
     assert res.fingerprint == PINNED_FINGERPRINT_SEED0
 
 
-PINNED_FINGERPRINT_SEED0 = "80e89bb359935e92175598d43314dd4f02092121087226eafaa88d94e8af4bfd"
+# M2-E1 (sim-v1): RUN_STARTED engine_version and three new RUN_COMPLETED summary counters
+# (deferred_no_trade_trades, exchange_downtime_trades, no_trade_deferrals). Every other event of
+# seeds 0-3 is byte-identical to sim-v0 (1349 events compared): fills and ledger are unchanged.
+PINNED_FINGERPRINT_SEED0 = "93ecca1026bf93241ae991a632d471ea0a4e3df2087b735961a09cd5f2049089"
 
 
 @pytest.mark.parametrize("seed", range(40))

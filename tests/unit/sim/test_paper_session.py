@@ -163,7 +163,9 @@ PINNED_LEDGER_HASHES = {
     "shadow": "7195967d903437ddd34f2ecf576152cba2c0ace55dbec109ec1f1e1d2b6f61da",
     "benchmark": "fc0652f86f266b154fa038a1ae9fd2206d75bcd449489a060d9f6f6fe80ea608",
 }
-PINNED_JOURNAL_HASH = "8c325e9a1223d36a839b1e4f50d5c061e305a6718ac670f36a79d02478ae1ab2"
+# M2-E1: only RUN_STARTED engine_version sim-v0 -> sim-v1 changed (verified: with the old version
+# string the journal hash equals the previous value); ledger hashes unchanged.
+PINNED_JOURNAL_HASH = "4bc1e0b8a5e36fb3864a9423ba21ad2b2f4647e360927358a4d86d82f9b513fc"
 
 
 def _replace_entry(batches: list, b: int, e: int, payload: dict) -> None:

@@ -184,6 +184,7 @@ function running(): Bodies {
               gap_fill: false,
               ambiguous_bar: false,
               spans_gap: true,
+              deferred_no_trade: true,
             },
           ],
           request_rejections: [
@@ -226,6 +227,7 @@ describe("Paper page", () => {
     const trades = await screen.findByTestId("paper-trades");
     expect(trades).toHaveTextContent("stop");
     expect(trades).toHaveTextContent("spans data gap");
+    expect(trades).toHaveTextContent("waited for a traded candle");
     expect(screen.getByTestId("paper-request-rejections")).toHaveTextContent("risk_blocked:no_market_view");
     expect(screen.getByTestId("paper-fill-rejections")).toHaveTextContent("risk_blocked:stale_data");
 

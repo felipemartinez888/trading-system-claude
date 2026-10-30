@@ -65,6 +65,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     strategy = build_strategy(args.strategy, params)
     cfg_path = Path(args.config)
     cfg = BacktestConfig.load(cfg_path) if cfg_path.is_file() else BacktestConfig()
+    from tsclaude.quality.interruptions import (
+        EMPTY_REGISTRY,
+        InterruptionRegistryError,
+        load_registry,
+    )
+
+    registry_path = cfg_path.parent / "exchange_interruptions.yaml"
+    try:  # no file: empty registry (every missing minute grades X); a broken file refuses
+        registry = load_registry(registry_path) if registry_path.is_file() else EMPTY_REGISTRY
+    except InterruptionRegistryError as exc:
+        print(json.dumps({"ok": False, "refused": "exchange_interruptions", "error": str(exc)}))
+        return 5
     req = BacktestRequest(
         strategy=strategy,
         symbols=parse_symbols(args.symbols, args.market),
@@ -83,6 +95,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             runs_dir=settings.data_dir / "runs",
             now_ms=clock.now_ms,
             repo_root=Path(args.repo_root),
+            exchange_interruptions=registry,
         )
         try:
             out = run_backtest(req, env, cfg)

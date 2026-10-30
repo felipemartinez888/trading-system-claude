@@ -14,8 +14,8 @@
 | [0010](0010-provenance-typed-values.md) | Provenance carried in the API | Accepted |
 | [0011](0011-hash-chained-event-log.md) | Hash-chained event log with daily chain-head commits | Accepted |
 | [0012](0012-win-rate-margin-objective.md) | Selection objective: certified win-rate margin over break-even | Accepted |
-| [0013](0013-exchange-wide-interruptions.md) | Exchange-wide interruptions are registered non-trading periods, not missing data | Accepted in principle (D-09, D-10); implementation pending |
-| [0014](0014-zero-volume-candles.md) | Zero-volume candles are classified, never imputed or removed | Classification accepted (D-11); no-fill rule a policy principle (D-12); implementation pending |
+| [0013](0013-exchange-wide-interruptions.md) | Exchange-wide interruptions are registered non-trading periods, not missing data | Accepted in principle (D-09, D-10); implemented in E-1 (committed locally on `task/m2-e1`, not merged) |
+| [0014](0014-zero-volume-candles.md) | Zero-volume candles are classified, never imputed or removed | Classification accepted (D-11); no-fill rule approved for implementation (D-12, after O-4); rules 4–5 implemented in E-1 (committed locally on `task/m2-e1`, not merged) |
 | [0015](0015-qa-explained-open-difference.md) | Narrow QA exception for native-vs-derived open differences | Accepted in principle (D-13); implementation pending |
 
 ADRs 0001–0012 accepted by the owner on 2026-10-19. ADRs 0013–0015 proposed on 2026-10-28; owner decisions D-09 … D-13 on 2026-10-28 (see DECISIONS_PENDING).

@@ -518,6 +518,10 @@ export interface PaperTrade {
   spans_gap: boolean;
   /** Set only when the exit was resolved on backfilled bars while the app was down. */
   resolved_from_backfill?: boolean;
+  /** Set only when an entry or exit waited for a candle with trades (ADR-0014 rule 4, sim-v1). */
+  deferred_no_trade?: boolean;
+  /** Set only when the position was exposed to a registered exchange interruption (backtests, ADR-0013). */
+  spans_exchange_downtime?: boolean;
 }
 
 export interface PaperRequestRejection {

@@ -44,7 +44,10 @@ from tsclaude.sim.book import Book, SimEventType
 from tsclaude.sim.clock import MODE_PROVENANCE, Clock, ClockError, order_key
 from tsclaude.sim.orders import EntryRequest, ExitRequest
 
-SIM_ENGINE_VERSION = "sim-v0"
+#: sim-v1: no fills on candles without trades nor inside registered exchange interruptions
+#: (D-12, ADR-0013/0014). Paper journals written by sim-v0 do not replay under sim-v1 (their
+#: RUN_STARTED differs): restore fails closed; record a new paper session.
+SIM_ENGINE_VERSION = "sim-v1"
 AGGREGATE_TYPE = "sim"  # contract change requested: AggregateType.SIM
 RUN_AGGREGATE_ID = "run"
 
@@ -115,7 +118,10 @@ class Simulator:
         signal_source: SignalSource | None = None,
         *,
         decision_latency_ms: int = 0,
+        exchange_interruptions: Sequence[tuple[Market, int, int, str]] = (),
     ) -> None:
+        """`exchange_interruptions`: registered intervals (market, from_ms, to_ms, id), backtests
+        only (ADR-0013); live and paper sessions never pass any."""
         if not books:
             raise ValueError("at least one book is required")
         names = [b.name for b in books]
@@ -125,6 +131,9 @@ class Simulator:
             raise ValueError("decision_latency_ms must be >= 0")
         self.clock = clock
         self.books: dict[str, Book] = {b.name: b for b in books}
+        self.exchange_interruptions = tuple(exchange_interruptions)
+        for book in books:
+            book.set_exchange_interruptions(self.exchange_interruptions)
         self.source: SignalSource = signal_source or NullSignalSource()
         self.decision_latency_ms = decision_latency_ms
         self._view = _View(self.books)
@@ -205,6 +214,11 @@ class Simulator:
                 "engine_version": SIM_ENGINE_VERSION,
                 "decision_latency_ms": self.decision_latency_ms,
                 "books": [b.describe() for b in self.books.values()],
+                **(
+                    {"exchange_interruptions": [iv[3] for iv in self.exchange_interruptions]}
+                    if self.exchange_interruptions
+                    else {}
+                ),
             },
         )
         for book in self.books.values():

@@ -147,6 +147,13 @@ def trade_stats(trades: Sequence[TradeRecord], alpha: float) -> dict[str, Any]:
         "ambiguous_share": None if n == 0 else flagged_amb / n,
         "spans_gap_count": flagged_gap,
         "spans_gap_share": None if n == 0 else flagged_gap / n,
+        # D-12 / ADR-0013: fills that waited for a candle with trades (realistic, reported, not a
+        # data defect) and trades held into a registered exchange interruption (also spans_gap)
+        "deferred_no_trade_count": sum(1 for t in trades if t.deferred_no_trade),
+        "deferred_no_trade_share": (
+            None if n == 0 else sum(1 for t in trades if t.deferred_no_trade) / n
+        ),
+        "exchange_downtime_count": sum(1 for t in trades if t.spans_exchange_downtime),
         "expectancy_r_if_ambiguous_tp_first": _mean(alt),
         "gap_fill_count": sum(1 for t in trades if t.gap_fill),
         "mae_r_mean": _mean([float(t.mae_r) for t in trades]),

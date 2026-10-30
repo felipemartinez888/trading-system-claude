@@ -69,6 +69,30 @@ TRADES = [
 ]
 
 
+def test_zero_trade_and_downtime_flags_are_counted_and_downtime_feeds_the_gap_cap() -> None:
+    """M2-E1: flagged trades are counted, never removed. A trade exposed to a registered exchange
+    interruption also carries spans_gap, so it counts in the existing 5 % flagged-share cap; a trade
+    that only waited for a traded candle (realistic execution, not a data defect) is reported
+    apart."""
+    import dataclasses
+
+    trades = [
+        dataclasses.replace(trade(0, "100"), deferred_no_trade=True),
+        dataclasses.replace(trade(1, "-100", gap=True), spans_exchange_downtime=True),
+        trade(2, "50"),
+        trade(3, "50"),
+    ]
+    s = report.trade_stats(trades, alpha=0.05)
+    assert s["n"] == 4
+    assert s["deferred_no_trade_count"] == 1
+    assert s["deferred_no_trade_share"] == pytest.approx(0.25)
+    assert s["exchange_downtime_count"] == 1
+    assert s["spans_gap_share"] == pytest.approx(0.25)
+    grade, reasons = report.grade(_inputs(spans_gap_share=s["spans_gap_share"]))
+    assert grade == "C"
+    assert any("spans_gap" in r for r in reasons)
+
+
 def test_trade_stats_hand_checked() -> None:
     s = report.trade_stats(TRADES, alpha=0.05)
     assert s["n"] == 5

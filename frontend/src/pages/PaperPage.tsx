@@ -346,6 +346,8 @@ function Activity() {
                           t.ambiguous_bar ? "ambiguous bar" : "",
                           t.spans_gap ? "spans data gap" : "",
                           t.resolved_from_backfill ? "exit resolved from backfill" : "",
+                          t.deferred_no_trade ? "waited for a traded candle" : "",
+                          t.spans_exchange_downtime ? "spans exchange downtime" : "",
                         ]
                           .filter(Boolean)
                           .join(", ")}

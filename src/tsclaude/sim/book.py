@@ -24,6 +24,17 @@ and MFE only the close; a take-profit's excursion ends at the take-profit price.
 
 Trades are flagged ``ambiguous_bar`` (SL-first resolution or a fill-bar stop-out) and
 ``spans_gap`` (the position lived through missing 1m bars); both are counted in `summary`.
+
+No fill without trades (ADR-0014 rule 4, owner decision D-12; live evidence O-4): on a 1m candle
+with ``trades == 0`` (published flat at the previous close) or inside a registered exchange
+interruption (ADR-0013), no entry, stop, take-profit or market exit fills. Orders keep their
+validity unchanged (an order whose validity ends on such a candle expires) and are resolved at the
+first candle with trades by the usual rules: a resting order, gap fills at the worse of open and
+level. A position held into a registered interruption is closed at the first traded open after it
+(aligned with L-11). Affected trades are flagged: `deferred_no_trade` when the wait changed the
+outcome (the order would have filled on the frozen candle's prices, or an exit was due), and
+`spans_exchange_downtime` for an order or position exposed to an interruption (it also sets
+`spans_gap`, so it counts in the existing flagged-trade share).
 """
 
 from __future__ import annotations
@@ -240,6 +251,10 @@ class TradeRecord:
     #: exited on a backfilled 1m path while the app was down (SIMULATION §7); never set in
     #: backtests, and only serialized when set so backtest artefacts are unchanged
     resolved_from_backfill: bool = False
+    #: entry or a due exit deferred to the next candle with trades (D-12); serialized only when set
+    deferred_no_trade: bool = False
+    #: held into a registered exchange interruption (ADR-0013); serialized only when set
+    spans_exchange_downtime: bool = False
 
     def to_payload(self) -> Payload:
         def d(v: Decimal | None) -> str | None:
@@ -248,6 +263,10 @@ class TradeRecord:
         payload = self._base_payload(d)
         if self.resolved_from_backfill:
             payload["resolved_from_backfill"] = True
+        if self.deferred_no_trade:
+            payload["deferred_no_trade"] = True
+        if self.spans_exchange_downtime:
+            payload["spans_exchange_downtime"] = True
         return payload
 
     def _base_payload(self, d: Callable[[Decimal | None], str | None]) -> Payload:
@@ -358,6 +377,8 @@ class _PendingEntry:
     stop: Decimal
     take_profit: Decimal | None
     spans_gap: bool = False  # the order rested through missing 1m bars of its instrument
+    deferred_no_trade: bool = False  # an eligible fill waited for a candle with trades
+    spans_exchange_downtime: bool = False  # rested through a registered exchange interruption
 
 
 @dataclass(slots=True)
@@ -386,6 +407,9 @@ class _Position:
     funding: Decimal = ZERO
     last_funding_ms: int | None = None
     spans_gap: bool = False
+    deferred_no_trade: bool = False  # its entry or a due exit waited for a candle with trades
+    exit_deferred_no_trade: bool = False  # a due exit waited (counted once per position)
+    spans_exchange_downtime: bool = False  # held into a registered exchange interruption
     best: Decimal = ZERO
     worst: Decimal = ZERO
     last_mark: Decimal = ZERO
@@ -441,6 +465,10 @@ class Book:
         self._positions: dict[SymbolKey, _Position] = {}
         self._seen_requests: set[str] = set()
         self._rejections: dict[str, int] = {}  # fill-time rejection counts by reason
+        # Registered exchange interruptions (ADR-0013), per market: (from_ms, to_ms, id); set by
+        # the simulator for backtests only. And how often an eligible fill waited (D-12).
+        self._interruptions: dict[Market, tuple[tuple[int, int, str], ...]] = {}
+        self._no_trade_deferrals = 0
         self._last_open: dict[SymbolKey, int] = {}  # last bar open seen per instrument (gaps)
         # Per-instrument clock: end of the latest bar processed for that instrument (close + 1).
         # Funding guards use it, never a global "now": within one minute, bars of other symbols
@@ -520,6 +548,11 @@ class Book:
     @property
     def open_positions(self) -> int:
         return len(self._positions)
+
+    @property
+    def no_trade_deferrals(self) -> int:
+        """Entry orders and due exits that waited for a candle with trades (each counted once)."""
+        return self._no_trade_deferrals
 
     def position_qty(self, market: Market, symbol: str) -> Decimal:
         pos = self._positions.get((market, symbol))
@@ -746,6 +779,19 @@ class Book:
             self._rejections[reason] = self._rejections.get(reason, 0) + 1
         self._emit(kind, ts, {"order_id": pending.order.order_id, "reason": reason})
 
+    def set_exchange_interruptions(self, intervals: Sequence[tuple[Market, int, int, str]]) -> None:
+        """Registered exchange interruptions (backtests only; ADR-0013)."""
+        by_market: dict[Market, list[tuple[int, int, str]]] = {}
+        for market, lo, hi, iv_id in intervals:
+            by_market.setdefault(market, []).append((lo, hi, iv_id))
+        self._interruptions = {m: tuple(sorted(v)) for m, v in by_market.items()}
+
+    def _interruption_at(self, market: Market, open_ms: int) -> str | None:
+        for lo, hi, iv_id in self._interruptions.get(market, ()):
+            if lo <= open_ms < hi:
+                return iv_id
+        return None
+
     # ------------------------------------------------------------ bar processing
     def on_bar(self, bar: Bar) -> None:
         key = (bar.market, bar.symbol)
@@ -767,13 +813,29 @@ class Book:
                     waiting.spans_gap = True
             prices = BarPrices.from_bar(bar)
             quote_volume = to_decimal(bar.quote_volume)
+            # D-12 / ADR-0014 rule 4: nothing fills on a candle without trades, nor inside a
+            # registered exchange interruption (ADR-0013): no counterparty traded at that price
+            outage = self._interruption_at(bar.market, bar.open_time_ms)
+            frozen = bar.trades == 0 or outage is not None
             with localcontext(SIM_CONTEXT):
                 pos = self._positions.get(key)
                 if pos is not None:
-                    self._process_held(pos, prices, quote_volume)
+                    self._interruption_exit(pos, bar.open_time_ms)
+                    if frozen:
+                        self._hold_position(pos, prices)
+                    else:
+                        self._process_held(pos, prices, quote_volume)
                 pending = self._pending.get(key)
                 if pending is not None:
-                    self._process_entry(pending, spec, prices, quote_volume)
+                    if outage is not None:
+                        pending.spans_exchange_downtime = True
+                        pending.spans_gap = True  # counted in the existing flagged-trade share
+                    if frozen and self.observed:
+                        self._hold_entry(
+                            pending, spec, prices, "exchange_downtime" if outage else "no_trade"
+                        )
+                    else:
+                        self._process_entry(pending, spec, prices, quote_volume)
                 pos = self._positions.get(key)
                 if pos is not None:
                     pos.last_mark = prices.close
@@ -895,6 +957,60 @@ class Book:
         exits are not spendable yet, same-minute spending already is subtracted.
         """
         return self._equity_at_mark, min(self._cash_at_mark, self.cash)
+
+    def _interruption_exit(self, pos: _Position, open_ms: int) -> None:
+        """A position held into a registered interruption is closed at the first traded open
+        after it (ADR-0013, aligned with L-11); the trade is flagged."""
+        for lo, hi, _ in self._interruptions.get(pos.spec.market, ()):
+            if pos.entry_time_ms < lo <= open_ms:
+                pos.spans_exchange_downtime = True
+                pos.spans_gap = True  # counted in the existing flagged-trade share
+                if open_ms >= hi and (pos.exit_due_ms is None or open_ms < pos.exit_due_ms):
+                    pos.exit_due_ms = open_ms
+                    pos.exit_due_reason = ExitReason.EXCHANGE_DOWNTIME
+
+    def _hold_position(self, pos: _Position, prices: BarPrices) -> None:
+        """A candle without trades: no stop, take-profit or market exit can fill. A due exit
+        (exit signal, time exit, interruption) waits for the next candle with trades."""
+        due = (pos.exit_due_ms is not None and prices.open_time_ms >= pos.exit_due_ms) or (
+            pos.time_exit_due_ms is not None and prices.open_time_ms >= pos.time_exit_due_ms
+        )
+        if due:
+            pos.deferred_no_trade = True
+            if not pos.exit_deferred_no_trade:
+                pos.exit_deferred_no_trade = True
+                self._no_trade_deferrals += 1
+
+    def _hold_entry(
+        self, pending: _PendingEntry, spec: InstrumentSpec, prices: BarPrices, why: str
+    ) -> None:
+        """A frozen candle: an eligible entry cannot fill; it keeps resting with its validity
+        unchanged (never extended) and expires if that validity ends on this candle.
+
+        It counts as deferred (`deferred_no_trade`, once per order) only when the usual rules
+        would have filled it on this candle's prices, so a limit or stop the frozen price never
+        reached is not reported as waiting. The dry run has no side effect."""
+        order = pending.order
+        if prices.open_time_ms < order.earliest_exec_ms:
+            return
+        valid_until = order.valid_until_ms
+        would_fill = resolve_entry(
+            prices,
+            order.type,
+            order.direction,
+            order.price,
+            spec.tick_size,
+            arrival=order.bars_seen == 0 and prices.open_time_ms == order.earliest_exec_ms,
+            open_ok=valid_until is None or prices.open_time_ms <= valid_until,
+            intrabar_ok=valid_until is None or prices.close_time_ms <= valid_until,
+        )
+        if would_fill is not None and not pending.deferred_no_trade:
+            pending.deferred_no_trade = True
+            self._no_trade_deferrals += 1
+        if valid_until is not None and prices.close_time_ms >= valid_until:
+            self._finish_pending(
+                spec.key, OrderStatus.EXPIRED, prices.close_time_ms, f"valid_until_passed:{why}"
+            )
 
     def _process_held(self, pos: _Position, prices: BarPrices, quote_volume: Decimal) -> None:
         due: ExitReason | None = None
@@ -1107,6 +1223,8 @@ class Book:
             time_exit_due_ms=time_due,
             entry_time_ms=prices.open_time_ms if at_open else prices.close_time_ms,
             spans_gap=pending.spans_gap,
+            deferred_no_trade=pending.deferred_no_trade,
+            spans_exchange_downtime=pending.spans_exchange_downtime,
             best=execution.price,
             worst=execution.price,
             last_mark=execution.price,
@@ -1219,6 +1337,7 @@ class Book:
             ExitReason.TIME_EXIT: f"{self.name}:{pos.request.request_id}:time_exit",
             ExitReason.EXIT_SIGNAL: f"{self.name}:{pos.request.request_id}:exit",
             ExitReason.KILL_SWITCH: f"{self.name}:{pos.request.request_id}:kill",
+            ExitReason.EXCHANGE_DOWNTIME: f"{self.name}:{pos.request.request_id}:downtime",
         }[fill.reason]
         if pos.spec.market is Market.SPOT:
             basis = self.ledger.balance(position_account(*key))
@@ -1241,6 +1360,7 @@ class Book:
             ExitReason.TIME_EXIT: OrderRole.TIME_EXIT,
             ExitReason.EXIT_SIGNAL: OrderRole.EXIT,
             ExitReason.KILL_SWITCH: OrderRole.EXIT,
+            ExitReason.EXCHANGE_DOWNTIME: OrderRole.EXIT,
         }[fill.reason]
         exit_order = Order(
             exit_order_id,
@@ -1314,6 +1434,8 @@ class Book:
             mfe_r=q8(max(ZERO, sign * (pos.best - pos.entry_price)) * pos.qty / risk),
             alt_r_if_tp_first=alt_r,
             resolved_from_backfill=not self.observed,
+            deferred_no_trade=pos.deferred_no_trade,
+            spans_exchange_downtime=pos.spans_exchange_downtime,
         )
         del self._positions[key]
         self._closed_in_minute.append(pos)
@@ -1397,6 +1519,9 @@ class Book:
             "ambiguous_trades": sum(1 for t in self.trades if t.ambiguous_bar),
             "gap_trades": sum(1 for t in self.trades if t.spans_gap),
             "flagged_trades": sum(1 for t in self.trades if t.ambiguous_bar or t.spans_gap),
+            "deferred_no_trade_trades": sum(1 for t in self.trades if t.deferred_no_trade),
+            "exchange_downtime_trades": sum(1 for t in self.trades if t.spans_exchange_downtime),
+            "no_trade_deferrals": self._no_trade_deferrals,
             "rejections_by_reason": dict(sorted(self._rejections.items())),
             "open_positions": len(self._positions),
             "max_drawdown": dstr(dd.max_drawdown),

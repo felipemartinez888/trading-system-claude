@@ -51,6 +51,7 @@ from tsclaude.contracts.market import Bar, Market
 from tsclaude.contracts.signals import SignalStatus
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, from_iso, to_iso
 from tsclaude.features.core import FEATURES_VERSION
+from tsclaude.quality.interruptions import EMPTY_REGISTRY, InterruptionRegistry
 from tsclaude.research import report
 from tsclaude.research.parquet import read_table, write_table
 from tsclaude.research.prereg import check_preregistration
@@ -68,7 +69,8 @@ from tsclaude.store.holdout import HOLDOUT_END_MS, HOLDOUT_START_MS, Purpose
 from tsclaude.store.lake_reader import LakeReader
 from tsclaude.strategies.base import PlanningCosts, Strategy
 
-RUNNER_VERSION = "runner-v1"
+#: runner-v2: registered exchange interruptions (ADR-0013) reported as downtime, not missing data
+RUNNER_VERSION = "runner-v2"
 MANIFEST_SCHEMA = 1
 DEV_START_MS = from_iso("2022-01-01T00:00:00Z")
 DEV_END_MS = from_iso("2025-01-01T00:00:00Z")
@@ -92,6 +94,7 @@ REQUIRED_MANIFEST_FIELDS = (
     "cost_model",
     "features_version",
     "sim_engine_version",
+    "exchange_interruptions",
     "code",
     "seed",
     "timezone",
@@ -210,6 +213,9 @@ class RunEnv:
     cost_model: CostModel = field(default_factory=CostModel)
     code_version: Callable[[], dict[str, Any]] = field(default_factory=lambda: git_version)
     repo_root: Path = field(default_factory=lambda: Path("."))  # for preregistration checks
+    #: registered exchange interruptions (ADR-0013). The default is empty: without the registry
+    #: every missing minute, the 2023-03-24 halt included, still grades the run X (fail closed).
+    exchange_interruptions: InterruptionRegistry = field(default_factory=lambda: EMPTY_REGISTRY)
 
 
 @dataclass(frozen=True)
@@ -275,6 +281,11 @@ class _DataLog:
     conflicts: int = 0
     missing_minutes: int = 0  # inside the evaluated range [from, to)
     missing_warmup_minutes: int = 0  # inside the warm-up [from - warm-up, from)
+    # minutes inside registered exchange interruptions (ADR-0013): reported, not counted as missing
+    downtime_minutes: int = 0
+    downtime_warmup_minutes: int = 0
+    # published candles with trades == 0 inside the evaluated range, per symbol (ADR-0014 rule 5)
+    zero_trade_minutes: dict[str, int] = field(default_factory=dict)
     bars: int = 0
     funding_events: int = 0
     funding_applied: int = 0
@@ -306,14 +317,27 @@ def _stream(
             )
             log.dataset_ids.update(res.dataset_ids)
             log.conflicts += len(res.conflicts)
+            registry = env.exchange_interruptions
             for a, b in res.missing:
+                # only the part of a missing range inside a registered interruption of this
+                # market is downtime; every other missing minute keeps the zero-tolerance rule
                 ia, ib = max(a, count_from_ms), min(b, end_ms)
                 if ib > ia:
-                    log.missing_minutes += (ib - ia) // MS_PER_MINUTE
+                    inside, outside, _ = registry.split_missing(market, ia, ib)
+                    log.downtime_minutes += inside
+                    log.missing_minutes += outside
                 wa, wb = a, min(b, count_from_ms)
                 if wb > wa:
-                    log.missing_warmup_minutes += (wb - wa) // MS_PER_MINUTE
+                    inside, outside, _ = registry.split_missing(market, wa, wb)
+                    log.downtime_warmup_minutes += inside
+                    log.missing_warmup_minutes += outside
             log.bars += len(res.items)
+            zero = sum(
+                1 for b in res.items if b.trades == 0 and count_from_ms <= b.open_time_ms < end_ms
+            )
+            if zero:
+                key = f"{market}:{symbol}"
+                log.zero_trade_minutes[key] = log.zero_trade_minutes.get(key, 0) + zero
             chunks.append(res.items)
         yield from heapq.merge(*chunks, key=order_key)
 
@@ -345,7 +369,13 @@ def _simulate(
     bar closing before ``T`` and before the first bar opening at/after ``T`` (positions held
     through ``T`` pay or receive it; one opened at ``T`` does not)."""
     log = _DataLog()
-    sim = Simulator(HistoricalClock([]), books, source, decision_latency_ms=cfg.decision_latency_ms)
+    sim = Simulator(
+        HistoricalClock([]),
+        books,
+        source,
+        decision_latency_ms=cfg.decision_latency_ms,
+        exchange_interruptions=env.exchange_interruptions.simulator_intervals(),
+    )
     queue = sorted(
         (ev.ts_ms, str(key[0]), key[1], ev) for key, evs in (funding or {}).items() for ev in evs
     )
@@ -745,6 +775,9 @@ def _trade_rows(book: Book) -> list[dict[str, Any]]:
     rows = []
     for t in report.order_trades(book.trades):
         p = t.to_payload()
+        # M2-E1 flags as explicit columns (the event payload omits them when False)
+        p["deferred_no_trade"] = t.deferred_no_trade
+        p["spans_exchange_downtime"] = t.spans_exchange_downtime
         p["r"] = float(t.r_multiple)
         rows.append(p)
     return rows
@@ -773,6 +806,8 @@ TRADE_SCHEMA: list[tuple[str, str]] = [
     ("gap_fill", "bool"),
     ("ambiguous_bar", "bool"),
     ("spans_gap", "bool"),
+    ("deferred_no_trade", "bool"),
+    ("spans_exchange_downtime", "bool"),
     ("gross_pnl", "str"),
     ("fees", "str"),
     ("funding", "str"),
@@ -907,6 +942,7 @@ def run_backtest(
     max_win, max_win_source = _max_win_r(base_trades, env.cost_model)
 
     # integrity
+    markets = {m for m, _ in req.symbols}
     evaluated_minutes = (req.to_ms - req.from_ms) // MS_PER_MINUTE * len(req.symbols)
     warmup_minutes = (req.from_ms - read_from) // MS_PER_MINUTE * len(req.symbols)
     missing_share = log.missing_minutes / evaluated_minutes if evaluated_minutes else 0.0
@@ -960,6 +996,7 @@ def run_backtest(
         "cost_model": {**cost_identity(env.cost_model), "planning": first.basis},
         "features_version": FEATURES_VERSION,
         "sim_engine_version": SIM_ENGINE_VERSION,
+        "exchange_interruptions": env.exchange_interruptions.manifest(),
         "report_version": report.REPORT_VERSION,
         "seed": seed,
         "seed_source": seed_source,
@@ -1087,6 +1124,21 @@ def run_backtest(
                 "bars_read": log.bars,
                 "missing_minutes_in_range": log.missing_minutes,
                 "missing_minutes_in_warmup": log.missing_warmup_minutes,
+                "exchange_downtime_minutes_in_range": log.downtime_minutes,
+                "exchange_downtime_minutes_in_warmup": log.downtime_warmup_minutes,
+                "exchange_interruptions_in_range": env.exchange_interruptions.ids_overlapping(
+                    markets, req.from_ms, req.to_ms
+                ),
+                "exchange_interruptions_in_warmup": env.exchange_interruptions.ids_overlapping(
+                    markets, read_from, req.from_ms
+                ),
+                "zero_trade_minutes_in_range": sum(log.zero_trade_minutes.values()),
+                "zero_trade_share": (
+                    sum(log.zero_trade_minutes.values()) / evaluated_minutes
+                    if evaluated_minutes
+                    else 0.0
+                ),
+                "zero_trade_minutes_by_symbol": dict(sorted(log.zero_trade_minutes.items())),
                 "missing_share": missing_share,
                 "conflicts": log.conflicts,
                 "bar_gap_events": _count(result, SimEventType.BAR_GAP),

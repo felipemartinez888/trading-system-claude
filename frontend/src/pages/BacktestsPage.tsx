@@ -193,10 +193,13 @@ function RunDetail({ runId }: { runId: string }) {
           ["Exit reasons", show(pick(trades, "exit_reasons"))],
           ["Ambiguous-bar share", pct(pick(trades, "ambiguous_share"))],
           ["Trades spanning gaps", pct(pick(trades, "spans_gap_share"))],
+          ["Trades that waited for a traded candle", pct(pick(trades, "deferred_no_trade_share"))],
           ["Break-even win rate p*", show(summary?.p_star)],
           ["Margin lower bound", show(summary?.margin_lcb)],
           ["Signals (WATCH / CONFIRMED)", `${show(pick(metrics, "signals", "watch"))} / ${show(pick(metrics, "signals", "confirmed"))}`],
           ["Missing 1m bars in range", show(pick(metrics, "integrity", "missing_minutes_in_range"))],
+          ["Exchange downtime minutes in range", show(pick(metrics, "integrity", "exchange_downtime_minutes_in_range"))],
+          ["Zero-trade minute share", pct(pick(metrics, "integrity", "zero_trade_share"))],
         ]}
       />
       <h3>

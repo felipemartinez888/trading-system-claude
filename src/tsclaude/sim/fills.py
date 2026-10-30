@@ -56,6 +56,8 @@ class ExitReason(StrEnum):
     TIME_EXIT = "time_exit"
     EXIT_SIGNAL = "exit_signal"
     KILL_SWITCH = "kill_switch"  # book halted: flatten at the next open (risk engine)
+    #: held into a registered exchange interruption (ADR-0013): closed at the first traded open
+    EXCHANGE_DOWNTIME = "exchange_downtime"
 
 
 @dataclass(frozen=True, slots=True)

@@ -80,3 +80,30 @@ on disk. Memory is small because only closed candles are kept; it was not measur
 - the folder's `summary.json`, and the `messages.jsonl` only if something is unexpected;
 - the preflight output you used to choose the symbols;
 - the WHEA counts before and after, if taken, and any sleep, crash or network interruption you noticed.
+
+## Results (owner run 2026-10-29T01:07Z UTC)
+**Verdict: PASS — `OBSERVED: closed zero-trade candles (Z1) on the WebSocket, confirmed by REST`.** Reconciled
+by the Lead against the owner's output folder `evidence/owner_checks/o4_20261029T010705Z/` (kept in place,
+untracked).
+
+| Item | Value |
+|---|---|
+| Tool | `o4_zero_trade_capture` v2, script SHA-256 `c1c35fa3…be34b50`, git HEAD `ebefbc1` (9 tracked files dirty: the uncommitted E-0/E-4(a) work) |
+| Environment | Windows 11 10.0.26200, Python 3.13.2, websockets 17.3, httpx 0.28.1; normal PowerShell, no administrator rights |
+| Window | 2026-10-29 01:07:05Z → 02:07:21Z (60.27 min, planned 60, not aborted); judged minutes 01:08 → 02:05 (58 per symbol) |
+| Symbols | ZRXUSDT, CVCUSDT, OGNUSDT (thin spot pairs from the preflight) |
+| Connection | 1 connection, 0 disconnects, 0 stalls (`STALL_S = 120`), closed at the deadline; no errors |
+| Closed candles | 60 per symbol; 0 missing closed minutes; 0 duplicates, 0 conflicts |
+| Zero-trade candles on WS | ZRX 26 Z1 (+1 `A_no_previous_close`, the first candle of the connection, which cannot be verified and is **not counted**), CVC 24 Z1, OGN 20 Z1: **70 Z1** |
+| REST reconciliation | 58 REST minutes per symbol; REST zero-trade minutes 26 / 24 / 20, **all delivered on the WebSocket**; 0 REST-missing, 0 WS-missing versus REST, 0 field mismatches |
+| Message gaps | max 57.7 s / 59.4 s / 59.3 s: during zero-trade minutes the stream sends only the closed candle, about once a minute. This validates the 120 s stall threshold (a 30 s threshold would have produced false stalls) |
+| Clock | server − local: +5.1 s at start (round trip 9.9 s, so unreliable) and +0.65 s at end (round trip 0.87 s); the local clock runs about 0.65 s behind. Receipt "latencies" are therefore slightly negative (p50 −87 / −157 / −167 ms); event time minus close p50 is 92 / 30 / 18 ms |
+| File hashes (SHA-256) | `summary.json` `8fb4931d…f531342d0`, `messages.jsonl` `d81e7d21…af12aad9`, `rest_klines.json` `cfc82c4e…d81567be` |
+
+**Meaning for D-12 / E-1:** live behaves like the archive. One no-fill rule on published candles (`trades == 0`)
+serves backtest and paper alike, and the live bar builder needs no change. D-12 is now **approved for
+implementation, subject to validation** (owner, 2026-10-28). E-1 implements it; see the
+[E-1 devlog](2026-10-28-m2-e1-no-fill-and-interruptions.md).
+
+**Limits of this evidence:** one hour, three spot symbols, one connection. USD-M was not checked. A disconnect
+during a zero-trade minute was not exercised; the existing fail-closed unobserved-minute rules cover that case.

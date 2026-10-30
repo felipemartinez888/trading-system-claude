@@ -80,7 +80,7 @@ Every run gets a machine-assigned grade with listed reasons:
 | `B – promising` | Passed validation; holdout pending or robustness caveats. |
 | `C – insufficient` | Too few trades, wide CIs, or high ambiguous-bar share. |
 | `D – rejected` | Failed rejection criteria. |
-| `X – invalid` | Integrity failure: data gaps in range, look-ahead canary failure, missing manifest fields. |
+| `X – invalid` | Integrity failure: data gaps in range (minutes inside a registered exchange interruption, ADR-0013, are reported separately and are not gaps), look-ahead canary failure, missing manifest fields. |
 
 **Reference-only records** (owner decision D-14, 2026-10-28):
 - **What X means here.** Signals and runs of a strategy labelled `REFERENCE` (for example `bracket_reference`,

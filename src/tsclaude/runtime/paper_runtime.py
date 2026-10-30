@@ -1023,6 +1023,8 @@ class PaperRuntime:
                     },
                     "halted": book.halted,
                     "ledger_reconciled": book.ledger.reconcile().ok,
+                    # entries / exits that waited for a candle with trades (ADR-0014 rule 4)
+                    "no_trade_deferrals": book.no_trade_deferrals,
                 }
                 for name, book in service.session.sim.books.items()
             }

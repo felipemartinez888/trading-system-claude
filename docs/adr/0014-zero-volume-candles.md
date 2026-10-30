@@ -2,10 +2,12 @@
 
 - **Status:**
   - The classification (rules 1–3, 5, 6) is **Accepted** (owner decision D-11/P-3, 2026-10-28).
-  - Rule 4 (no fills on zero-trade candles) is **accepted as a policy principle only** (D-12/P-4). Its final
-    execution semantics need the O-4 live evidence, causality testing and separate approval.
-  - Implementation is not yet authorized. Nothing changes until then: today zero-volume candles are kept as published, counted by QA in runs of at least 3 minutes, and
-  treated as ordinary bars by features and the simulator.
+  - Rule 4 (no fills on zero-trade candles) is **approved for implementation, subject to validation** (D-12/P-4,
+    2026-10-28, after the O-4 live evidence passed). Rules 4 and 5 are implemented in E-1 (`task/m2-e1`,
+    simulator `sim-v1`), committed locally on `task/m2-e1` after owner review (2026-10-29), not merged; see the
+    [E-1 devlog](../devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md). Until that branch is committed and integrated, the committed code still
+    treats zero-volume candles as ordinary bars.
+  - The QA classification itself (rule 2, a marketdata change) is not part of E-1 and is not implemented.
 - **Relates to:** ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0013 (exchange interruptions),
   ADR-0015 (QA open exception).
 
@@ -65,11 +67,13 @@ There are three different situations behind "no volume", and they must not be me
    - No step may treat a missing minute as zero-trade.
    - No step may turn a Z1 run into a gap.
 
-## Still to verify (before implementing rule 4)
-- **Live candles:** that the live kline stream also delivers closed zero-trade candles for minutes without
-  trades, as the archive does. If it does not, the live builder's treatment of such minutes must be documented
-  and aligned.
-- **USD-M archives:** whether they follow the same convention.
+## Still to verify
+- **Live candles: verified (O-4 PASS, 2026-10-29 01:07–02:07 UTC, owner run).** The live spot kline stream
+  delivers a closed zero-trade candle (Z1: `n = 0`, all volumes 0, flat at the previous close) for each minute
+  without trades, identical to REST: 70 of 70 REST zero-trade minutes on ZRX/CVC/OGN were delivered, with no
+  field mismatch and no missing minute. No live-builder change is needed. Evidence:
+  [O-4 devlog](../devlog/2026-10-28-o4-owner-capture.md).
+- **USD-M archives:** whether they follow the same convention. Still open.
 
 ## Consequences
 - **Gains:** the three meanings of "no volume" become visible and auditable, and backtests stop crediting fills
