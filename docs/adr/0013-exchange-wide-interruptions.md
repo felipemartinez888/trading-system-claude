@@ -20,7 +20,7 @@
   integrated locally
   (`e973f86`; not pushed, not in `main`), with its targeted regression and independent review passed
   (final verdict APPROVE WITH NOTES; [E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)).
-  Some of its mutants ran on a prior code revision. O-7 has not run, M2 is not formally accepted, and no
+  Some of its mutants ran on a prior code revision. O-7 ran once on `0c3f607` and the owner accepted its evidence with qualifications (D-18); M2 is not formally accepted, and no
   statistical strategy validation is implied.
   The QA use does not extend any outage exemption, does not change order execution, and paper trading
   still does not use the registry.

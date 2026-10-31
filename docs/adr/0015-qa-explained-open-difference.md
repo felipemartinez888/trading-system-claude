@@ -5,10 +5,10 @@
   integrated locally
   (`e973f86`; not pushed, not in `main`), with its targeted regression and independent review passed
   (final verdict APPROVE WITH NOTES; [E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)).
-  Some of its mutants ran on a prior code revision. O-7 has not run, M2 is not formally accepted, and no
+  Some of its mutants ran on a prior code revision. O-7 ran once on `0c3f607` and the owner accepted its evidence with qualifications (D-18); M2 is not formally accepted, and no
   statistical strategy validation is implied.
-  The existing reports of B10 and B12 are unchanged and keep `cross_checks_ok = false`; they would change only through the O-7 re-runs, which
-  are not authorized.
+  The existing reports of B10 and B12 are unchanged and keep `cross_checks_ok = false`; the O-7 re-runs wrote separate version 2
+  reports outside the repository, which show `cross_checks_ok = true` with 3 and 2 explained differences.
 - **Relates to:** ADR-0004 (derived timeframes and the consistency check), ADR-0014 (zero-volume candles).
 
 ## Context

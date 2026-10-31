@@ -31,26 +31,26 @@
 **E-2 note (2026-10-30, integrated locally).** The QA classification and the ADR-0015 exception are
 committed and integrated locally (`e973f86`; not pushed, not in `main`). They passed their targeted
 regression and independent review (final verdict APPROVE WITH NOTES); some of the mutants ran on a
-prior code revision. O-7 has not run, M2 is not formally accepted, and no statistical strategy
-validation is implied. No row below changes: every QA value here comes from the existing version-1 reports, and
-column 7 stays the documented explanation. A batch shows machine-classified values only after a QA version 2
-re-run (O-7, not authorized).
+prior code revision. O-7 ran once on `0c3f607` and the owner accepted its evidence with qualifications (D-18); M2 is not formally accepted, and no statistical strategy
+validation is implied. Columns 2 and 8 below do not change: every QA value in the matrix comes from the existing
+version-1 reports, which stay as written, and column 7 stays the documented explanation. The version 2 results
+are in the O-7 section after the matrix.
 
 ## Matrix
 | Batch | Dataset | Rows | 1 Exec | 2 QA | 3 Verify | 4 Manifest | 5 Re-hash | 6 Parity | 7 Explained | 8 Owner status | Proposed path |
 |---|---|---:|---|---|---|---|---|---|---|---|---|
 | B01 BTC 2024-01 | `829c381a…` | 44,640 | NORMAL | PASS | ok | 1+2 verified | verify: 3/3 sources | **1/1 = canonical** (+ AP-1 parity file) | none needed | ACCEPTED | Keep |
 | B02 BTC 2024 | `e2d4a0dc…` | 527,040 | NORMAL | PASS | ok | 12+4 | verify: 16/16 | **12/12 = canonical** (+ AP-1 parity 12/12) | none needed | ACCEPTED | Keep |
-| B03 BTC 2022–23 | `f700272d…` | 1,051,119 | NORMAL | **FAIL**: 81 missing, 1 gap, 1 malformed; Z1 71 min | ok | 24+4 | verify: 28/28 | **24/24 = canonical** (+ AP-1 parity) | 2023-03-24 exchange halt (ADR-0013 proposal), source-level; the malformed row is the truncated halt candle | PENDING | Accept **with documented gap** once ADR-0013 is approved; the gap stays in the data |
+| B03 BTC 2022–23 | `f700272d…` | 1,051,119 | NORMAL | **FAIL**: 81 missing, 1 gap, 1 malformed; Z1 71 min | ok | 24+4 | verify: 28/28 | **24/24 = canonical** (+ AP-1 parity) | 2023-03-24 exchange halt (ADR-0013 proposal), source-level; the malformed row is the truncated halt candle | PENDING | Accept **with documented gap** under D-15; O-7 evidence accepted (D-18); the gap and the malformed row stay in the data |
 | B04 BNB 2024 | `9e71b0a6…` | 527,040 | NORMAL | PASS | ok | 12+4 | **owner: 12/12 ZIP = CHECKSUM**; verify: 16/16 | no reference (BNB not in canonical) | none needed | PENDING | Accept on the QA, verify and re-hash evidence; parity not possible yet |
 | B05 ETH 2024–25 | `78306a32…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | **24/24 = canonical** | none needed | PENDING | Accept (parity is now available) |
 | B06 SOL 2024–25 | `b240b0b7…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | **24/24 = canonical** | none needed | PENDING | Accept |
 | B07 DOGE 2024–25 | `a010f302…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | **24/24 = canonical** | none needed | PENDING | Accept |
 | B08 XRP 2024–25 | `10c2c062…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | **23/24 = canonical; 2025-04 differs**: batch 43,200 rows vs canonical 43,199 from the **same** source file (SHA-256 `a3619422…`) | the batch is complete; **canonical lost the 2025-04-03 17:24 row** (import defect in the older canonical import) | PENDING | Accept B08. **Repair canonical XRP 2025-04** (see the canonical findings below) |
 | B09 ADA 2024–25 | `d72aa5d9…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | owner: 24/24; verify: 28/28 | no reference | none needed | PENDING | Accept on the QA, verify and re-hash evidence |
-| B10 AVAX 2024–25 | `d10de5e2…` | 1,052,640 | NORMAL | **FAIL**: 3 × 15m open (2025-12) | **ok** (owner O-3, 2026-10-28: 24 parts, 1,052,640 rows, 0 errors) | 24+4 | verify: 28/28 | no reference | all 3 explained as `leading_zero_trade_open` (ADR-0015 proposal), source-level, every other field equal | PENDING | After ADR-0015, re-run QA (isolated re-import from the cached archives); then decide |
+| B10 AVAX 2024–25 | `d10de5e2…` | 1,052,640 | NORMAL | **FAIL**: 3 × 15m open (2025-12) | **ok** (owner O-3, 2026-10-28: 24 parts, 1,052,640 rows, 0 errors) | 24+4 | verify: 28/28 | no reference | all 3 explained as `leading_zero_trade_open` (ADR-0015 proposal), source-level, every other field equal | PENDING | O-7 version 2 QA passed (D-18); decide under D-15, with cross-checks limited to 2 of 24 months |
 | B11 TRX 2024–25 | `f89e172f…` | 1,052,640 | NORMAL | PASS | ok | 24+4 | **Claude: 28/28 = manifest** (the per-batch cache; the wrapper's path was wrong); verify: 28/28 | no reference | none needed | PENDING | Accept on the QA, verify and re-hash evidence |
-| B12 HBAR 2024–25 | `3d67799f…` | 1,052,640 | NORMAL | **FAIL**: 2 × 15m open (2024-01, 2025-12); Z1 445 min / 134 runs | ok | 24+4 | verify: 28/28 | no reference | both explained as `leading_zero_trade_open` (ADR-0015); zero-volume minutes are genuine no-trade (ADR-0014 Z1; sampled runs of 3–5 min) | PENDING | After ADR-0014/0015, re-run QA; the audit already found all 445 zero-volume minutes Z1-shaped (0 class A); then decide |
+| B12 HBAR 2024–25 | `3d67799f…` | 1,052,640 | NORMAL | **FAIL**: 2 × 15m open (2024-01, 2025-12); Z1 445 min / 134 runs | ok | 24+4 | verify: 28/28 | no reference | both explained as `leading_zero_trade_open` (ADR-0015); zero-volume minutes are genuine no-trade (ADR-0014 Z1; sampled runs of 3–5 min) | PENDING | O-7 version 2 QA passed with 6,757 Z1 minutes, of which 445 in 134 runs, and 0 class A (D-18); decide under D-15, with cross-checks limited to 2 of 24 months |
 
 **Coverage of the frozen Top 10** (`configs/universe_snapshot_2025-01-01.yaml`, spot), across batches and
 canonical:
@@ -61,6 +61,23 @@ canonical:
 | BNB | 2024 (B04) | 2022–23, 2025, 2026 holdout |
 | ADA, AVAX, TRX, HBAR | 2024–25 | 2022–23, 2026 holdout |
 | All ten | — | USD-M 1m, mark prices and funding (D-02) |
+
+## O-7 QA version 2 re-runs (D-18, accepted with qualifications)
+Isolated re-imports on `0c3f607`, kept outside the repository; the batches in `data_batches/` and their reports are
+unchanged. This table changes no acceptance label: owner status stays PENDING under D-15. Full evidence and the six
+required qualifications are in the [O-7 devlog](devlog/2026-10-30-m2-o7-qa-rerun.md).
+
+| Batch | Z1 min | Z2 min | Class A | Registered downtime | Unexpected missing | Explained | Unexplained | Malformed | `classification_ok` | `cross_checks_ok` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| B03 | 0 | 71 | 0 | 81 | 0 | 0 | 0 | 1 | true | true |
+| B10 | 590 | 0 | 0 | 0 | 0 | 3 | 0 | 0 | true | true |
+| B12 | 6,757 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | true | true |
+
+- **Cross-checks cover 2 of 24 months per batch,** so the explained counts are not two-year totals.
+- **Version 1 zero-volume counts cover only runs of at least 3 minutes.** B12's 445 are its runs, and B10's 0 hid
+  590 Z1 minutes. Version 1 also has no class A check, so the PASS values of B01, B02, B04–B09 and B11 say nothing
+  about either.
+- **Parts match on `content_hash`, 24 of 24 per batch, but not on `file_sha256`.** The cause is unknown.
 
 ## Canonical-lake findings from the same audit (not B01–B12; nothing changed)
 - **C-1, rows present in the source but missing from canonical (import defect):**
@@ -91,6 +108,7 @@ canonical:
 - **C-3, the canonical 2023-03-24 signature:** identical in all five symbols (see ADR-0013).
 
 ## Recommended next steps (each needs owner approval; none is authorized by this document)
+The [validation plan](tasks/M2-remaining-validation-plan.md) has the current order. The list below is the 2026-10-28 proposal.
 1. **Approve or amend** ADR-0013, ADR-0014 and ADR-0015, and the RESEARCH_PROTOCOL §6 clarification.
 2. **Read-only owner audit of canonical rows** (cheap; no import): for every canonical part, compare the
    manifest's source row count with the number of data lines in the cached ZIP. A script is in
