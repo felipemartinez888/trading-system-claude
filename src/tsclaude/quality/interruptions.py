@@ -1,7 +1,7 @@
 """Registry of exchange-wide interruptions (ADR-0013; owner decisions D-09, D-10, D-09A, D-10A).
 
 A registered interval is a period in which the exchange did not trade (for example the Binance
-spot halt of 2023-03-24). It is historical knowledge used by backtests only:
+spot halt of 2023-03-24). It is historical knowledge used by backtests:
 - the simulator fills nothing inside the whole interval `[from, to)` and closes positions exposed
   to it at the first traded open afterwards (aligned with L-11);
 - only its documented absence period `[absent_from, to)` is eligible registered downtime: a
@@ -10,6 +10,10 @@ spot halt of 2023-03-24). It is historical knowledge used by backtests only:
   missing there is genuine missing data and grades the run X like any other unregistered gap
   (`max_missing_share` stays 0.0).
 Live and paper never use it: a real interruption there is handled by the fail-closed live rules.
+
+The import QA also reads it, for data-quality classification only (ADR-0013 section 6; M2-E2): it
+tells observed zero-trade candles apart from registered downtime and from unexpected missing
+minutes. That use extends no exemption and changes no stored bar and no order execution.
 
 Governance (D-09A): every entry carries its approval date, and an interval longer than 24 hours is
 refused unless a documented exceptional override names the approver, approval date, reason and

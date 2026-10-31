@@ -28,6 +28,11 @@
 7. **Explained exceptions:** QA findings with a documented, reproducible cause (ADR-0013/0014/0015 proposals).
 8. **Owner status:** the owner's formal classification (unchanged here).
 
+**E-2 note (2026-10-30, uncommitted).** The QA classification and the ADR-0015 exception are implemented on
+`task/m2-e2`. No row below changes: every QA value here comes from the existing version-1 reports, and
+column 7 stays the documented explanation. A batch shows machine-classified values only after a QA version 2
+re-run (O-7, not authorized).
+
 ## Matrix
 | Batch | Dataset | Rows | 1 Exec | 2 QA | 3 Verify | 4 Manifest | 5 Re-hash | 6 Parity | 7 Explained | 8 Owner status | Proposed path |
 |---|---|---:|---|---|---|---|---|---|---|---|---|

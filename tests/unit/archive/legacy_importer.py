@@ -5,6 +5,10 @@ month's merged rows are held until all months are fetched, each row becomes a `B
 (`_bar_row`, then `_bar_from_row`), and validation/staging run after the gather. The equivalence
 tests assert the current `Importer` produces identical, content-addressed output; the memory tests
 use it to show the retention/scaling assertions can fail (they are not vacuous).
+
+M2-E2: the reference also classifies zero-volume candles, over all bars of the request at once
+(`classify_zero_trade` without `defer_first`), so the equivalence tests check the bounded
+per-month classification and its month-boundary join against the whole-sequence result.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from tsclaude.marketdata.archive.importer import (
 from tsclaude.marketdata.archive.qa import (
     QACollector,
     build_report,
+    classify_zero_trade,
     merge_runs,
     zero_volume_runs,
 )
@@ -79,6 +84,7 @@ class LegacyImporter(Importer):
         times = array("q")
         zero_runs: list[tuple[int, int]] = []
         bars_by_month: dict[str, list[Bar]] = {}
+        all_bars: list[Bar] = []
         sample = self._sample_months(req) if req.kind is LakeKind.BARS_1M else set()
         ingested = self._clock.now_ms()
         for label, raw_rows, records in sorted(results, key=lambda r: r[0]):
@@ -90,12 +96,14 @@ class LegacyImporter(Importer):
             if req.kind is LakeKind.BARS_1M:
                 bars = [legacy_bar_from_row(req.market, req.symbol, r) for r in valid]
                 zero_runs.extend(zero_volume_runs(bars, min_run=1))
+                all_bars.extend(bars)
                 if label in sample:
                     bars_by_month[label] = bars
             parts.extend(staging.write_parts(req.market, req.kind, req.symbol, valid))
         checks: list[dict[str, Any]] = []
         for label in sorted(bars_by_month):
             checks.extend(await self._cross_checks(req, label, bars_by_month[label], sources))
+        registered = self._registry.for_market(req.market)
         runs = [r for r in merge_runs(zero_runs) if (r[1] - r[0]) // MS_PER_MINUTE >= 3]
         qa = build_report(
             bars_times=list(times),
@@ -105,5 +113,10 @@ class LegacyImporter(Importer):
             collector=collector,
             zero_runs=runs if req.kind is LakeKind.BARS_1M else (),
             cross_checks=checks,
+            zero_trade=(
+                classify_zero_trade(all_bars, registered) if req.kind is LakeKind.BARS_1M else None
+            ),
+            interruptions=registered,
+            registry=self._registry.manifest() if req.kind is LakeKind.BARS_1M else None,
         )
         return self._commit(req, interval, staging, parts, sources, qa)

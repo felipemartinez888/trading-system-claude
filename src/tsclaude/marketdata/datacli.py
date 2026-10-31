@@ -51,6 +51,15 @@ from tsclaude.marketdata.universe import (
     windows,
     write_snapshot,
 )
+from tsclaude.quality.interruptions import (
+    DEFAULT_PATH as INTERRUPTIONS_PATH,
+)
+from tsclaude.quality.interruptions import (
+    EMPTY_REGISTRY,
+    InterruptionRegistry,
+    InterruptionRegistryError,
+    load_registry,
+)
 from tsclaude.store import lake_admin
 from tsclaude.store.holdout import HoldoutGuard, SealedUnlocks
 from tsclaude.store.lake_reader import LakeReader
@@ -125,11 +134,13 @@ async def run_import(
     kinds: Sequence[LakeKind] | None = None,
     *,
     cross_check_months: int = 2,
+    interruptions: InterruptionRegistry = EMPTY_REGISTRY,
 ) -> dict[str, Any]:
-    """Import every (symbol, kind). Failures are reported per request, never hidden."""
+    """Import every (symbol, kind). Failures are reported per request, never hidden. The
+    exchange-interruption registry is read for QA classification only."""
     kinds = list(kinds or DEFAULT_KINDS[market])
     await env.rest[market].load_exchange_info(tuple(symbols))  # seeds the REST weight limiter
-    importer = _importer(env, cross_check_months=cross_check_months)
+    importer = _importer(env, cross_check_months=cross_check_months, interruptions=interruptions)
     results: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for symbol in symbols:
@@ -317,12 +328,29 @@ def _cmd_import(args: argparse.Namespace) -> int:
     symbols = _symbols(args, market)
     start, end = day_ms(args.date_from), day_ms(args.date_to) + MS_PER_DAY
     kinds = [LakeKind(k) for k in args.kinds.split(",")] if args.kinds else None
+    registry_path = Path(args.interruptions) if args.interruptions else INTERRUPTIONS_PATH
+    try:  # default file absent: empty registry (every missing minute is unexpected); a broken
+        # or explicitly named but missing file refuses before anything is fetched
+        if args.interruptions or registry_path.is_file():
+            registry = load_registry(registry_path)
+        else:
+            registry = EMPTY_REGISTRY
+    except InterruptionRegistryError as exc:
+        _emit({"ok": False, "refused": "exchange_interruptions", "error": str(exc)}, args.summary)
+        return 5
 
     async def main() -> dict[str, Any]:
         env = await open_env(_data_dir(args), concurrency=args.concurrency)
         try:
             return await run_import(
-                env, market, symbols, start, end, kinds, cross_check_months=args.cross_check_months
+                env,
+                market,
+                symbols,
+                start,
+                end,
+                kinds,
+                cross_check_months=args.cross_check_months,
+                interruptions=registry,
             )
         finally:
             await env.close()
@@ -393,6 +421,12 @@ def register(sub: Any) -> None:
     imp.add_argument("--kinds", default=None, help="default: market default kinds")
     imp.add_argument("--concurrency", type=int, default=4)
     imp.add_argument("--cross-check-months", type=int, default=2)
+    imp.add_argument(
+        "--interruptions",
+        default=None,
+        help="exchange-interruption registry read for QA classification only "
+        "(default: configs/exchange_interruptions.yaml if present)",
+    )
     imp.set_defaults(func=_cmd_import)
 
     uni = data_sub.add_parser("universe", help="compute the rule-based universe snapshot")

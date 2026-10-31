@@ -17,6 +17,13 @@ dropped as soon as it finishes. Only the cross-check sample months keep their `B
 6. at the end: QA report (gaps, duplicates, violations, zero-volume runs, cross-check of derived
    15m/1h bars against native archive klines for sample months) and the dataset manifest.
 
+QA report version 2 (M2-E2): each month also reduces its 1m bars to zero-volume classes (Z1, Z2,
+A; `qa.classify_zero_trade`), with its first bar deferred so the month boundary is classified
+against the previous month's last bar (`qa.join_zero_trade`). The exchange-interruption registry
+passed in is read for that classification and the missing-minute split only. An explained
+cross-check difference gets its evidence (files, SHA-256, CSV line numbers) read back from the
+same verified archives; if the evidence cannot be located it stays unexplained (fail closed).
+
 Any `ChecksumError` (or a kline format error) aborts the whole request: parts written by this run
 are removed again and no manifest is committed, so nothing from it becomes visible.
 
@@ -45,7 +52,14 @@ from typing import Any, Protocol
 
 from tsclaude import __version__
 from tsclaude.contracts.market import Bar, BarSource, Interval, Market
-from tsclaude.contracts.timeutil import MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, WallClock, to_iso
+from tsclaude.contracts.timeutil import (
+    MS_PER_DAY,
+    MS_PER_HOUR,
+    MS_PER_MINUTE,
+    WallClock,
+    from_iso,
+    to_iso,
+)
 from tsclaude.marketdata.archive import csvparse, paths
 from tsclaude.marketdata.archive.checksum import ChecksumError
 from tsclaude.marketdata.archive.csvparse import ArchiveFormatError
@@ -53,13 +67,18 @@ from tsclaude.marketdata.archive.download import ArchiveNotFound, VerifiedFile
 from tsclaude.marketdata.archive.paths import ArchiveDataType, ArchiveFile, PlanItem, PlanKind
 from tsclaude.marketdata.archive.provenance import code_provenance
 from tsclaude.marketdata.archive.qa import (
+    LEADING_ZERO_TRADE_OPEN,
     QACollector,
+    ZeroTradeClasses,
     build_report,
+    classify_zero_trade,
     cross_check,
+    join_zero_trade,
     merge_runs,
     zero_volume_runs,
 )
 from tsclaude.marketdata.types import FundingRate, PriceKline, RestKline
+from tsclaude.quality.interruptions import EMPTY_REGISTRY, InterruptionRegistry
 from tsclaude.store.lake_writer import LakeKind, LakeWriter, PartInfo, Row, Staging, month_is_sealed
 
 log = logging.getLogger(__name__)
@@ -169,6 +188,7 @@ class _MonthResult:
     parts: list[PartInfo]
     collector: QACollector
     bars: list[Bar] | None  # only for cross-check sample months
+    zero_trade: ZeroTradeClasses | None  # 1m bars only; first bar deferred to the join
 
 
 class Importer:
@@ -183,6 +203,7 @@ class Importer:
         prefer_rest_current_month: bool = False,
         cross_check_months: int = 2,
         month_concurrency: int = 3,
+        interruptions: InterruptionRegistry = EMPTY_REGISTRY,
     ) -> None:
         self._writer = lake
         self._fetcher = fetcher
@@ -192,6 +213,9 @@ class Importer:
         self._prefer_rest_current_month = prefer_rest_current_month
         self._cross_check_months = cross_check_months
         self._month_sem = asyncio.Semaphore(month_concurrency)
+        #: read for QA classification only (registered Z2 fillers, registered downtime); with the
+        #: empty default every missing minute is unexpected and nothing is Z2
+        self._registry = interruptions
         code_provenance()  # resolved now (git subprocesses), never inside the event loop later
 
     # ------------------------------------------------------------------ entry point
@@ -233,6 +257,7 @@ class Importer:
         is_bars = req.kind is LakeKind.BARS_1M
         sample = self._sample_months(req) if is_bars else set()
         ingested = self._clock.now_ms()
+        registered = self._registry.for_market(req.market)
 
         async def one_month(label: str) -> _MonthResult:
             # Fetch, merge, validate and stage under the semaphore; the month's raw rows are
@@ -277,6 +302,7 @@ class Importer:
                     parts,
                     local,
                     bars if label in sample else None,
+                    classify_zero_trade(bars, registered, defer_first=True) if is_bars else None,
                 )
 
         tasks = [asyncio.ensure_future(one_month(m)) for m in sorted(months)]
@@ -295,6 +321,7 @@ class Importer:
         times: array[int] = array("q")
         zero_runs: list[tuple[int, int]] = []
         bars_by_month: dict[str, list[Bar]] = {}
+        month_classes: list[ZeroTradeClasses] = []
         for res in sorted(results, key=lambda r: r.label):
             _absorb(collector, res.collector)
             sources.extend(res.records)
@@ -303,6 +330,8 @@ class Importer:
             parts.extend(res.parts)
             if res.bars is not None:
                 bars_by_month[res.label] = res.bars
+            if res.zero_trade is not None:
+                month_classes.append(res.zero_trade)
         del results
         checks: list[dict[str, Any]] = []
         for label in sorted(bars_by_month):
@@ -316,6 +345,9 @@ class Importer:
             collector=collector,
             zero_runs=runs if is_bars else (),
             cross_checks=checks,
+            zero_trade=join_zero_trade(month_classes, registered) if is_bars else None,
+            interruptions=registered,
+            registry=self._registry.manifest() if is_bars else None,
         )
         return self._commit(req, interval, staging, parts, sources, qa)
 
@@ -564,10 +596,103 @@ class Importer:
                     "rows": len(native.rows),
                 }
             )
-            result = cross_check(bars, native.rows, interval)
+            result = cross_check(bars, native.rows, interval, self._registry.for_market(req.market))
+            if result["explained_mismatches"]:
+                await self._attach_evidence(
+                    req, result, vf, csvparse.open_time_lines(text), sources
+                )
             result["month"] = label
             out.append(result)
         return out
+
+    async def _attach_evidence(
+        self,
+        req: ImportRequest,
+        result: dict[str, Any],
+        native: VerifiedFile,
+        native_lines: dict[int, int],
+        sources: list[dict[str, Any]],
+    ) -> None:
+        """ADR-0015 rule 3: each explained mismatch records the native file and line, and the 1m
+        archive file, SHA-256 and line of the candle before the bucket, its first candle and its
+        first traded candle, read back from the same verified archives. Evidence that cannot be
+        located (a REST minute, a changed file, a missing line) fails closed: the mismatch becomes
+        unexplained again."""
+        files: dict[str, tuple[VerifiedFile, dict[int, int]] | None] = {}
+        for entry in list(result["explained_mismatches"]):
+            exp = entry["explanation"]
+            native_line = native_lines.get(entry["open_time_ms"])
+            minutes = {
+                "previous": exp["previous_minute"],
+                "first": exp["first_minute"],
+                "first_traded": exp["first_traded_minute"],
+            }
+            located: dict[str, dict[str, Any]] = {}
+            for role, iso in minutes.items():
+                loc = await self._locate_1m(req, from_iso(iso), sources, files)
+                if loc is not None:
+                    located[role] = loc
+            if native_line is None or len(located) != len(minutes):
+                entry["explanation"] = None
+                entry["explanation_rejected"] = "evidence not located in the verified archives"
+                continue
+            exp["evidence"] = {
+                "native": {
+                    "file": native.file.name,
+                    "sha256": native.sha256,
+                    "line": native_line,
+                },
+                "derived_1m": located,
+            }
+        explained = [e for e in result["explained_mismatches"] if e["explanation"] is not None]
+        unexplained = result["mismatches"] - len(explained)
+        result["explained_mismatches"] = explained
+        result["mismatches_explained"] = len(explained)
+        result["mismatches_unexplained"] = unexplained
+        result["explained_by_reason"] = (
+            {LEADING_ZERO_TRADE_OPEN: len(explained)} if explained else {}
+        )
+        result["ok"] = result["compared"] > 0 and unexplained == 0
+
+    async def _locate_1m(
+        self,
+        req: ImportRequest,
+        t: int,
+        sources: list[dict[str, Any]],
+        files: dict[str, tuple[VerifiedFile, dict[int, int]] | None],
+    ) -> dict[str, Any] | None:
+        """File, SHA-256 and CSV line of the 1m candle at `t`, from the verified archive whose
+        source record covers it; None if it came from REST or cannot be found again unchanged."""
+        for rec in sources:
+            kind = {"archive_monthly": PlanKind.MONTHLY, "archive_daily": PlanKind.DAILY}.get(
+                str(rec.get("type"))
+            )
+            if rec.get("role") != "data" or kind is None:
+                continue
+            lo, hi = from_iso(str(rec["from"])), from_iso(str(rec["to"]))
+            if not lo <= t < hi:
+                continue
+            d = paths.ms_to_date(lo)
+            label = d.strftime("%Y-%m") if kind is PlanKind.MONTHLY else d.isoformat()
+            f = paths.archive_file(
+                req.market, ArchiveDataType.KLINES, req.symbol, "1m", PlanItem(kind, lo, hi, label)
+            )
+            if f.relpath not in files:
+                try:
+                    vf = await self._fetcher.fetch(f)
+                except ArchiveNotFound:
+                    files[f.relpath] = None
+                else:
+                    text = csvparse.read_single_csv(
+                        vf.data, vf.file.name.removesuffix(".zip") + ".csv"
+                    )
+                    ok = vf.sha256 == rec.get("sha256")
+                    files[f.relpath] = (vf, csvparse.open_time_lines(text)) if ok else None
+            found = files[f.relpath]
+            if found is None or t not in found[1]:
+                return None
+            return {"file": found[0].file.name, "sha256": found[0].sha256, "line": found[1][t]}
+        return None
 
     # ------------------------------------------------------------------ funding
     async def _run_funding(self, req: ImportRequest, staging: Staging) -> ImportResult:

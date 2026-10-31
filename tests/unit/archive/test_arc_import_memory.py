@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from arc_helpers import JsonLinesCodec, YieldingArchive, edge_lines, ms
+from arc_helpers import MIN, JsonLinesCodec, YieldingArchive, edge_lines, ms
 from legacy_importer import LegacyImporter
 
 from tsclaude.contracts.market import Bar, Market
@@ -151,6 +151,47 @@ def test_at_most_month_concurrency_months_of_raw_rows_are_alive(
     assert seen["bars_passed"] == [month_rows, month_rows]
     assert seen["bars_alive"] == [2 * month_rows] * 2  # exactly the two sample months, nothing else
     print(f"T3 new: parsed peak={parsed.peak} merged peak={merged.peak} bars={seen['bars_alive']}")
+
+
+def _z1_month_starts(labels: list[str], edge: int) -> YieldingArchive:
+    """Sparse months whose first minute is a zero-trade filler at the previous month's last close:
+    the only shape the bounded classification must retain until the months are joined."""
+    archive = YieldingArchive()
+    previous_close = 100.0
+    for label in labels:
+        f = _file(label)
+        lines = edge_lines(f, edge)
+        first = [f.start_ms, *[previous_close] * 4, 0.0, f.start_ms + MIN - 1, 0.0, 0, 0.0, 0.0, 0]
+        lines[0] = ",".join(str(v) for v in first)
+        archive.add(f, lines)
+        previous_close = float(lines[-1].split(",")[4])
+    return archive
+
+
+def test_zero_trade_month_starts_keep_the_bars_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2-E2: one retained first bar per month at most, on top of the two sample months; the
+    classification across every month boundary is still complete."""
+    labels = _labels(2024, 1, MONTHS)
+    parsed, merged, seen = _instrument(monkeypatch)
+    res = asyncio.run(
+        _importer(Importer, tmp_path, _z1_month_starts(labels, EDGE), CONCURRENCY).run(
+            _request(labels)
+        )
+    )
+    assert res.rows == MONTHS * 2 * EDGE
+    assert 1 <= parsed.peak <= CONCURRENCY
+    assert 1 <= merged.peak <= CONCURRENCY
+    month_rows = 2 * EDGE
+    assert seen["bars_passed"] == [month_rows, month_rows]
+    assert all(alive <= 2 * month_rows + MONTHS for alive in seen["bars_alive"])
+    summary = res.qa["summary"]
+    assert summary["zero_trade_z1_minutes"] == MONTHS - 1  # the very first one has no predecessor
+    assert summary["zero_trade_a_rows"] == 1
+    assert res.qa["zero_trade_classification"]["a_rows_listed"][0]["reason"] == (
+        "previous_minute_missing"
+    )
 
 
 def test_retention_probe_detects_the_old_pipeline(

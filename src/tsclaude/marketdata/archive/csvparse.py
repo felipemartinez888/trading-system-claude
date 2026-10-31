@@ -183,6 +183,20 @@ def _data_rows(text: str, issues: ParseIssues) -> list[tuple[int, list[str]]]:
     return rows
 
 
+def open_time_lines(text: str) -> dict[int, int]:
+    """CSV line number (1-based, as in `ParseIssues.malformed_rows`) of each row, by open time in
+    ms. Read with the parser's own row reader and timestamp rules; rows whose open time does not
+    parse are left out. Used for QA evidence only (M2-E2)."""
+    out: dict[int, int] = {}
+    for line_no, cells in _data_rows(text, ParseIssues()):
+        try:
+            open_ms, _unit = _ts(cells[0], "open time")
+        except (ValueError, IndexError):  # ArchiveFormatError is a ValueError
+            continue
+        out.setdefault(open_ms, line_no)
+    return out
+
+
 def _detect_unit(rows: list[tuple[int, list[str]]]) -> TimeUnit:
     for _, cells in rows:
         if cells and _INT.fullmatch(cells[0]):

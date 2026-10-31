@@ -15,6 +15,10 @@
 
   These are implemented in E-1b (registry schema 2, runner-v3, `5f623e9`) and integrated with E-1
   (merge `03c9158`; [E-1b devlog](../devlog/2026-10-29-m2-e1b-registry-governance.md)).
+- **Read-only QA consumer** (owner authorization of E-2, 2026-10-30): the import QA reads the approved
+  registry for data-quality classification only (section 6). Implemented in E-2, uncommitted on
+  `task/m2-e2` pending owner review ([E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)). It does not extend any outage
+  exemption, does not change order execution, and paper trading still does not use the registry.
 - **Relates to:**
   - ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0009 (holdout guard);
   - RESEARCH_PROTOCOL §6 (grades);
@@ -132,6 +136,22 @@ mechanically from the market-wide zero-trade or absent run. The data supports th
 every symbol, every candle is flat at the previous close with all volumes 0, and it is the only zero-trade run
 of 3 or more minutes in about 4.75 years of these liquid symbols. The owner can still choose to admit only the
 absent part, [12:39, 14:00); that is decision P-2.
+
+### 6. Read-only use by the import QA (E-2)
+The import QA (`marketdata/archive/qa.py`) reads the approved registry to keep three things apart:
+- **Genuine observed zero-trade candles.** A Z1-shaped candle outside every registered interval is Z1;
+  inside a registered interval of the dataset's market it is Z2 (ADR-0014).
+- **Missing observations in approved downtime.** Only a missing minute inside the documented absence
+  period `[absent_from, to)` of an entry of the dataset's market is registered downtime.
+- **Unexpected missing observations.** Every other missing minute, including one in
+  `[from, absent_from)`, is unexpected and fails closed: `classification_ok` is false.
+
+A candle observed inside a documented absence period contradicts the registry, so it is a QA finding,
+never downtime. The QA only reads the registry. It adds no exemption, changes no stored or derived
+bar, changes no dataset id, and has no effect on order execution. A QA report records the registry's
+SHA-256 and the policy fields of its entries. The
+`data import` command refuses to start on a broken registry or on a named file that is missing; with
+no default file it uses the empty registry, under which every missing minute is unexpected.
 
 ## Consequences
 - **Gains:** development-segment backtests over 2023 become gradable without hiding real data loss. The waiver

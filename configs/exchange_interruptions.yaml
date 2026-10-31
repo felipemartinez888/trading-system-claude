@@ -1,5 +1,8 @@
 # Registry of exchange-wide interruptions (ADR-0013; owner decisions D-09, D-10, D-09A, D-10A).
-# Historical knowledge for BACKTESTS ONLY. The simulator fills nothing inside [from, to) and closes
+# Historical knowledge used by backtests. Paper and live never use it. The import QA also reads it,
+# for data-quality classification only (ADR-0013 section 6): that extends no exemption and changes
+# no stored bar and no order execution.
+# The simulator fills nothing inside [from, to) and closes
 # exposed positions at the first traded open afterwards. Only the documented absence period
 # [absent_from, to) is registered downtime: a minute missing before absent_from (where candles were
 # published) is genuine missing data, and any other missing minute still grades a run X.
