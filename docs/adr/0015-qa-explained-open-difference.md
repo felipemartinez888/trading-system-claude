@@ -1,9 +1,13 @@
 # ADR-0015: A narrow, evidence-bound QA exception for native-versus-derived open differences
 
 - **Status:** Accepted in principle (owner decision D-13/P-5, 2026-10-28). Safeguards approved as the governing
-  policy and implementation authorized by the owner on 2026-10-30. Implemented in E-2, uncommitted on
-  `task/m2-e2` pending owner review ([E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)). The existing reports of B10 and B12
-  are unchanged and keep `cross_checks_ok = false`; they would change only through the O-7 re-runs, which
+  policy and implementation authorized by the owner on 2026-10-30. Implemented in E-2, committed and
+  integrated locally
+  (`e973f86`; not pushed, not in `main`), with its targeted regression and independent review passed
+  (final verdict APPROVE WITH NOTES; [E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)).
+  Some of its mutants ran on a prior code revision. O-7 has not run, M2 is not formally accepted, and no
+  statistical strategy validation is implied.
+  The existing reports of B10 and B12 are unchanged and keep `cross_checks_ok = false`; they would change only through the O-7 re-runs, which
   are not authorized.
 - **Relates to:** ADR-0004 (derived timeframes and the consistency check), ADR-0014 (zero-volume candles).
 

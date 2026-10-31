@@ -7,9 +7,14 @@
     simulator `sim-v1`, `4e88ba0`), integrated locally into `feat/mvp-4-dashboard` (merge `03c9158`, 2026-10-30; not pushed, not in `main`); see the
     [E-1 devlog](../devlog/2026-10-28-m2-e1-no-fill-and-interruptions.md). On that branch the simulator fills
     nothing on zero-trade candles. Implemented policy, still subject to validation; not formal M2 acceptance.
-  - The QA classification (rule 2) is implemented in E-2, authorized by the owner on 2026-10-30 and uncommitted
-    on `task/m2-e2` pending owner review ([E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)). Existing QA reports keep their
-    meaning (QA report version 2 is explicit); the O-7 re-runs of B03, B10 and B12 are not authorized.
+  - The QA classification (rule 2) is implemented in E-2, authorized by the owner on 2026-10-30,
+    committed and integrated locally
+    (`e973f86`; not pushed, not in `main`), with its targeted regression and independent review passed
+    (final verdict APPROVE WITH NOTES; [E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)).
+    Some of its mutants ran on a prior code revision. O-7 has not run, M2 is not formally accepted, and no
+    statistical strategy validation is implied.
+    Existing QA reports keep their meaning (QA report version 2 is explicit); the O-7 re-runs of B03,
+    B10 and B12 are not authorized.
 - **Relates to:** ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0013 (exchange interruptions),
   ADR-0015 (QA open exception).
 

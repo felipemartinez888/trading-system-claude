@@ -16,9 +16,14 @@
   These are implemented in E-1b (registry schema 2, runner-v3, `5f623e9`) and integrated with E-1
   (merge `03c9158`; [E-1b devlog](../devlog/2026-10-29-m2-e1b-registry-governance.md)).
 - **Read-only QA consumer** (owner authorization of E-2, 2026-10-30): the import QA reads the approved
-  registry for data-quality classification only (section 6). Implemented in E-2, uncommitted on
-  `task/m2-e2` pending owner review ([E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)). It does not extend any outage
-  exemption, does not change order execution, and paper trading still does not use the registry.
+  registry for data-quality classification only (section 6). Implemented in E-2, committed and
+  integrated locally
+  (`e973f86`; not pushed, not in `main`), with its targeted regression and independent review passed
+  (final verdict APPROVE WITH NOTES; [E-2 devlog](../devlog/2026-10-30-m2-e2-zero-trade-qa.md)).
+  Some of its mutants ran on a prior code revision. O-7 has not run, M2 is not formally accepted, and no
+  statistical strategy validation is implied.
+  The QA use does not extend any outage exemption, does not change order execution, and paper trading
+  still does not use the registry.
 - **Relates to:**
   - ADR-0004 (canonical 1m bars), ADR-0005 (one simulator), ADR-0009 (holdout guard);
   - RESEARCH_PROTOCOL §6 (grades);

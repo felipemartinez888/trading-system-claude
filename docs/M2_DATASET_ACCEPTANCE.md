@@ -28,8 +28,11 @@
 7. **Explained exceptions:** QA findings with a documented, reproducible cause (ADR-0013/0014/0015 proposals).
 8. **Owner status:** the owner's formal classification (unchanged here).
 
-**E-2 note (2026-10-30, uncommitted).** The QA classification and the ADR-0015 exception are implemented on
-`task/m2-e2`. No row below changes: every QA value here comes from the existing version-1 reports, and
+**E-2 note (2026-10-30, integrated locally).** The QA classification and the ADR-0015 exception are
+committed and integrated locally (`e973f86`; not pushed, not in `main`). They passed their targeted
+regression and independent review (final verdict APPROVE WITH NOTES); some of the mutants ran on a
+prior code revision. O-7 has not run, M2 is not formally accepted, and no statistical strategy
+validation is implied. No row below changes: every QA value here comes from the existing version-1 reports, and
 column 7 stays the documented explanation. A batch shows machine-classified values only after a QA version 2
 re-run (O-7, not authorized).
 
