@@ -2,8 +2,11 @@
 
 - replay parity: any random live session replays through the historical clock to identical
   ledger hashes and fingerprint, with balanced ledgers and non-negative cash in every book;
-- restart safety: a journal failure at any batch, then restore + re-delivery, reproduces the
-  uninterrupted session's ledgers;
+- restart safety: a journal failure at any batch, then restore + re-delivery never polled before
+  the crash, reproduces the uninterrupted session's journal and ledgers; a restart after downtime
+  recovers as the paper runtime does (new subscription, its backfill, unobserved downtime bars)
+  and stays causal (`restart_causality`, `recovery_outcome`); it fails while production can fill
+  an entry in a minute the downtime overlaps (P-1, docs/tasks/M3-PB.md);
 - live clock: any arrival order within the settle window releases the historical clock order;
 - risk engine: deterministic, never passes with a missing market input or a view after cutoff.
 
@@ -15,7 +18,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "unit" / "sim"))
@@ -37,10 +40,21 @@ def test_replay_parity_for_any_session(seed: int) -> None:
     assert check_replay_parity(seed) == []
 
 
+FAIL_BATCHES = st.integers(min_value=0, max_value=200)
+
+
 @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(seed=SEEDS, fail_batch=st.integers(min_value=0, max_value=200))
+@given(seed=SEEDS, fail_batch=FAIL_BATCHES)
+@example(seed=13073, fail_batch=124)  # diverged under the pre-crash timeline (audit F1)
+@example(seed=465923499, fail_batch=162)  # likewise
 def test_restore_after_any_journal_failure(seed: int, fail_batch: int) -> None:
     assert check_restore_equivalence(seed, fail_batch) == []
+
+
+@settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(seed=SEEDS, fail_batch=FAIL_BATCHES, delay_ms=st.integers(min_value=1, max_value=600_000))
+def test_delayed_restart_stays_causal(seed: int, fail_batch: int, delay_ms: int) -> None:
+    assert check_restore_equivalence(seed, fail_batch, delay_ms) == []
 
 
 @settings(max_examples=100, deadline=None)

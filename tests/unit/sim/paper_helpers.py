@@ -144,9 +144,18 @@ def drive(
     *,
     missing: set[tuple[int, str]] = frozenset(),  # type: ignore[assignment]
     snapshot_states: Callable[[int], dict | None] | None = None,
+    not_before_ms: int | None = None,
 ) -> None:
     """Deliver each minute like the live subscription: snapshot just before the close, ETH's bar
-    before BTC's, then poll shortly after the close (and once more past the settle deadline)."""
+    before BTC's, then poll shortly after the close (and once more past the settle deadline).
+
+    `not_before_ms`: the wall time a restarted service came back. No poll is earlier (a restart
+    cannot act before it happened); polls already at or after it keep their schedule, so the
+    poll times stay nondecreasing."""
+
+    def at(t: int) -> int:
+        return t if not_before_ms is None else max(t, not_before_ms)
+
     for i in minutes:
         close = minute(i) + MS_PER_MINUTE - 1
         states = None if snapshot_states is None else snapshot_states(i)
@@ -155,10 +164,10 @@ def drive(
             if (i, key[1]) in missing:
                 continue
             service.on_update(BarClosed(bars[key][i]))
-        service.poll(close + 1_500)
+        service.poll(at(close + 1_500))
     if minutes:
         last_close = minute(minutes[-1]) + MS_PER_MINUTE - 1
-        service.poll(last_close + 1_500)
+        service.poll(at(last_close + 1_500))
 
 
 def new_service(
