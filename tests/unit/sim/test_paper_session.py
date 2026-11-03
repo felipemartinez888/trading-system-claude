@@ -165,7 +165,22 @@ PINNED_LEDGER_HASHES = {
 }
 # M2-E1: only RUN_STARTED engine_version sim-v0 -> sim-v1 changed (verified: with the old version
 # string the journal hash equals the previous value); ledger hashes unchanged.
-PINNED_JOURNAL_HASH = "4bc1e0b8a5e36fb3864a9423ba21ad2b2f4647e360927358a4d86d82f9b513fc"
+# M3 Part B: only the ``minute_closed`` marks on input entries were added (pinned below: without
+# them the journal hash equals the previous value); ledger hashes unchanged.
+PINNED_JOURNAL_HASH = "a70ffeea89f050ebffb26bad0a3f4803cbe25a94e17983936e4d9d833d9eb94e"
+PINNED_JOURNAL_HASH_WITHOUT_CLOSE_MARKS = (
+    "4bc1e0b8a5e36fb3864a9423ba21ad2b2f4647e360927358a4d86d82f9b513fc"
+)
+
+
+def test_the_close_marks_are_the_only_journal_change_of_part_b() -> None:
+    _svc, journal, _ = run_live()
+    entries = [e.to_dict() for e in flatten(journal.batches())]
+    for e in entries:
+        if e["type"] == STEP_TYPE:
+            e["payload"].pop("minute_closed", None)
+    digest = hashlib.sha256(canonical_json(entries).encode()).hexdigest()
+    assert digest == PINNED_JOURNAL_HASH_WITHOUT_CLOSE_MARKS
 
 
 def _replace_entry(batches: list, b: int, e: int, payload: dict) -> None:

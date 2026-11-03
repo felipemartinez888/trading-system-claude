@@ -4,8 +4,10 @@
 # risk limits from configs/risk.yaml.
 #
 # Known limitations: restart equivalence is not guaranteed, and not every divergence is visible.
-# A bar that never arrives after a restart keeps paper AWAITING_BACKFILL (seed 13073); after a
-# restart the shadow book can differ from an uninterrupted run while paper shows RUNNING / SIMULATED
+# A bar missing after the journal's last closed minute that no backfill can supply keeps paper
+# AWAITING_BACKFILL (also a minute with no bar at all, and journals written before the minute-close
+# mark: seed 13073); after a restart fills in any book, the baseline included, can differ from an
+# uninterrupted run while paper shows RUNNING / SIMULATED, because release time bounds execution
 # (seed 465923499); a journal that cannot be restored shows UNAVAILABLE. Each monitoring start
 # restores the active session again. The operator may record a new paper session
 # (POST /api/paper/session/new, token + note), which opens at the next monitoring start; old

@@ -260,9 +260,11 @@ def test_p4_incomplete_backfill_stays_awaiting_and_processes_nothing(tmp_path: P
 
 
 def test_p5_never_delivered_bar_stays_awaiting_and_is_never_auto_resolved(tmp_path: Path) -> None:
-    """The operational form of the open restore class (seed 13073: a bar after the journal's last
-    key that never arrives): the service waits for a backfill that cannot come, shows it, never
-    resumes by itself, and the only way out is an explicit new session."""
+    """Real downtime with a bar that does not exist: spot BTC minute 3 comes after the journal's
+    last minute 2, a minute the live clock never released, so no recorded close covers it (unlike
+    the class 1 case, a bar missing from a minute already closed before the restart). The service
+    waits for a backfill that cannot come, shows it, never resumes by itself, and the only way out
+    is an explicit new session."""
 
     async def scenario() -> None:
         rig = Rig(tmp_path)

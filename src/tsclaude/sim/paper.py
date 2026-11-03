@@ -19,7 +19,11 @@ resets) through a `HistoricalClock` and verifies that each batch is reproduced e
 is replay parity in the sense of SIMULATION §1 for a *recorded* session: it does not re-run the
 strategy and does not compare against bars from the lake;
 `PaperTradingService.restore` uses it on restart, then resolves the downtime over backfilled
-bars (no entries for unobserved minutes) and resumes live.
+bars (no entries for unobserved minutes) and resumes live. The input entry of the last bar the
+live clock released for a minute carries ``minute_closed: true`` (in the same atomic batch), so a
+restore can tell an instrument the clock released the minute without (a gap the session passed)
+from one whose bar was not processed yet; journals without the mark restore as before, treating
+every key after the last processed one as possible downtime.
 
 Sessions and configuration changes: a journal belongs to one session (`session_id`, the aggregate
 id of its input entries) and records the configuration hash in its first batch. A restore with a
@@ -348,6 +352,9 @@ class PaperSession:
         )
         self._cursor = 0
         self.batches = 0
+        #: every minute before this one was closed by the live clock (journaled ``minute_closed``
+        #: marks); None if no step recorded a close, e.g. a journal written before the mark existed
+        self.closed_through_ms: int | None = None
 
     # ------------------------------------------------------------ wiring
     def go_live(self, provider: ViewProvider, clock: Clock, strategy: LiveStrategy | None) -> None:
@@ -398,9 +405,17 @@ class PaperSession:
         recorded: list[dict[str, Any]] | None = None,
         recorded_errors: Sequence[str] = (),
         released_at_ms: int | None = None,
+        minute_closed: bool = False,
     ) -> Batch:
         """`released_at_ms`: wall time the live clock released the bar (None if unknown); with
-        the bar close it gives the decision latency, journaled as ``release_latency_ms``."""
+        the bar close it gives the decision latency, journaled as ``release_latency_ms``.
+
+        `minute_closed`: the live clock released this bar as the last one of its minute, so the
+        minute is closed (complete, or past its deadline with the missing instruments a gap) and
+        no other bar of it will be processed. Journaled as ``minute_closed: true`` only when set,
+        so batches without it keep their recorded form."""
+        if self.closed_through_ms is not None and bar.open_time_ms < self.closed_through_ms:
+            raise ValueError(f"bar {order_key(bar)} is in a minute already closed")
         self.source.begin(recorded, recorded_errors)
         self.sim.step(bar, observed=observed, not_before_ms=released_at_ms)
         extra: list[NewEvent] = []
@@ -417,6 +432,9 @@ class PaperSession:
                 None if released_at_ms is None else released_at_ms - bar.close_time_ms
             ),
         }
+        if minute_closed:
+            head["minute_closed"] = True
+            self.closed_through_ms = bar.open_time_ms + MS_PER_MINUTE
         return self._collect(head, bar.close_time_ms, extra)
 
     def funding(
@@ -507,12 +525,16 @@ def replay(
             bar = next(bars)
             if bar.model_dump(mode="json") != head["bar"]:
                 raise RestoreError(f"batch {i}: clock order differs from the journal")
+            through = session.closed_through_ms
+            if through is not None and bar.open_time_ms < through:
+                raise RestoreError(f"batch {i}: bar after its minute was recorded closed")
             out = session.step_bar(
                 bar,
                 observed=bool(head["observed"]),
                 recorded=head["intents"],
                 recorded_errors=head["intent_errors"],
                 released_at_ms=head.get("released_at_ms"),
+                minute_closed=head.get("minute_closed") is True,
             )
         elif kind == "funding":
             out = session.funding(
@@ -630,11 +652,15 @@ class PaperTradingService:
         svc = cls(config, journal, session=session, start_ms=last, session_id=session_id, **kw)
         svc._check_continuity = last is not None
         if last is not None:
+            # A minute the live clock closed before the restart stays closed: its missing
+            # instruments were a gap the session passed, and a re-delivery of it is late. A
+            # minute without a recorded close may still have bars to process (or lost ones).
+            closed = session.closed_through_ms == last + MS_PER_MINUTE
             svc.clock = LiveClock(
                 [s.key for s in config.instruments],
                 settle_ms=svc.clock.settle_ms,
-                start_ms=last,
-                processed=done,
+                start_ms=last + MS_PER_MINUTE if closed else last,
+                processed=() if closed else done,
             )
             session.sim.clock = svc.clock
         return svc
@@ -679,9 +705,16 @@ class PaperTradingService:
         if not self._contiguous():
             return 0
         done = 0
-        for bar in self.clock.release(now_ms):
+        released = self.clock.release(now_ms)
+        for i, bar in enumerate(released):
+            # the clock releases whole minutes: the last bar of a minute here closes it
+            closes = i + 1 == len(released) or released[i + 1].open_time_ms != bar.open_time_ms
             step = partial(
-                self.session.step_bar, bar, observed=self._observed(bar), released_at_ms=now_ms
+                self.session.step_bar,
+                bar,
+                observed=self._observed(bar),
+                released_at_ms=now_ms,
+                minute_closed=closes,
             )
             if not self._process(step):
                 break
@@ -718,6 +751,7 @@ class PaperTradingService:
         out: dict[str, list[int]] = {}
         sim = self.session.sim
         closed = sim.last_key  # the session already advanced past every key up to here
+        through = self.session.closed_through_ms  # and the live clock closed every minute before
         keys = sorted(
             {k for book in sim.books.values() for k in book.exposed()},
             key=lambda k: (str(k[0]), k[1]),
@@ -728,13 +762,17 @@ class PaperTradingService:
             # A minute whose delivery key is not after the last processed key was passed while the
             # session was running (the instrument's bar never arrived: a recorded feed gap, which
             # the books and the risk engine already handled). It is not downtime and cannot be
-            # backfilled, since bars at or before `last_key` are never processed again. Only
-            # minutes after the journal's last key can be unobserved downtime.
+            # backfilled, since bars at or before `last_key` are never processed again. The same
+            # holds for a key after `last_key` in a minute the journal records as closed by the
+            # live clock (`minute_closed`): the clock released that minute without the bar. Only
+            # minutes after both can be unobserved downtime; without a recorded close (journals
+            # written before the mark) a key after `last_key` stays downtime, failing closed.
             gaps = [
                 m
                 for m in range(start, first_live_ms, MS_PER_MINUTE)
                 if m not in have.get((market, symbol), set())
                 and (closed is None or (m, str(market), symbol) > closed)
+                and (through is None or m >= through)
             ]
             if gaps:
                 out[f"{market}:{symbol}"] = gaps
@@ -743,7 +781,8 @@ class PaperTradingService:
     def resume_after_downtime(self, bars: Sequence[Bar], now_ms: int | None = None) -> int:
         """Resolve open positions over backfilled 1m bars of the downtime (SIMULATION §7).
 
-        Only bars after the last processed one are used, in clock order, all **unobserved**: no
+        Only bars after the last processed one, and outside any minute the journal records as
+        closed by the live clock, are used, in clock order, all **unobserved**: no
         signal is computed and no entry fills on them; WATCH/CONFIRMED signals whose validity
         passed become EXPIRED (downtime). Call before feeding live bars of the new session.
 
@@ -755,8 +794,16 @@ class PaperTradingService:
         return value is 0.
         """
         last = self.session.sim.last_key
+        through = self.session.closed_through_ms
+        # a bar of a minute the live clock closed is late, as it would be live: the session
+        # passed that minute without it
         todo = sorted(
-            (b for b in bars if last is None or order_key(b) > last),
+            (
+                b
+                for b in bars
+                if (last is None or order_key(b) > last)
+                and (through is None or b.open_time_ms >= through)
+            ),
             key=order_key,
         )
         first_live = self.clock.earliest_buffered()

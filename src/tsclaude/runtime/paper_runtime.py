@@ -24,11 +24,15 @@ own backfill, so it never reads a half-filled bar store. Updates arriving meanwh
 its subscription; any dropped update stops paper (`STOPPED_OVERFLOW`).
 
 Known limitations, deliberately kept: restore equivalence across a restart is **not** guaranteed,
-and not every divergence is visible. Seed 13073 (a bar after the journal's last key that never
-arrives) keeps the service in `AWAITING_BACKFILL`. Seed 465923499 (release-time dependence) lets the
-shadow book's fills differ from an uninterrupted run while paper shows `RUNNING` and labels values
-`SIMULATED`. A journal that cannot be restored shows `UNAVAILABLE`. The per-minute journal-close
-design is not implemented.
+and not every divergence is visible. An instrument the live clock released a minute without is a
+gap the session passed (the journal records the close, `minute_closed`), not downtime. A bar that
+is missing after the journal's last closed minute and that no backfill can supply keeps the service
+in `AWAITING_BACKFILL` until the operator records a new session; this includes a minute in which
+no instrument had a bar (no journal entry records its close), an unclosed last minute, and journals
+written before the close mark existed (seed 13073 behaves this way on them). Release time bounds
+execution, and a restart changes the release time of re-delivered bars, so fills in any book, the
+baseline included, can differ from an uninterrupted run while paper shows `RUNNING` and labels
+values `SIMULATED` (seed 465923499). A journal that cannot be restored shows `UNAVAILABLE`.
 
 Values are simulated (`Provenance.SIMULATED`); nothing here places orders anywhere.
 """
@@ -77,10 +81,12 @@ REQUEST_REJECTED_TYPE = "sim_request_rejected"
 
 LIMITATIONS = (
     "Paper trading is simulated (non-production); no order is ever sent to an exchange.",
-    "Restart equivalence is not guaranteed. A bar that never arrives after a restart keeps paper "
-    "AWAITING_BACKFILL (seed 13073); after a restart the shadow book can differ from an "
-    "uninterrupted run while paper shows RUNNING / SIMULATED (seed 465923499); a journal that "
-    "cannot be restored shows UNAVAILABLE. M3 acceptance is not claimed.",
+    "Restart equivalence is not guaranteed. A bar missing after the journal's last closed minute "
+    "that no backfill can supply keeps paper AWAITING_BACKFILL (also a minute with no bar at all, "
+    "and journals written before the minute-close mark: seed 13073); after a restart fills in any "
+    "book, the baseline included, can differ from an uninterrupted run while paper shows RUNNING "
+    "/ SIMULATED, because release time bounds execution (seed 465923499); a journal that cannot "
+    "be restored shows UNAVAILABLE. M3 acceptance is not claimed.",
     "Each monitoring start restores the active paper session again, also after a failure in the "
     "previous run; a new session is only ever created by the operator.",
     "Instrument filters come from configs/backtest.yaml and are unverified placeholders.",
