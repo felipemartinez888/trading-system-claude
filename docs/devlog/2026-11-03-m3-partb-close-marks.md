@@ -1,7 +1,12 @@
 # 2026-11-03: M3 Part B class 1, recorded minute close in the paper journal
 
-**Status:** implemented and uncommitted on `task/m3-partb`, base `f1d5079`. Not reviewed, not integrated, not
-accepted. Brief: [M3-PB](../tasks/M3-PB.md).
+**Status:** local checkpoint `0435116944032b95ab21456f8c669c3d8af357b4` on `task/m3-partb`, base `f1d5079`, not
+pushed and not merged. The independent re-review of M3-PB.1 on `0435116` gave PASS / PASS, 0 blocking, so the M3-PB.1
+implementation is accepted as a checkpoint. **Full Part B and the M3 gate are not accepted.** Brief:
+[M3-PB](../tasks/M3-PB.md).
+
+The sections below are in chronological order. Each describes the state when it was written: "uncommitted", "not
+reviewed" and "Not done" in the earlier sections were true at the time.
 
 ## Base
 - `feat/mvp-4-dashboard` at `f1d5079`, with no tracked changes. The branch was created in the main checkout, because
@@ -177,3 +182,47 @@ Both ran in fresh contexts on the brief and the diff only. Neither read this dev
   value before the run. `sim/live.py`, `sim/journal.py` and `sim/engine.py` were verified unchanged against the base.
 - From then on, mutants run only on a copy outside the repository. The cause of the write error is unknown and was not
   investigated (owner rule on hardware).
+
+## Checkpoint and re-review of M3-PB.1 (2026-11-03)
+- **Checkpoint:** `0435116944032b95ab21456f8c669c3d8af357b4`, `checkpoint(m3): preserve Part B class-1 remediation
+  pending acceptance`, parent `f1d5079`, 10 files. Local only, not pushed and not merged.
+- **Re-review:** owner-authorized. `reviewer` and `causality-auditor` ran in fresh, isolated contexts on
+  `git diff f1d5079..0435116`, read-only, with mutants only on copies of `src` outside the repository. Neither modified
+  a repository file.
+
+| Review | Verdict | Blocking | Non-blocking | Runs |
+|---|---|---:|---:|---|
+| `reviewer` | PASS | 0 | 4, plus 2 nits | `tests/unit/sim` 313 passed; property sim 8 passed, 1 failed (13073 / 124); paper integration 36 passed; ruff, format, mypy clean; 14 of 14 mutants caught |
+| `causality-auditor` | PASS | 0 | 4 | `tests/unit/sim` 313 passed; property sim 8 passed, 1 failed (13073 / 124); paper integration and API 52 + 25 passed; 18 of 19 mutants caught, 1 equivalent |
+
+- **Results:**
+  - N-1, N-2, N-4, N-7, F1 and the class 1 remediation were verified by both reviews.
+  - All eight checks passed in both reviews.
+  - The mutant counts differ from the M3-PB.1 figure above (8 of 12 by the new tests) because the reviewers used
+    their own mutant sets and test selections.
+- **F1 probe** (auditor, rerun by the Lead): the property construction with polls never before the crash, harness
+  unchanged.
+  - 13073 / 124: `result: equal`, RUNNING, the same bar sequence, the same inputs apart from release times. The harness
+    gives `ledgers differ after restore at batch 49`.
+  - 465923499 / 162: `result: equal`, RUNNING. The harness gives `ledgers differ after restore at batch 14`.
+  - 300-case sample: 297 equal under both timelines, 3 failing only under the harness timeline, none in
+    `AWAITING_BACKFILL`.
+- **Non-blocking findings, not fixed:** listed in the [brief](../tasks/M3-PB.md#re-review-of-m3-pb1-on-0435116).
+  - Limitation wording errs in the safe direction.
+  - The N-4 test slices by batch count.
+  - The property's failing example comes from the git-ignored `.hypothesis/` database, with no `@example`.
+  - The stale "uncommitted" texts are corrected by the documentation checkpoint that adds this section.
+
+### Acceptance
+| Scope | Status |
+|---|---|
+| M3-PB.1 implementation | Accepted as a checkpoint: PASS / PASS, 0 blocking |
+| Full Part B | **Not accepted** |
+| M3 gate | **Not met** |
+
+### Remaining limitations
+- The property harness re-drives the restored service before the crash instant (F1), so
+  `test_restore_after_any_journal_failure` fails on 13073 / 124. Changing it is an owner decision.
+- A minute released with no bar leaves no entry to mark, and fails closed (130741648 / 8).
+- Closes made by a backfill are not journaled (N-5 / N2): causal, but not equivalent after a later restart.
+- There is no CI or Linux run of this work. Pushing needs owner approval (D-07).

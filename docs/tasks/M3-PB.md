@@ -1,9 +1,13 @@
 # Task brief M3-PB: paper restart equivalence, Part B class 1
 
-- **Status:** implemented on `task/m3-partb` (base `f1d5079`), **uncommitted**. The independent reviews of 2026-11-03
-  gave CONDITIONAL PASS for the class 1 remediation, from both `reviewer` and `causality-auditor`. The M3-PB.1 follow-up
-  addresses their conditions and is not re-reviewed. Part B and M3 are **not accepted**. Evidence:
-  [devlog](../devlog/2026-11-03-m3-partb-close-marks.md).
+- **Status:** local checkpoint `0435116944032b95ab21456f8c669c3d8af357b4` on `task/m3-partb` (base `f1d5079`), not
+  pushed and not merged.
+  - The first independent reviews of 2026-11-03 gave CONDITIONAL PASS for the class 1 remediation, from both
+    `reviewer` and `causality-auditor`.
+  - The independent re-review of M3-PB.1 on `0435116` gave **PASS / PASS**, 0 blocking (see
+    [Re-review of M3-PB.1](#re-review-of-m3-pb1-on-0435116)). The M3-PB.1 implementation is accepted as a checkpoint.
+  - **Full Part B and the M3 gate are not accepted.**
+  - Evidence: [devlog](../devlog/2026-11-03-m3-partb-close-marks.md).
 - **Authority:** owner authorization of 2026-11-03 for Part B class 1, and for the follow-up M3-PB.1.
 - **Owner:** Lead (acting as Simulation & Risk builder). Reviewers: `reviewer` and `causality-auditor`, fresh context,
   brief and diff only.
@@ -85,7 +89,7 @@ open (see below).
 | Property unchanged and meaningful | Met: `tests/property/sim/test_paper_properties.py` and the harness are untouched |
 | Real downtime still blocks | Met: `test_real_downtime_after_a_closed_minute_still_needs_a_backfill`, `test_real_downtime_after_the_journal_still_needs_a_backfill`, `test_a_minute_without_a_recorded_close_still_waits_for_its_bar` |
 | Deterministic restart | Met for class 1; under the harness timeline, release-time dependence is still visible |
-| No look-ahead or reordering | Independent causality audit: no look-ahead, no reordering, the mark never feeds decisions |
+| No look-ahead or reordering | Independent causality audit, and its re-audit on `0435116`: no look-ahead, no reordering, the mark never feeds decisions |
 | Legacy behaviour tested | Met (above) |
 | Focused regressions and static checks | See the devlog |
 | No acceptance claimed by the builder | Met |
@@ -99,6 +103,48 @@ open (see below).
 | N-7: wrong comment | Corrected |
 | F1: harness timing | Documented here and in the two characterisation docstrings; the harness is unchanged |
 
+## Re-review of M3-PB.1 on `0435116`
+Owner-authorized, 2026-11-03. Two fresh, isolated contexts reviewed `git diff f1d5079..0435116`, read-only, with
+mutants run only on copies of `src` outside the repository.
+
+| Review | Verdict | Blocking | N-1 | N-2 | N-4 | N-7 | F1 | Class 1 kept | Mutants |
+|---|---|---:|---|---|---|---|---|---|---|
+| `reviewer` | PASS | 0 | verified | verified | verified | verified | verified | verified | 14 of 14 caught |
+| `causality-auditor` | PASS | 0 | verified | verified | verified | verified | verified | verified | 18 of 19 caught, 1 equivalent |
+
+- **All eight checks passed in both reviews:**
+  - the tests detect their defects;
+  - the assertions are intact;
+  - no look-ahead or reordering;
+  - legacy compatibility;
+  - fail closed;
+  - the limitation texts;
+  - the property failure is not shown as a pass;
+  - no mutation artifacts.
+- **The remaining property failure is the harness artifact.** The auditor's probe repeats the property construction
+  but never polls the restored service before the crash, without changing the harness:
+  - 13073 / 124 and 465923499 / 162 are equal to the uninterrupted run;
+  - in a sample of 300 cases, 297 are equal under both timelines, and the 3 others fail only under the harness timeline;
+  - the probe was rerun by the Lead with the same result.
+- **Non-blocking findings, not fixed** (no source or test change was authorized):
+  - `LIMITATIONS` and `configs/paper.yaml` overstate one case in the safe direction: an unclosed last minute blocks
+    only for an exposed instrument's missing bar or a whole skipped minute. They can also be read as if seed 13073
+    still blocked, which is true only for legacy journals, and they do not name closes made by a backfill;
+  - the N-4 test slices bar heads with a batch count, which is correct only while every batch in that scenario is a
+    bar batch;
+  - the property's failing example comes from the local Hypothesis database (`.hypothesis/`, git-ignored). There is
+    no `@example`, so on a clean checkout or in CI the property may pass by chance. The deterministic pin is
+    `test_seed_13073_still_differs_by_release_latency_only`;
+  - nits: the legacy test restores without `tracker` (the result does not depend on it); the restore-close mutant is
+    caught only by the two seed-13073 tests.
+- **Fixed by this documentation checkpoint:** the stale "uncommitted" status texts (reviewer NB-1, audit NF-1).
+
+| Scope | Status |
+|---|---|
+| M3-PB.1 implementation | Accepted as a checkpoint: PASS / PASS, 0 blocking |
+| Full Part B | **Not accepted**: the property fails under the current harness; the empty minute and closes made by a backfill are open; no CI |
+| M3 gate | **Not met** |
+
 ## Open decisions for the owner
 1. **Harness timing (F1).** Either poll the restored service never before the crash instant, which needs separate
    authorization, or keep the current harness and record 13073/124 as a harness artifact.
@@ -108,3 +154,7 @@ open (see below).
 4. **Closes made by a backfill** (`skip_to` after `resume_after_downtime`) are not journaled (reviewer N-5, audit N2):
    after a crash that follows a backfill, a late bar of an instrument the backfill did not include could be processed.
    That is causal, but not equivalent.
+5. **Cross-platform CI.** This work has no CI run and no Linux run. The pinned hashes are labelled as recorded on
+   Linux and need re-confirming there. Pushing needs owner approval (D-07).
+6. **Pinning the property examples.** If the harness change is approved, adding `@example(13073, 124)` and
+   `@example(465923499, 162)` to the property would make these cases independent of the local Hypothesis database.
