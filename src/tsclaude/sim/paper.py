@@ -52,6 +52,7 @@ from tsclaude.contracts.signals import EntryRuleKind, RunMode, Side, SignalRecor
 from tsclaude.contracts.timeutil import MS_PER_DAY, MS_PER_MINUTE
 from tsclaude.marketdata.bars import BarClosed
 from tsclaude.marketdata.models import MarketSnapshot
+from tsclaude.quality.clock import continuity_tolerance_ms, drift_allowance_ms
 from tsclaude.risk.config import RiskConfig
 from tsclaude.risk.engine import RiskEngine
 from tsclaude.risk.hook import EngineRiskHook, RecordedViews, ViewProvider, tracker_provider
@@ -570,25 +571,152 @@ def clock_uncertainty_ms(max_rtt_ms: int) -> int:
     offset (server - local) exceeds the sample's estimate (server - midpoint) by less than half its
     round trip plus 1 ms (the three readings are whole, floored milliseconds). The round's offset
     is the median of its samples' estimates, rounded (0.5 ms): it is bounded by half the largest
-    round trip of the round, not the median one. The local reading of the poll adds less than 1 ms.
-    In all, less than ``max_rtt_ms / 2 + 2.5``. It assumes the offset did not change between the
-    round and the poll (no drift or clock step while the round is younger than
-    `clock_offset_max_age_ms`)."""
+    round trip of the round, not the median one. The reading of the instant being bounded adds
+    less than 1 ms. In all, less than ``max_rtt_ms / 2 + 2.5``. Drift and clock discontinuities
+    after the round are not included: `observation_bound` adds them."""
     if max_rtt_ms < 0:
         raise ValueError("max_rtt_ms must be >= 0")
     return (max_rtt_ms + 6) // 2
 
 
-def observation_anchor_ms(local_now_ms: int, offset_ms: int, max_rtt_ms: int) -> int:
+def observation_anchor_ms(
+    local_now_ms: int, offset_ms: int, max_rtt_ms: int, *, allowance_ms: int = 0
+) -> int:
     """The first minute open observed by a service that starts observing at `local_now_ms`.
 
     L-02 for the paper service: a minute counts as observed only if it lies entirely inside the
     monitoring interval, which starts when the runtime polls in real time. Bar opens are exchange
-    time, so the start is converted with the measured offset and bounded above by its uncertainty;
-    the anchor is the first minute open at or after that bound. A partly observed minute never
-    counts; an anchor exactly at an open counts that minute."""
-    upper = local_now_ms + offset_ms + clock_uncertainty_ms(max_rtt_ms)
+    time, so the start is converted with the measured offset and bounded above by its uncertainty
+    plus `allowance_ms` (drift and wall-clock movement since the round: `observation_bound`; 0 for
+    an exact clock); the anchor is the first minute open at or after that bound. A partly observed
+    minute never counts; an anchor exactly at an open counts that minute."""
+    if allowance_ms < 0:
+        raise ValueError("allowance_ms must be >= 0")
+    upper = local_now_ms + offset_ms + clock_uncertainty_ms(max_rtt_ms) + allowance_ms
     return -(-upper // MS_PER_MINUTE) * MS_PER_MINUTE
+
+
+@dataclass(frozen=True, slots=True)
+class ClockEvidence:
+    """One clock round as a `MarketSnapshot` reports it (`clock_offset_ms`, `clock_max_rtt_ms`,
+    `clock_continuity`, all from that round), measured when the snapshot was taken."""
+
+    round_at_ms: int  # wall clock at the round's end
+    offset_ms: int
+    max_rtt_ms: int
+    min_rtt_ms: int
+    samples: int
+    round_span_ms: int  # monotonic, first send to round end
+    round_step_ms: int  # spread of wall - monotonic over the round's readings
+    elapsed_ms: int  # monotonic, round end to the snapshot
+    wall_elapsed_ms: int  # wall, round end to the snapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationVerdict:
+    """The anchor a clock round gives, or why it gives none (`code` is stable, `problem` reads)."""
+
+    anchor_ms: int | None
+    code: str | None = None
+    problem: str | None = None
+    details: dict[str, int] = field(default_factory=dict)
+
+
+def observation_bound(e: ClockEvidence, *, max_age_ms: int, skew_max_ms: int) -> ObservationVerdict:
+    """The observation anchor for a snapshot's clock round, or fail closed (P-1, D-19; F-1, F-3).
+
+    The bound, at the snapshot instant P (true time t is exchange time; W wall, M monotonic; every
+    reading floored; r = `CLOCK_DRIFT_PPM`):
+    - Assumed: each server stamp was taken while its request was in flight; during the round M
+      runs within r of exchange time; after it, at least one of M and W does (M may stop in a
+      suspend, W may step or be slewed, not both at once); one exchange clock for spot and USD-M.
+    - Round end R, in the monotonic frame (as `clock_uncertainty_ms` shows for the wall frame):
+      some sample j has `phi(stamp_j) < median(x_i - mid_i(M)) + max_rtt(M) / 2 + 1`, with
+      phi = t - M, and phi grows by at most `r / (1 - r)` per monotonic ms up to R.
+    - Wall and monotonic readings of the round differ by `d_k = w_k - m_k`, spread S
+      (`round_step_ms`): the monotonic median is at most the wall offset + 0.5 (rounding) + max d,
+      the monotonic round trips at most the wall ones + S, and `m_R = w_R - d_R`. So
+      `t(R) < w_R + offset + clock_uncertainty_ms(max_rtt) + 1.5 S + r / (1 - r) (span + 1)`.
+    - R to P: with E the larger of the two elapsed times, whichever clock ran within r gives
+      `t(P) - t(R) < (E + 1) / (1 - r)`. A backward wall step or a monotonic pause can only make
+      its own clock read less, and the other one is used.
+    - So `t(P) < w_R + E + offset + clock_uncertainty_ms(max_rtt) + 1 + ceil(1.5 S) +
+      drift_allowance_ms(span + E + 2)`.
+
+    No anchor when the evidence is inconsistent, a round trip is negative (the wall clock stepped
+    back during a sample), the wall clock moved against the monotonic one beyond
+    `continuity_tolerance_ms` during the round or since it (a step, a suspend, a fast slew), the
+    round is older than `max_age_ms` on either clock, or the offset is beyond `skew_max_ms`."""
+    if (
+        e.samples < 1
+        or e.min_rtt_ms > e.max_rtt_ms
+        or e.round_span_ms < 0
+        or e.round_step_ms < 0
+        or e.elapsed_ms < 0
+    ):
+        return ObservationVerdict(
+            None, "clock_evidence_inconsistent", "server clock evidence is inconsistent"
+        )
+    if e.min_rtt_ms < 0:
+        return ObservationVerdict(
+            None,
+            "clock_rtt_negative",
+            f"a server clock sample has a negative round trip ({e.min_rtt_ms} ms): "
+            "the wall clock stepped back during the round",
+        )
+    tolerance = continuity_tolerance_ms(e.round_span_ms)
+    if e.round_step_ms > tolerance:
+        return ObservationVerdict(
+            None,
+            "clock_step_in_round",
+            f"the wall clock moved {e.round_step_ms} ms against the monotonic clock during the "
+            f"server clock round (tolerance {tolerance} ms)",
+        )
+    if e.wall_elapsed_ms < 0:
+        return ObservationVerdict(
+            None,
+            "clock_round_future",
+            f"server clock round {e.wall_elapsed_ms} ms old (0..{max_age_ms})",
+        )
+    moved = e.wall_elapsed_ms - e.elapsed_ms
+    tolerance = continuity_tolerance_ms(e.elapsed_ms)
+    if abs(moved) > tolerance:
+        return ObservationVerdict(
+            None,
+            "clock_discontinuity",
+            f"the wall clock moved {moved} ms against the monotonic clock since the server clock "
+            f"round (tolerance {tolerance} ms): a step, a suspend or a fast slew",
+        )
+    age = max(e.elapsed_ms, e.wall_elapsed_ms)
+    if age > max_age_ms:
+        return ObservationVerdict(
+            None, "clock_round_stale", f"server clock round {age} ms old (0..{max_age_ms})"
+        )
+    if abs(e.offset_ms) > skew_max_ms:
+        return ObservationVerdict(
+            None,
+            "clock_offset_skew",
+            f"server clock offset {e.offset_ms} ms beyond {skew_max_ms} ms",
+        )
+    elapsed = max(e.elapsed_ms, e.wall_elapsed_ms)
+    drift = drift_allowance_ms(e.round_span_ms + elapsed + 2)
+    step = (3 * e.round_step_ms + 1) // 2
+    allowance = 1 + step + drift  # 1: the elapsed reading's resolution
+    anchor = observation_anchor_ms(
+        e.round_at_ms + elapsed, e.offset_ms, e.max_rtt_ms, allowance_ms=allowance
+    )
+    return ObservationVerdict(
+        anchor,
+        details={
+            "offset_ms": e.offset_ms,
+            "max_rtt_ms": e.max_rtt_ms,
+            "uncertainty_ms": clock_uncertainty_ms(e.max_rtt_ms),
+            "drift_ms": drift,
+            "step_ms": step,
+            "allowance_ms": allowance,
+            "round_age_ms": elapsed,
+        },
+    )
 
 
 # ---------------------------------------------------------------- the facade

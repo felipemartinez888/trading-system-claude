@@ -41,6 +41,7 @@ from tsclaude.marketdata.binance.ws import WsConnect, WsManager, plan_groups
 from tsclaude.marketdata.config import MarketDataConfig
 from tsclaude.marketdata.models import (
     BookTop,
+    ClockContinuity,
     ConnectionStatus,
     Funding,
     MarketSnapshot,
@@ -149,10 +150,14 @@ class MarketDataService:
         session_id: str | None = None,
         bars: LiveBarStore | None = None,
         rng: Callable[[float, float], float] | None = None,
+        monotonic: WallClock | None = None,
     ) -> None:
         self._cfg = config
         self._store = store
         self._clock = clock
+        #: read with the wall clock in each clock round (production: `MonotonicClock`); without
+        #: one the snapshot reports no clock continuity and paper never observes (P-1, F-1)
+        self._monotonic = monotonic
         self._transport = http_transport
         self._ws_connect = ws_connect
         self._session_id = session_id
@@ -275,6 +280,7 @@ class MarketDataService:
             self._emit,
             samples_per_round=q.clock.samples_per_round,
             threshold_ms=q.clock.skew_threshold_ms,
+            monotonic=self._monotonic,
         )
         await self._clock_monitor.sample_round()
         server_now = self._clock_monitor.server_now_ms()
@@ -613,6 +619,30 @@ class MarketDataService:
         prov = Provenance.PARTIAL if ok else Provenance.STALE
         return Sourced[PartialCandle](value=candle, provenance=prov, as_of_ms=k.event_time_ms)
 
+    def _clock_continuity(self, now: int) -> Sourced[ClockContinuity]:
+        """The last clock round's monotonic evidence, measured now (the offset's `as_of_ms`)."""
+        cm = self._clock_monitor
+        rnd = cm.last_round if cm is not None else None
+        if cm is None or rnd is None or cm.offset_ms is None:
+            return Sourced[ClockContinuity].unavailable("server clock not sampled")
+        mono_now = cm.monotonic_ms()
+        if (
+            mono_now is None
+            or rnd.mono_at_ms is None
+            or rnd.mono_span_ms is None
+            or rnd.step_ms is None
+        ):
+            return Sourced[ClockContinuity].unavailable("no monotonic clock readings")
+        value = ClockContinuity(
+            samples=rnd.samples,
+            min_rtt_ms=rnd.min_rtt_ms,
+            round_span_ms=rnd.mono_span_ms,
+            round_step_ms=rnd.step_ms,
+            elapsed_ms=mono_now - rnd.mono_at_ms,
+            wall_elapsed_ms=now - rnd.at_ms,
+        )
+        return Sourced[ClockContinuity](value=value, provenance=Provenance.LIVE, as_of_ms=rnd.at_ms)
+
     def snapshot(self) -> MarketSnapshot:
         now = self._clock.now_ms()
         streams: list[StreamStatus] = []
@@ -721,6 +751,7 @@ class MarketDataService:
             if cm is not None and cm.offset_ms is not None and cm.last_round is not None
             else Sourced[int].unavailable("server clock not sampled")
         )
+        continuity = self._clock_continuity(now)
         connections = [
             ConnectionStatus(
                 group=s.group,
@@ -741,6 +772,7 @@ class MarketDataService:
             running=self._running,
             clock_offset_ms=offset,
             clock_max_rtt_ms=max_rtt,
+            clock_continuity=continuity,
             rest_banned={str(m): r.banned for m, r in self._rest.items()},
             streams=streams,
             symbols=symbols,

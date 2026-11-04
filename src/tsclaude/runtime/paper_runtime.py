@@ -26,7 +26,9 @@ its subscription; any dropped update stops paper (`STOPPED_OVERFLOW`).
 Observation (P-1; L-02 as the owner clarified it for paper). The service is gated: a bar counts as
 observed only if it is a live WebSocket bar that opens at or after the observation anchor, the
 first minute open after the run's first poll in exchange time, bounded with the market-data clock
-round (`observation_anchor_ms`). Until a trustworthy round gives the anchor nothing is observed.
+round, the drift since it on the monotonic clock and the wall clock's movement against it
+(`observation_bound`). Until trustworthy clock evidence gives the anchor nothing is observed, and
+the reason is published (`observation`) and raised as a problem.
 Bars before it (the downtime backfill, minutes queued during the startup wait, the minute a crash
 interrupted, the partly observed first minute) are processed unobserved, as downtime is
 (SIMULATION §7): resting SL/TP resolve over them, no entry fills on them and no signal is computed.
@@ -73,13 +75,14 @@ from tsclaude.sim.clock import order_key
 from tsclaude.sim.engine import SimView
 from tsclaude.sim.live import DEFAULT_SETTLE_MS
 from tsclaude.sim.paper import (
+    ClockEvidence,
     Intent,
     LiveStrategy,
+    ObservationVerdict,
     PaperConfig,
     PaperTradingService,
     ServiceState,
-    clock_uncertainty_ms,
-    observation_anchor_ms,
+    observation_bound,
 )
 from tsclaude.store.eventstore import EventStore
 from tsclaude.strategies.live_adapter import ReferenceLiveStrategy
@@ -112,7 +115,10 @@ LIMITATIONS = (
     "time, bounded with the server-clock round); earlier minutes, the downtime and the minutes "
     "queued during the startup wait included, are processed unobserved (no entry fills or is "
     "created on them). Without a fresh server-clock round within the risk limits nothing is "
-    "observed.",
+    "observed. The bound assumes the local monotonic clock runs within 500 ppm of exchange time "
+    "and the exchange stamps server time while the request is in flight; a wall-clock step, "
+    "suspend or fast slew detected against the monotonic clock blocks observation until a new "
+    "round.",
     "strategy bracket_reference (if selected) is REFERENCE / NOT VALIDATED: a pipeline strategy, "
     "not claimed profitable, paper only; its signals are not research results. It needs about 7.8 "
     "days of unbroken 1m history per instrument before its first decision. It is built at the "
@@ -545,6 +551,8 @@ class PaperRuntime:
         self.observing_since_ms: int | None = None  # first poll of this run (Part B hook)
         #: the latest attempt to fix the observation anchor of this run (P-1)
         self.observation: dict[str, Any] | None = None
+        #: why the last attempt gave no anchor (a problem is raised only when it changes)
+        self._observation_code: str | None = None
         self.backfill: dict[str, Any] | None = None
         self.dropped_updates = 0
         self._task: asyncio.Task[None] | None = None
@@ -590,6 +598,7 @@ class PaperRuntime:
         self.service = None
         self.observing_since_ms = None
         self.observation = None
+        self._observation_code = None
         self.opened_at_ms = None
         self.backfill = None
         self.dropped_updates = 0
@@ -784,41 +793,77 @@ class PaperRuntime:
     ) -> None:
         """Fix the observation anchor at this poll (P-1, L-02), or fail closed until a later one.
 
-        The anchor is the first minute open after this poll in exchange time, bounded with the
-        market-data clock round (its offset and largest round trip: `observation_anchor_ms`). With
-        no trustworthy round (none, offset and round trip of different rounds, a round from the
-        local future or older than `clock_offset_max_age_ms`, an offset beyond
-        `clock_skew_max_ms`) no anchor is set: the service processes every bar unobserved (resting
-        exits resolve; no entry fills or is created) and the next poll tries again."""
-        risk = service.config.risk
-        info: dict[str, Any] = {"attempted_at_ms": now, "observing_from_ms": None, "problem": None}
+        The anchor is the first minute open after the exchange-time bound of the snapshot instant
+        (`observation_bound`: the clock round's offset, largest round trip, drift since the round
+        on the monotonic clock, and the wall clock's movement against it during the round). With no
+        trustworthy evidence (no snapshot; an offset, round trip or monotonic evidence that is not
+        LIVE or comes from another round; or a verdict without an anchor) no anchor is set: the
+        service processes every bar unobserved (resting exits resolve; no entry fills or is
+        created), the reason is published and raised as a problem when it changes, and the next
+        poll tries again."""
+        verdict = self._observation_verdict(service, snap)
+        info: dict[str, Any] = {
+            "state": "active" if verdict.anchor_ms is not None else "blocked",
+            "attempted_at_ms": now,
+            "observing_from_ms": verdict.anchor_ms,
+            "problem": verdict.problem,
+            "code": verdict.code,
+            **verdict.details,
+        }
         self.observation = info
+        if verdict.anchor_ms is None:
+            if verdict.code != self._observation_code:
+                self._problem("Paper observation blocked", verdict.problem or "unknown")
+            self._observation_code = verdict.code
+            return
+        self._observation_code = None
+        service.observe_from(verdict.anchor_ms)
+
+    def _observation_verdict(
+        self, service: PaperTradingService, snap: MarketSnapshot | None
+    ) -> ObservationVerdict:
         if snap is None:
-            info["problem"] = "no market-data snapshot"
-            return
-        off, rtt = snap.clock_offset_ms, snap.clock_max_rtt_ms
+            return ObservationVerdict(None, "no_snapshot", "no market-data snapshot")
+        off, rtt, cont = snap.clock_offset_ms, snap.clock_max_rtt_ms, snap.clock_continuity
         if off.provenance is not Provenance.LIVE or off.value is None or off.as_of_ms is None:
-            info["problem"] = "server clock offset unknown"
-            return
-        if rtt.value is None or rtt.as_of_ms != off.as_of_ms:
-            info["problem"] = "server clock round trip unknown"
-            return
-        age = now - off.as_of_ms
-        if age < 0 or age > risk.clock_offset_max_age_ms:
-            info["problem"] = f"server clock round {age} ms old (0..{risk.clock_offset_max_age_ms})"
-            return
-        if abs(off.value) > risk.clock_skew_max_ms:
-            info["problem"] = (
-                f"server clock offset {off.value} ms beyond {risk.clock_skew_max_ms} ms"
+            return ObservationVerdict(None, "clock_offset_unknown", "server clock offset unknown")
+        if rtt.provenance is not Provenance.LIVE or rtt.value is None:
+            return ObservationVerdict(None, "clock_rtt_unknown", "server clock round trip unknown")
+        if rtt.as_of_ms != off.as_of_ms:
+            return ObservationVerdict(
+                None,
+                "clock_rtt_other_round",
+                "server clock round trip comes from another round than the offset",
             )
-            return
-        anchor = observation_anchor_ms(now, off.value, rtt.value)
-        service.observe_from(anchor)
-        info.update(
-            observing_from_ms=anchor,
+        if cont.provenance is not Provenance.LIVE or cont.value is None:
+            return ObservationVerdict(
+                None,
+                "clock_continuity_unknown",
+                f"no monotonic clock evidence ({cont.reason or cont.provenance})",
+            )
+        if cont.as_of_ms != off.as_of_ms:
+            return ObservationVerdict(
+                None,
+                "clock_continuity_other_round",
+                "monotonic clock evidence comes from another round than the offset",
+            )
+        c = cont.value
+        evidence = ClockEvidence(
+            round_at_ms=off.as_of_ms,
             offset_ms=off.value,
             max_rtt_ms=rtt.value,
-            uncertainty_ms=clock_uncertainty_ms(rtt.value),
+            min_rtt_ms=c.min_rtt_ms,
+            samples=c.samples,
+            round_span_ms=c.round_span_ms,
+            round_step_ms=c.round_step_ms,
+            elapsed_ms=c.elapsed_ms,
+            wall_elapsed_ms=c.wall_elapsed_ms,
+        )
+        risk = service.config.risk
+        return observation_bound(
+            evidence,
+            max_age_ms=risk.clock_offset_max_age_ms,
+            skew_max_ms=risk.clock_skew_max_ms,
         )
 
     # ------------------------------------------------------------------ backfill

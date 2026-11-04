@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from tsclaude.marketdata.bars import BarClosed  # noqa: E402
 from tsclaude.marketdata.config import MarketDataConfig  # noqa: E402
 from tsclaude.marketdata.service import MarketDataService  # noqa: E402
 from tsclaude.marketdata.types import StreamKey, StreamKind  # noqa: E402
+from tsclaude.runtime.paper_runtime import PaperRuntime  # noqa: E402
 from tsclaude.store.eventstore import EventStore  # noqa: E402
 from tsclaude.store.livebars import LiveBarStore  # noqa: E402
 
@@ -487,3 +489,159 @@ def test_start_stop_start_on_the_same_service(tmp_path: Path) -> None:
         store.close()
 
     asyncio.run(asyncio.wait_for(scenario(), 30))
+
+
+class SteppableClock:
+    """A wall clock the OS may step back (ManualClock refuses to)."""
+
+    def __init__(self, now_ms: int) -> None:
+        self.now = now_ms
+
+    def now_ms(self) -> int:
+        return self.now
+
+
+RISK = SimpleNamespace(
+    config=SimpleNamespace(
+        risk=SimpleNamespace(clock_offset_max_age_ms=900_000, clock_skew_max_ms=1_000)
+    )
+)
+
+
+def test_the_clock_round_trip_published_is_the_last_rounds_true_maximum(tmp_path: Path) -> None:
+    """F-2 / F-3, through the production producer (ClockMonitor inside MarketDataService, the
+    snapshot fields, the runtime's evidence check): each round's server-time requests take a known
+    time on both clocks, so the published `clock_max_rtt_ms` must be that round's largest round
+    trip (not 0, not a running maximum over rounds), LIVE, from the same round as the offset and the
+    monotonic evidence, and it must reach the anchor's uncertainty. A wall clock stepped back during
+    a request gives a negative round trip: published as measured, it blocks observation (no
+    exception) until a later valid round."""
+
+    async def scenario() -> None:
+        wall = SteppableClock(T0 + 30_000)
+        mono = ManualClock(7_000_000)
+        delays: list[tuple[int, int]] = []  # (wall ms, monotonic ms) per time request
+        rest = _exchange(wall)  # type: ignore[arg-type]
+
+        def handler(request: Any) -> Any:
+            if request.url.path in ("/api/v3/time", "/fapi/v1/time"):
+                d_wall, d_mono = delays.pop(0) if delays else (0, 0)
+                wall.now += d_wall
+                mono.advance(d_mono)
+                return httpx.Response(200, json={"serverTime": wall.now + 7})
+            return rest(request)
+
+        svc = MarketDataService(
+            CONFIG,
+            store := EventStore(tmp_path / "state.db"),
+            wall,
+            http_transport=httpx.MockTransport(handler),
+            ws_connect=FakeExchange().connect,
+            session_id="S1",
+            monotonic=mono,
+        )
+
+        def verdict() -> Any:
+            snap = svc.snapshot()
+            return snap, PaperRuntime._observation_verdict(None, RISK, snap)  # type: ignore[arg-type]
+
+        delays[:] = [(10, 10), (70, 70), (30, 30)]  # the start round: 3 samples
+        await svc.start()
+        await svc.wait_backfill(5)
+        snap, v = verdict()
+        rtt, off, cont = snap.clock_max_rtt_ms, snap.clock_offset_ms, snap.clock_continuity
+        assert (rtt.value, rtt.provenance) == (70, Provenance.LIVE)
+        assert rtt.as_of_ms == off.as_of_ms == cont.as_of_ms == wall.now
+        assert cont.provenance is Provenance.LIVE
+        assert cont.value is not None
+        assert (cont.value.samples, cont.value.min_rtt_ms) == (3, 10)
+        assert (cont.value.round_span_ms, cont.value.round_step_ms) == (110, 0)
+        assert v.code is None
+        assert (v.details["max_rtt_ms"], v.details["uncertainty_ms"]) == (70, 38)
+
+        # a second round with smaller round trips: its own maximum, not the running one
+        delays[:] = [(5, 5), (25, 25), (15, 15)]
+        await svc._sample_clock()
+        snap, v = verdict()
+        assert snap.clock_max_rtt_ms.value == 25
+        assert snap.clock_max_rtt_ms.as_of_ms == snap.clock_offset_ms.as_of_ms == wall.now
+        assert snap.clock_continuity.value is not None
+        assert snap.clock_continuity.value.min_rtt_ms == 5
+        assert v.details["uncertainty_ms"] == 15
+
+        # time passes on both clocks: same round, measured elapsed, then too old
+        wall.now += 60_000
+        mono.advance(60_000)
+        snap, v = verdict()
+        assert snap.clock_continuity.value is not None
+        assert snap.clock_continuity.value.elapsed_ms == 60_000
+        assert snap.clock_continuity.value.wall_elapsed_ms == 60_000
+        assert v.code is None
+        wall.now += 840_001
+        mono.advance(840_001)
+        assert verdict()[1].code == "clock_round_stale"
+
+        # the OS steps the wall clock back 50 ms during one request: a negative round trip
+        delays[:] = [(10, 10), (-50, 10), (10, 10)]
+        await svc._sample_clock()
+        snap, v = verdict()
+        assert snap.clock_max_rtt_ms.value == 10
+        assert snap.clock_continuity.value is not None
+        assert snap.clock_continuity.value.min_rtt_ms == -50  # published as measured, not clamped
+        assert (v.anchor_ms, v.code) == (None, "clock_rtt_negative")
+        assert "negative round trip (-50 ms)" in str(v.problem)
+
+        # the next valid round restores the evidence
+        delays[:] = [(20, 20), (40, 40), (20, 20)]
+        await svc._sample_clock()
+        snap, v = verdict()
+        assert (snap.clock_max_rtt_ms.value, v.code) == (40, None)
+        assert v.anchor_ms is not None
+
+        await svc.stop()
+        svc.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+def test_without_a_monotonic_clock_there_is_no_continuity_evidence(tmp_path: Path) -> None:
+    """The offset and round trip are still published, but observation cannot be established."""
+
+    async def scenario() -> None:
+        clock = ManualClock(T0 + 30_000)
+        store = EventStore(tmp_path / "state.db")
+        svc = MarketDataService(
+            CONFIG,
+            store,
+            clock,
+            http_transport=httpx.MockTransport(_exchange(clock)),
+            ws_connect=FakeExchange().connect,
+            session_id="S1",
+        )
+        await svc.start()
+        await svc.wait_backfill(5)
+        snap = svc.snapshot()
+        assert snap.clock_max_rtt_ms.provenance is Provenance.LIVE
+        assert snap.clock_continuity.provenance is Provenance.UNAVAILABLE
+        assert snap.clock_continuity.reason == "no monotonic clock readings"
+        v = PaperRuntime._observation_verdict(None, RISK, snap)  # type: ignore[arg-type]
+        assert (v.anchor_ms, v.code) == (None, "clock_continuity_unknown")
+        await svc.stop()
+        svc.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+def test_the_production_service_factory_supplies_a_monotonic_clock(tmp_path: Path) -> None:
+    """F-1 wiring: without it every run would stay blocked on `clock_continuity_unknown`."""
+    from tsclaude.quality.clock import MonotonicClock
+    from tsclaude.runtime.supervisor import default_service_factory
+
+    store = EventStore(tmp_path / "state.db")
+    svc = default_service_factory()(store, ManualClock(T0))
+    assert isinstance(svc, MarketDataService)
+    assert isinstance(svc._monotonic, MonotonicClock)
+    svc.close()
+    store.close()

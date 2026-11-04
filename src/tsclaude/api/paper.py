@@ -97,6 +97,7 @@ def paper_router(
                     "session_id",
                     "next_session_id",
                     "observing_since_ms",
+                    "observation",
                     "opened_at_ms",
                     "values_as_of_ms",
                     "live_bar_since_start",

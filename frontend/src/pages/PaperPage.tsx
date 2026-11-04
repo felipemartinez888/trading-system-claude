@@ -17,6 +17,7 @@ import {
 } from "../api/hooks";
 import type {
   PaperBooksValue,
+  PaperObservation,
   PaperStatusValue,
   ReferenceSignal,
   Sourced,
@@ -100,6 +101,19 @@ function Row({ k, v, className }: { k: string; v: string; className?: string | u
   );
 }
 
+// When this run's bars start to count as observed, or why they do not yet (P-1).
+function observationText(o: PaperObservation | null | undefined): string {
+  if (o === undefined) return NOT_AVAILABLE;
+  if (o === null) return "not established (no market-data poll in this run yet)";
+  if (o.state === "blocked") return `blocked — ${o.problem ?? o.code ?? "unknown reason"}`;
+  const parts = [
+    o.offset_ms !== undefined ? `offset ${o.offset_ms} ms` : null,
+    o.max_rtt_ms !== undefined ? `max round trip ${o.max_rtt_ms} ms` : null,
+    o.allowance_ms !== undefined ? `allowance ${o.allowance_ms} ms` : null,
+  ].filter((p) => p !== null);
+  return `from ${formatMs(o.observing_from_ms)}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+}
+
 function RuntimeHeader({ sourced }: { sourced: Sourced<PaperStatusValue> }) {
   const status = sourced.value!;
   const prev = status.previous_run;
@@ -125,6 +139,11 @@ function RuntimeHeader({ sourced }: { sourced: Sourced<PaperStatusValue> }) {
         <Row k="Session" v={show(status.session_id)} />
         <Row k="Next session (recorded)" v={show(status.next_session_id)} />
         <Row k="Strategy" v={show(status.strategy)} />
+        <Row
+          k="Observation"
+          v={observationText(status.observation)}
+          className={status.observation?.state === "blocked" ? "bad" : undefined}
+        />
         <Row k="Opened at" v={formatMs(status.opened_at_ms)} />
         <Row k="Last processed bar close" v={formatMs(status.values_as_of_ms)} />
         <Row k="Live bar since this start" v={show(status.live_bar_since_start)} />
@@ -451,13 +470,36 @@ function Reference({
   signals: Sourced<ReferenceSignal[]> | null | undefined;
 }) {
   const ref = status.reference;
-  if (ref === null) {
+  if (ref === null && status.strategy === "none") {
     return (
       <section data-testid="paper-reference-none">
         <h2>Strategy</h2>
         <p className="muted">
           No live strategy is selected (<code>strategy: {status.strategy}</code>); the benchmark book
           runs alone.
+        </p>
+      </section>
+    );
+  }
+  if (ref === null) {
+    // selected, but built only at the first observed minute (P-1): say what it is waiting for
+    const o = status.observation;
+    const blocked = o?.state === "blocked";
+    let detail: string;
+    if (status.state !== "RUNNING") {
+      detail = `paper is ${status.state}; the strategy is built at the first observed minute of a run.`;
+    } else if (o === undefined || o === null) {
+      detail = "waiting for the first market-data poll of this run.";
+    } else if (blocked) {
+      detail = `observation is blocked: ${o.problem ?? o.code ?? "unknown reason"}. Bars are processed unobserved until trustworthy clock evidence returns.`;
+    } else {
+      detail = `waiting for its first observed minute (from ${formatMs(o.observing_from_ms)}).`;
+    }
+    return (
+      <section data-testid="paper-reference-deferred">
+        <h2>Strategy</h2>
+        <p className={blocked ? "bad" : "muted"}>
+          <code>{status.strategy}</code> is selected and not started yet: {detail}
         </p>
       </section>
     );

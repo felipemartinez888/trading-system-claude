@@ -104,10 +104,14 @@ def default_service_factory(directory: Path | None = None) -> ServiceFactory:
     def factory(store: EventStore, clock: WallClock) -> MarketDataLike:
         from tsclaude.marketdata.config import load_config
         from tsclaude.marketdata.service import MarketDataService
+        from tsclaude.quality.clock import MonotonicClock
 
         base = directory if directory is not None else config_dir()
         config = load_config(base / "universe.yaml", base / "data_quality.yaml")
-        service: MarketDataLike = MarketDataService(config, store, clock)
+        # the monotonic clock lets paper bound exchange time across wall-clock steps (P-1, F-1)
+        service: MarketDataLike = MarketDataService(
+            config, store, clock, monotonic=MonotonicClock()
+        )
         return service
 
     return factory

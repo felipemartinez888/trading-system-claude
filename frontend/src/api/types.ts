@@ -407,6 +407,21 @@ export interface PaperAuditLog {
   repairable_line: number | null;
 }
 
+// The observation anchor of this run (P-1): the first minute that counts as observed. "blocked"
+// while the clock evidence is not trustworthy (code/problem say why); "active" once it is set.
+export interface PaperObservation {
+  state: "active" | "blocked";
+  attempted_at_ms: number;
+  observing_from_ms: number | null;
+  code: string | null;
+  problem: string | null;
+  offset_ms?: number;
+  max_rtt_ms?: number;
+  uncertainty_ms?: number;
+  allowance_ms?: number;
+  round_age_ms?: number;
+}
+
 export interface PaperStatusValue {
   state: string;
   reason: string | null;
@@ -416,6 +431,8 @@ export interface PaperStatusValue {
   session_id: string | null;
   next_session_id: string | null;
   observing_since_ms: number | null;
+  // absent from backends before the P-1 hardening
+  observation?: PaperObservation | null;
   opened_at_ms: number | null;
   values_as_of_ms: number | null;
   live_bar_since_start: boolean;

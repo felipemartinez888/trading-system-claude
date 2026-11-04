@@ -90,6 +90,25 @@ class SymbolSnapshot(BaseModel):
     exchange_status: Sourced[str]
 
 
+class ClockContinuity(BaseModel):
+    """Monotonic-clock evidence about the clock round behind `clock_offset_ms` (P-1 hardening,
+    F-1): enough for a consumer to bound exchange time now without trusting the wall clock, and to
+    detect that the wall clock stepped, was suspended or slewed against it."""
+
+    model_config = _FROZEN
+
+    samples: int
+    #: the round's smallest round trip on the wall clock (negative: the wall clock stepped back)
+    min_rtt_ms: int
+    #: monotonic time from the round's first send to its end
+    round_span_ms: int
+    #: spread of `wall - monotonic` over the round's readings (0 or 1 for continuous clocks)
+    round_step_ms: int
+    #: monotonic and wall time from the round's end to this snapshot
+    elapsed_ms: int
+    wall_elapsed_ms: int
+
+
 class ConnectionStatus(BaseModel):
     model_config = _FROZEN
 
@@ -114,6 +133,10 @@ class MarketSnapshot(BaseModel):
     #: the largest round trip of the clock round behind `clock_offset_ms` (same `as_of_ms`): it
     #: bounds that offset's error (the paper runtime's observation anchor, P-1)
     clock_max_rtt_ms: Sourced[int] = Sourced[int].unavailable("not reported")
+    #: the same round's monotonic evidence (same `as_of_ms`), measured when the snapshot was taken
+    clock_continuity: Sourced[ClockContinuity] = Sourced[ClockContinuity].unavailable(
+        "not reported"
+    )
     rest_banned: dict[str, bool]
     streams: list[StreamStatus]
     symbols: list[SymbolSnapshot]

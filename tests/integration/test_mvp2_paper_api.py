@@ -82,6 +82,54 @@ def _new(client: TestClient, note: str = "clean start", rid: str = "req-1000", *
     )
 
 
+def test_the_status_shows_why_paper_is_not_observing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N-2: while the clock evidence is not trustworthy the status says paper is RUNNING but its
+    observation is blocked, and why; once valid evidence arrives it shows the effective anchor."""
+    from m1t2_fakes import FakeMarketData
+
+    from tsclaude.contracts.provenance import Sourced
+    from tsclaude.marketdata.models import ClockContinuity
+
+    real = FakeMarketData.snapshot
+    broken = {"on": True}
+
+    def snapshot(self: FakeMarketData) -> Any:
+        snap = real(self)
+        if not broken["on"]:
+            return snap
+        missing = Sourced[ClockContinuity].unavailable("no monotonic clock readings")
+        return snap.model_copy(update={"clock_continuity": missing})
+
+    monkeypatch.setattr(FakeMarketData, "snapshot", snapshot)
+
+    def observation(c: TestClient, state: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            value = c.get("/api/paper/status").json()["status"]["value"]
+            got = value["observation"]
+            if got is not None and got["state"] == state:
+                return value
+            time.sleep(0.02)
+        raise AssertionError(f"observation never became {state}: {got}")
+
+    with _app(tmp_path) as c:
+        assert c.get("/api/paper/status").json()["status"]["value"]["observation"] is None
+        assert c.post("/api/monitoring/start", headers=AUTH).status_code == 200
+        value = observation(c, "blocked")
+        assert value["state"] == "RUNNING"
+        got = value["observation"]
+        assert got["code"] == "clock_continuity_unknown"
+        assert "no monotonic clock evidence (no monotonic clock readings)" in got["problem"]
+        assert got["observing_from_ms"] is None
+        broken["on"] = False
+        got = observation(c, "active")["observation"]
+        assert got["observing_from_ms"] == T0 + 60_000  # the fake's round: T0 + 3 + 23 + 2 ms
+        assert got["problem"] is None
+        assert {"offset_ms", "max_rtt_ms", "uncertainty_ms", "allowance_ms"} <= set(got)
+
+
 def test_p7_status_and_values_are_labelled(client: TestClient) -> None:
     status = client.get("/api/paper/status").json()["status"]
     assert status["provenance"] == "SYSTEM"

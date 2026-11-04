@@ -3,7 +3,8 @@
 **Status:** implemented on `task/m3-partb` on top of `e87fe59`. The independent review gave **CONDITIONAL PASS /
 CONDITIONAL PASS** (`reviewer`, `causality-auditor`, 0 blocking; [below](#independent-review-2026-11-03)), and the
 implementation is committed as a local checkpoint pending hardening (not pushed, not merged). **P-1 is not
-unconditionally accepted**: F-1, F-2, F-3, N-1 and N-2 are open. The delayed-restart property, full Part B and the M3
+unconditionally accepted**: F-1, F-2, F-3, N-1 and N-2 were open at the checkpoint; their hardening is a local
+checkpoint with independent review CONDITIONAL PASS / CONDITIONAL PASS ([hardening devlog](2026-11-03-m3-p1-hardening.md)). The delayed-restart property, full Part B and the M3
 gate are not accepted. Brief:
 [M3-PB](../tasks/M3-PB.md#p-1-implementation). Owner decisions: D-19 (L-02 clarification), D-20 (harness rule).
 

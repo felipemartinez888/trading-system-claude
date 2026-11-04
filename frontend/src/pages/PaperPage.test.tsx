@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -215,6 +215,62 @@ describe("Paper page", () => {
     expect(limits).toHaveTextContent("Restart equivalence is not guaranteed");
     expect(screen.getByTestId("paper-mvp-note")).toHaveTextContent("not evidence of M1–M4 acceptance");
     expect(screen.getByTestId("paper-reference-none")).toBeInTheDocument();
+  });
+
+  it("says why a selected strategy has not started instead of 'no strategy selected' (N-1/N-2)", async () => {
+    const cases: [Partial<PaperStatusValue>, RegExp, RegExp][] = [
+      [{ observation: null }, /waiting for the first market-data poll/, /not established/],
+      [
+        {
+          observation: {
+            state: "blocked",
+            attempted_at_ms: 1_760_000_001_500,
+            observing_from_ms: null,
+            code: "clock_discontinuity",
+            problem: "the wall clock moved -300 ms against the monotonic clock since the server clock round",
+          },
+        },
+        /observation is blocked: the wall clock moved -300 ms/,
+        /blocked — the wall clock moved -300 ms/,
+      ],
+      [
+        {
+          observation: {
+            state: "active",
+            attempted_at_ms: 1_760_000_001_500,
+            observing_from_ms: 1_760_000_040_000,
+            code: null,
+            problem: null,
+            offset_ms: 3,
+            max_rtt_ms: 40,
+            uncertainty_ms: 23,
+            allowance_ms: 2,
+          },
+        },
+        /waiting for its first observed minute \(from 2025-10-09/,
+        /from 2025-10-09.*offset 3 ms, max round trip 40 ms, allowance 2 ms/,
+      ],
+      [{ state: "AWAITING_BACKFILL", observation: null }, /paper is AWAITING_BACKFILL/, /not established/],
+    ];
+    for (const [overrides, card, row] of cases) {
+      renderWith({
+        status: { generated_at: "x", status: system(statusValue({ reference: null, ...overrides })), reference_signals: null },
+      });
+      const deferred = await screen.findByTestId("paper-reference-deferred");
+      expect(deferred).toHaveTextContent("bracket_reference is selected and not started yet");
+      expect(deferred).toHaveTextContent(card);
+      expect(screen.queryByTestId("paper-reference-none")).toBeNull();
+      expect(screen.queryByText(/No live strategy is selected/)).toBeNull();
+      expect(screen.getByTestId("paper-runtime")).toHaveTextContent(row);
+      cleanup();
+    }
+  });
+
+  it("still renders the deferred strategy for a backend that does not report the observation", async () => {
+    const { observation: _, ...old } = statusValue({ reference: null });
+    renderWith({ status: { generated_at: "x", status: system(old as PaperStatusValue), reference_signals: null } });
+    const deferred = await screen.findByTestId("paper-reference-deferred");
+    expect(deferred).toHaveTextContent("waiting for the first market-data poll");
   });
 
   it("labels books, trades, rejections and the reference strategy honestly", async () => {

@@ -19,7 +19,11 @@
   - Production limitation **P-1** (an entry can fill in a minute the downtime overlaps) was confirmed. The owner
     approved D-19 and D-20 on 2026-11-03. The production fix is implemented, and its independent review gave
     **CONDITIONAL PASS / CONDITIONAL PASS** (0 blocking). It is committed as a local checkpoint pending hardening (not
-    pushed, not merged); F-1, F-2, F-3, N-1 and N-2 are open (see [P-1 implementation](#p-1-implementation)).
+    pushed, not merged). The P-1 hardening (F-1, F-2, F-3, N-1, N-2) is a local checkpoint; its independent review gave
+    **CONDITIONAL PASS / CONDITIONAL PASS** (0 blocking): F-2, F-3, N-1, N-2 closed, F-1 conditionally closed; P-1
+    acceptance is conditional on NB-1 (same-clock assumption, sequential step + suspend counterexample) and R-1/NB-2
+    (producer continuity tests) ([hardening devlog](../devlog/2026-11-03-m3-p1-hardening.md#independent-review-2026-11-03);
+    see also [P-1 implementation](#p-1-implementation)).
   - **Full Part B and the M3 gate are not accepted.**
   - Evidence: [devlog](../devlog/2026-11-03-m3-partb-close-marks.md), [M3-PB.2
     devlog](../devlog/2026-11-03-m3-pb2-restart-timeline-harness.md).

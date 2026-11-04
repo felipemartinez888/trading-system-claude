@@ -18,6 +18,7 @@ from tsclaude.contracts.timeutil import MS_PER_MINUTE, WallClock
 from tsclaude.marketdata.bars import BarClosed
 from tsclaude.marketdata.models import (
     BookTop,
+    ClockContinuity,
     ConnectionStatus,
     Funding,
     MarketSnapshot,
@@ -217,6 +218,18 @@ class FakeMarketData:
             running=self._running,
             clock_offset_ms=Sourced[int](value=3, provenance=Provenance.LIVE, as_of_ms=now),
             clock_max_rtt_ms=Sourced[int](value=40, provenance=Provenance.LIVE, as_of_ms=now),
+            clock_continuity=Sourced[ClockContinuity](
+                value=ClockContinuity(
+                    samples=5,
+                    min_rtt_ms=10,
+                    round_span_ms=120,
+                    round_step_ms=0,
+                    elapsed_ms=0,
+                    wall_elapsed_ms=0,
+                ),
+                provenance=Provenance.LIVE,
+                as_of_ms=now,
+            ),
             rest_banned={"spot": False, "usdm": False},
             streams=streams,
             symbols=symbols,

@@ -1,10 +1,11 @@
 """P-1: the paper runtime's observation anchor and the deferred reference warm-up (fake market
 data, synthetic bars, no network).
 
-The runtime fixes the anchor at its first poll from the market-data clock round (offset and largest
-round trip) and fails closed while no trustworthy round exists; bars opening before the anchor are
-processed unobserved. `bracket_reference` is built at the first observed bar and warmed up through
-the store, so the unobserved minutes of a start do not break its history.
+The runtime fixes the anchor at its first poll from the market-data clock round (offset, largest
+round trip, and the round's monotonic evidence: drift since the round, wall-clock movement against
+the monotonic clock) and fails closed while no trustworthy round exists; bars opening before the
+anchor are processed unobserved. `bracket_reference` is built at the first observed bar and warmed
+up through the store, so the unobserved minutes of a start do not break its history.
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ from tsclaude.contracts.provenance import Provenance, Sourced
 from tsclaude.contracts.signals import SignalStatus
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, ManualClock
 from tsclaude.marketdata.bars import BarClosed
-from tsclaude.marketdata.models import MarketSnapshot
+from tsclaude.marketdata.models import ClockContinuity, MarketSnapshot
+from tsclaude.quality.clock import drift_allowance_ms
 from tsclaude.research.source import StrategySource
 from tsclaude.runtime.paper_runtime import DeferredReference
 from tsclaude.sim.engine import SimView
@@ -73,12 +75,18 @@ def test_the_runtime_observes_from_the_first_whole_minute_after_its_first_poll(
         await rig.idle(T0 + 20_000)  # the first poll, 20 s into minute 0 (mid-candle)
         observation = rig.runtime.observation
         assert observation == {
+            "state": "active",
             "attempted_at_ms": T0 + 20_000,
             "observing_from_ms": T0 + M,
             "problem": None,
+            "code": None,
             "offset_ms": 3,  # the fake's clock round
             "max_rtt_ms": 40,
             "uncertainty_ms": 23,
+            "drift_ms": 1,  # 500 ppm of the round's 120 ms span (+2 ms), rounded up
+            "step_ms": 0,
+            "allowance_ms": 2,  # + 1 ms for the elapsed reading
+            "round_age_ms": 0,
         }
         service = rig.runtime.service
         assert service is not None
@@ -139,33 +147,107 @@ def _live(value: int, as_of: int) -> Sourced[int]:
     return Sourced[int](value=value, provenance=Provenance.LIVE, as_of_ms=as_of)
 
 
+def _continuity(
+    as_of: int,
+    *,
+    elapsed: int = 0,
+    wall_elapsed: int | None = None,
+    min_rtt: int = 10,
+    span: int = 120,
+    step: int = 0,
+    provenance: Provenance = Provenance.LIVE,
+) -> Sourced[ClockContinuity]:
+    value = ClockContinuity(
+        samples=5,
+        min_rtt_ms=min_rtt,
+        round_span_ms=span,
+        round_step_ms=step,
+        elapsed_ms=elapsed,
+        wall_elapsed_ms=elapsed if wall_elapsed is None else wall_elapsed,
+    )
+    return Sourced[ClockContinuity](value=value, provenance=provenance, as_of_ms=as_of)
+
+
+def _round(offset: int, rtt: int, as_of: int, **continuity: Any) -> dict[str, Any]:
+    """The three clock fields of one round, as the market-data snapshot carries them."""
+    return {
+        "clock_offset_ms": _live(offset, as_of),
+        "clock_max_rtt_ms": _live(rtt, as_of),
+        "clock_continuity": _continuity(as_of, **continuity),
+    }
+
+
 NOW = T0 + 20_000
+DEMO_RTT = Sourced[int](value=0, provenance=Provenance.DEMO, as_of_ms=NOW)
 
 
 @pytest.mark.parametrize(
-    ("update", "problem"),
+    ("update", "code", "problem"),
     [
-        (None, "no market-data snapshot"),
-        ({"clock_offset_ms": Sourced[int].unavailable("not sampled")}, "offset unknown"),
-        ({"clock_max_rtt_ms": Sourced[int].unavailable("not reported")}, "round trip unknown"),
-        ({"clock_max_rtt_ms": _live(40, NOW - 1)}, "round trip unknown"),  # another round
+        (None, "no_snapshot", "no market-data snapshot"),
         (
-            {
-                "clock_offset_ms": _live(3, NOW - 900_001),
-                "clock_max_rtt_ms": _live(40, NOW - 900_001),
-            },
-            "900001 ms old",
+            {"clock_offset_ms": Sourced[int].unavailable("not sampled")},
+            "clock_offset_unknown",
+            "offset unknown",
         ),
         (
-            {"clock_offset_ms": _live(3, NOW + 1), "clock_max_rtt_ms": _live(40, NOW + 1)},
+            {"clock_max_rtt_ms": Sourced[int].unavailable("not reported")},
+            "clock_rtt_unknown",
+            "round trip unknown",
+        ),
+        ({"clock_max_rtt_ms": DEMO_RTT}, "clock_rtt_unknown", "round trip unknown"),  # F-3
+        (
+            {"clock_max_rtt_ms": _live(40, NOW - 1)},
+            "clock_rtt_other_round",
+            "round trip comes from another round",
+        ),
+        (
+            {"clock_continuity": Sourced[ClockContinuity].unavailable("no monotonic clock")},
+            "clock_continuity_unknown",
+            "no monotonic clock evidence (no monotonic clock)",
+        ),
+        (
+            {"clock_continuity": _continuity(NOW, provenance=Provenance.DEMO)},
+            "clock_continuity_unknown",
+            "no monotonic clock evidence",
+        ),
+        (
+            {"clock_continuity": _continuity(NOW - 1)},
+            "clock_continuity_other_round",
+            "monotonic clock evidence comes from another round",
+        ),
+        (_round(3, 40, NOW - 900_001, elapsed=900_001), "clock_round_stale", "900001 ms old"),
+        (
+            _round(3, 40, NOW + 1, elapsed=0, wall_elapsed=-1),
+            "clock_round_future",
             "-1 ms old",
         ),  # a round from the local future: the local clock stepped back
-        ({"clock_offset_ms": _live(1_001, NOW)}, "beyond 1000 ms"),
-        ({"clock_offset_ms": _live(-1_001, NOW)}, "beyond 1000 ms"),
+        ({"clock_offset_ms": _live(1_001, NOW)}, "clock_offset_skew", "beyond 1000 ms"),
+        ({"clock_offset_ms": _live(-1_001, NOW)}, "clock_offset_skew", "beyond 1000 ms"),
+        # F-3: every sample's round trip negative, or only some of them
+        (_round(3, -1, NOW, min_rtt=-5), "clock_rtt_negative", "negative round trip (-5 ms)"),
+        (_round(3, 40, NOW, min_rtt=-1), "clock_rtt_negative", "negative round trip (-1 ms)"),
+        (_round(3, 40, NOW, min_rtt=41), "clock_evidence_inconsistent", "inconsistent"),
+        # F-1: the wall clock stepped during the round, or since it (back; forward or a suspend)
+        (
+            _round(3, 40, NOW, step=5),
+            "clock_step_in_round",
+            "moved 5 ms against the monotonic clock during the server clock round",
+        ),
+        (
+            _round(3, 40, NOW - 1_000, elapsed=1_300, wall_elapsed=1_000),
+            "clock_discontinuity",
+            "moved -300 ms against the monotonic clock since",
+        ),
+        (
+            _round(3, 40, NOW - 60_000, elapsed=1_000, wall_elapsed=60_000),
+            "clock_discontinuity",
+            "moved 59000 ms",
+        ),
     ],
 )
 def test_no_anchor_without_a_trustworthy_clock_round(
-    tmp_path: Path, update: dict[str, Any] | None, problem: str
+    tmp_path: Path, update: dict[str, Any] | None, code: str, problem: str
 ) -> None:
     rig = Rig(tmp_path)
     service = PaperTradingService(paper_config(), MemoryJournal(), observation_gated=True)
@@ -174,7 +256,9 @@ def test_no_anchor_without_a_trustworthy_clock_round(
     assert service.observing_from_ms is None
     observation = rig.runtime.observation
     assert observation is not None
+    assert observation["state"] == "blocked"
     assert observation["observing_from_ms"] is None
+    assert observation["code"] == code
     assert problem in observation["problem"]
 
 
@@ -192,6 +276,10 @@ def test_no_anchor_without_a_trustworthy_clock_round(
         # 23 ms: the minute may have opened before the poll, so it does not count
         (0, 0, T0 + M - 10, T0 + 2 * M),
         (0, 0, T0 + M - 30, T0 + M),  # far enough before the open
+        # F-1: the same poll 300 s after its round: up to 151 ms of drift since the round
+        (0, 300_000, T0 + M - 30, T0 + 2 * M),
+        (0, 300_000, T0 + M - 175, T0 + M),  # 23 + 1 + 151: the bound exactly at the open
+        (0, 300_000, T0 + M - 174, T0 + 2 * M),
     ],
 )
 def test_the_anchor_converts_the_poll_to_exchange_time_with_its_uncertainty(
@@ -200,12 +288,11 @@ def test_the_anchor_converts_the_poll_to_exchange_time_with_its_uncertainty(
     rig = Rig(tmp_path)
     service = PaperTradingService(paper_config(), MemoryJournal(), observation_gated=True)
     as_of = local - age
-    snap = _snapshot(
-        tmp_path, local, clock_offset_ms=_live(offset, as_of), clock_max_rtt_ms=_live(40, as_of)
-    )
+    snap = _snapshot(tmp_path, local, **_round(offset, 40, as_of, elapsed=age))
     rig.runtime._establish_observation(service, snap, local)
     assert service.observing_from_ms == expected
-    assert expected == observation_anchor_ms(local, offset, 40)
+    allowance = 1 + drift_allowance_ms(120 + age + 2)
+    assert expected == observation_anchor_ms(local, offset, 40, allowance_ms=allowance)
 
 
 def test_a_stale_clock_blocks_observation_until_a_fresh_round_arrives(tmp_path: Path) -> None:
@@ -228,9 +315,7 @@ def test_a_stale_clock_blocks_observation_until_a_fresh_round_arrives(tmp_path: 
             if fresh["ok"]:
                 return snap
             old = snap.as_of_ms - 900_001
-            return snap.model_copy(
-                update={"clock_offset_ms": _live(3, old), "clock_max_rtt_ms": _live(40, old)}
-            )
+            return snap.model_copy(update=_round(3, 40, old, elapsed=900_001))
 
         md.snapshot = snapshot  # type: ignore[method-assign]
         await rig.idle(T0 + 20_000)
@@ -258,6 +343,73 @@ def test_a_stale_clock_blocks_observation_until_a_fresh_round_arrives(tmp_path: 
             if e["type"] in ("sim_order_submitted", "sim_order_filled")
             and e["payload"].get("bar_open_ms", e["ts_ms"]) < T0 + 4 * M
         ]  # the benchmark buys only at the first observed bar
+        await rig.supervisor.close()
+
+    run(scenario())
+
+
+def test_invalid_clock_evidence_blocks_observation_without_stopping_paper(tmp_path: Path) -> None:
+    """F-3 (and N-2): rounds whose round trips are all negative, partly negative, or not LIVE are
+    invalid clock evidence. Paper keeps running (never CONSUMER_DIED), processes every bar
+    unobserved, publishes why and raises one problem per change of reason; the first valid round
+    then gives the anchor."""
+
+    async def scenario() -> None:
+        rig = Rig(tmp_path)
+        recorder = Recorder()
+        rig.runtime._strategy_factory = lambda: recorder
+        phase = {"n": 0}
+        rig.clock.set(T0 + 20_000)
+        await rig.supervisor.start("S1")
+        md = rig.md
+        real = md.snapshot
+
+        def snapshot() -> MarketSnapshot:
+            snap = real()
+            at = snap.as_of_ms
+            bad: list[dict[str, Any]] = [
+                _round(3, -1, at, min_rtt=-5),  # every sample's round trip negative
+                _round(3, 40, at, min_rtt=-1),  # one sample's
+                {
+                    "clock_max_rtt_ms": Sourced[int](
+                        value=0, provenance=Provenance.DEMO, as_of_ms=at
+                    )
+                },
+            ]
+            return snap if phase["n"] >= len(bad) else snap.model_copy(update=bad[phase["n"]])
+
+        md.snapshot = snapshot  # type: ignore[method-assign]
+        codes, problems = [], []
+        for n, minutes in enumerate([(0, 1), (2,), (3,)]):
+            phase["n"] = n
+            for i in minutes:
+                await rig.minute(i)
+                observation = rig.runtime.observation
+                assert observation is not None
+                codes.append(observation["code"])
+                problems.append(observation["problem"])
+                assert observation["state"] == "blocked"
+                assert rig.runtime.state == "RUNNING"
+        assert codes == ["clock_rtt_negative"] * 3 + ["clock_rtt_unknown"]
+        blocked = [d for title, d in rig.problems if title == "Paper observation blocked"]
+        assert len(blocked) == 2  # one per change of reason (code), not one per poll
+        assert "negative round trip (-5 ms)" in blocked[0]
+        assert "round trip unknown" in blocked[1]
+        assert "negative round trip (-1 ms)" in problems[2]  # the mixed round, same code
+        snap, _ = rig.runtime.published()
+        assert snap["observation"]["code"] == "clock_rtt_unknown"
+        phase["n"] = 3  # a valid round: the next poll (minute 4's close + 1.5 s) anchors
+        for i in (4, 5, 6):
+            await rig.minute(i)
+        observation = rig.runtime.observation
+        assert observation["state"] == "active"
+        assert observation["observing_from_ms"] == T0 + 6 * M
+        flags = _flags(rig)
+        assert all(flags[T0 + i * M] == [False, False] for i in range(6))
+        assert flags[T0 + 6 * M] == [True, True]
+        assert recorder.calls == [T0 + 6 * M, T0 + 6 * M]
+        assert rig.runtime.state == "RUNNING"
+        assert not [t for t, _ in rig.problems if t.startswith("Paper trading stopped")]
         await rig.supervisor.close()
 
     run(scenario())

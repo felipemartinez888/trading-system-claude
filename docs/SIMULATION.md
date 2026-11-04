@@ -113,10 +113,17 @@ arrives fresh at the first observed open or expires as downtime), and no signal 
 reference strategy is built at the first observed bar and warmed up from the live bar store with every
 bar closed before it, so the unobserved minutes do not break its history. A direct
 `PaperTradingService` without the gate keeps continuous observation: an idealized model for tests and
-the instant-restart oracle, never the runtime. The bound assumes the offset is constant between the
-clock round and the poll. Drift or an OS clock step in that window (the round may be up to
-`clock_offset_max_age_ms` old) is not yet bounded or detected (review finding F-1, open). It assumes
-one exchange clock for spot and USD-M, and a `serverTime` stamped while the request was in flight.
+the instant-restart oracle, never the runtime. P-1 hardening (F-1, local checkpoint, review CONDITIONAL PASS / CONDITIONAL PASS): the
+round also carries monotonic-clock evidence (`MarketSnapshot.clock_continuity`), the bound projects the
+round to the poll with the larger of the monotonic and wall time elapsed, and adds the wall/monotonic
+spread inside the round and a 500 ppm drift allowance over the round and the time since it
+(`observation_bound`). No anchor while the evidence is missing, from another round, inconsistent, has a
+negative round trip, or shows the wall clock moving against the monotonic clock beyond the tolerance
+(a step, a suspend or a fast slew): paper keeps running unobserved and retries at every poll. It assumes
+one exchange clock for spot and USD-M, a `serverTime` stamped while the request was in flight, and that
+after the round one and the same local clock runs within 500 ppm until the poll. A wall step followed by a
+suspend of matching size is not detected (review finding NB-1, open); the drift allowance does not absorb steps,
+they are detected ([hardening devlog](devlog/2026-11-03-m3-p1-hardening.md)).
 
 ## 8. Reports and run manifest
 
