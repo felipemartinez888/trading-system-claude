@@ -155,6 +155,11 @@ def test_service_end_to_end(tmp_path: Path) -> None:
         assert spot_snap.exchange_status.as_of_ms == T0 + 30_000
         assert all(st.state.provenance is Provenance.SYSTEM for st in snap.streams)
         assert snap.clock_offset_ms.value == 0
+        # P-1: the round's largest round trip, from the same round as the offset
+        assert snap.clock_max_rtt_ms.provenance is Provenance.LIVE
+        assert snap.clock_max_rtt_ms.value is not None
+        assert snap.clock_max_rtt_ms.value >= 0
+        assert snap.clock_max_rtt_ms.as_of_ms == snap.clock_offset_ms.as_of_ms
 
         # --- live: partial, book, mark
         spot.push(ws_kline(T0, closed=False), "btcusdt@kline_1m")

@@ -712,6 +712,15 @@ class MarketDataService:
             if cm is not None and cm.offset_ms is not None
             else Sourced[int].unavailable("server clock not sampled")
         )
+        max_rtt = (
+            Sourced[int](
+                value=cm.last_round.max_rtt_ms,
+                provenance=Provenance.LIVE,
+                as_of_ms=cm.last_round.at_ms,
+            )
+            if cm is not None and cm.offset_ms is not None and cm.last_round is not None
+            else Sourced[int].unavailable("server clock not sampled")
+        )
         connections = [
             ConnectionStatus(
                 group=s.group,
@@ -731,6 +740,7 @@ class MarketDataService:
             as_of_ms=now,
             running=self._running,
             clock_offset_ms=offset,
+            clock_max_rtt_ms=max_rtt,
             rest_banned={str(m): r.banned for m, r in self._rest.items()},
             streams=streams,
             symbols=symbols,

@@ -29,7 +29,12 @@ from tsclaude.marketdata.config import load_config
 from tsclaude.marketdata.types import RestKline
 from tsclaude.quality.gaps import GapRegistry
 from tsclaude.research.source import StrategySource
-from tsclaude.runtime.paper_runtime import PaperSettings, PaperState, load_paper_runtime
+from tsclaude.runtime.paper_runtime import (
+    DeferredReference,
+    PaperSettings,
+    PaperState,
+    load_paper_runtime,
+)
 from tsclaude.signals.demo import DemoDetectorConfig
 from tsclaude.sim.journal import MemoryJournal
 from tsclaude.sim.paper import PaperConfig, PaperTradingService
@@ -120,13 +125,31 @@ def test_bracket_reference_is_warmed_up_causally_and_labelled_in_status(tmp_path
             rig.bars.add(i)
         rig.clock.set(T0 + 120 * MS_PER_MINUTE + 5_000)
         await rig.supervisor.start("S1")
+        await rig.idle(T0 + 120 * MS_PER_MINUTE + 5_000)  # the first poll, 5 s into minute 120
         assert rig.runtime.state is PaperState.RUNNING
+        observation = rig.runtime.observation
+        assert observation is not None
+        # P-1: minute 120 is only partly observed, so the run observes from minute 121
+        assert observation["observing_from_ms"] == T0 + 121 * MS_PER_MINUTE
+        assert rig.runtime.reference is None  # built at the first observed minute
+        for i in (120, 121):  # stored before it is published, as the market-data service does
+            rig.bars.add(i)
+            await rig.minute(i)
         ref = rig.runtime.reference
         assert isinstance(ref, ReferenceLiveStrategy)
-        assert ref.trade_from_ms == T0 + 120 * MS_PER_MINUTE  # the start minute
-        assert ref.stats.warmup_bars == 240  # both instruments, only bars closed before it
-        await rig.minute(120)
-        assert rig.journal()  # paper keeps running with the reference strategy
+        assert ref.trade_from_ms == T0 + 121 * MS_PER_MINUTE  # the first observed minute
+        # both instruments, minutes 0-120 (the unobserved minute 120 included), only bars that
+        # closed before the first observed minute (121 is already stored, and not used)
+        assert ref.stats.warmup_bars == 242
+        # the toy history starts inside a 15m bucket: one warm-up break per instrument, as a
+        # warm-up at minute 120 gives too; none in the live phase (no minute was lost)
+        assert ref.history_breaks == 2
+        assert ref.describe()["history_breaks"] == 2
+        assert {b["phase"] for b in ref._breaks.values()} == {"warm-up"}
+        assert ref.stats.skipped_not_newer == 0
+        assert ref.stats.bars_seen == 2  # minute 121 only: minute 120 was unobserved
+        batches = rig.journal()
+        assert [b[0].payload["observed"] for b in batches] == [False, False, True, True]
         await rig.supervisor.close()
         return rig
 
@@ -155,7 +178,7 @@ def test_demo_watch_signals_never_reach_the_reference_paper_books(tmp_path: Path
         assert rig.store.read(types=[EventType.SIGNAL_CREATED])  # demo WATCH signals exist
         service = rig.runtime.service
         assert service is not None
-        assert isinstance(service.session.source.strategy, ReferenceLiveStrategy)
+        assert isinstance(service.session.source.strategy, DeferredReference)
         assert service.session.lifecycle.signals() == []
         await rig.supervisor.close()
 
@@ -198,7 +221,10 @@ def test_reference_signal_prices_are_not_served_as_system_values(tmp_path: Path)
             enabled=True, poll_s=POLL, strategy="bracket_reference"
         )
         await rig.supervisor.start("S1")
+        await rig.idle(T0)  # the first poll at minute 0's open: observing from minute 1
         await rig.minute(0)
+        await rig.minute(1)  # the first observed minute builds the reference strategy
+        assert rig.runtime.reference is not None
         await rig.supervisor.close()
         return rig
 
@@ -240,9 +266,10 @@ def _rest_kline(open_ms: int) -> RestKline:
 def test_nine_day_startup_backfill_reaches_the_reference_warm_up(tmp_path: Path) -> None:
     """Option 1 end to end on synthetic data: the configured startup backfill (the real
     `Backfiller` into an in-memory live bar store) -> the paper runtime's warm-up read (the
-    server's reader) -> a ready strategy at open. Also: no historical paper trade, one ordered
-    read per instrument without duplicates, the minute still owned by the live builder at open
-    arrives through the subscription without a break, and an unobserved live minute afterwards
+    server's reader) -> a ready strategy at the first observed minute (P-1). Also: no historical
+    paper trade, one ordered read per instrument without duplicates, the minute still owned by the
+    live builder at open and the partly observed start minute arrive live, unobserved, and still
+    reach the warm-up through the store without a break, and an unobserved live minute afterwards
     resets that instrument's readiness (disclosed limitation)."""
     q = load_config(Path("configs/universe.yaml"), Path("configs/data_quality.yaml")).quality
     settings = BackfillSettings(
@@ -276,42 +303,58 @@ def test_nine_day_startup_backfill_reaches_the_reference_warm_up(tmp_path: Path)
         rig.runtime.settings = PaperSettings(
             enabled=True, poll_s=POLL, strategy="bracket_reference"
         )
+
+        async def live(i: int, usdm: BarSource = BarSource.WS_LIVE) -> None:
+            """Minute `i` closes: the market-data service stores each bar, then publishes it."""
+            rig.clock.set(T0 + (i + 1) * MS_PER_MINUTE + 1_500)
+            for (m, s), source in zip(KEYS, (BarSource.WS_LIVE, usdm), strict=True):
+                b = make_bar(m, s, T0 + i * MS_PER_MINUTE, source=source)
+                store.write(b, "md" if source is BarSource.WS_LIVE else None)
+                rig.md.push_bar(b)
+            await asyncio.sleep(POLL * 6)
+
         rig.clock.set(start + 1_000)
         await rig.supervisor.start("S1")
+        await rig.idle(start + 1_000)  # the first poll, 1 s into the start minute
         assert rig.runtime.state is PaperState.RUNNING, rig.runtime.reason
-        ref = rig.runtime.reference
-        assert isinstance(ref, ReferenceLiveStrategy)
-        assert ref.trade_from_ms == start
-        interval = ref.strategy.interval.ms
-        begin = start - start % interval - (ref.strategy.window_bars + 2) * interval
-        assert begin >= end - settings.lookback_ms  # the read lies inside the backfilled window
-        assert [c for c in calls if c[2] == begin] == [(m, s, begin, start) for m, s in KEYS]
-        stored = (end - begin) // MS_PER_MINUTE  # [begin, start - 1): start - 1 not stored yet
-        assert ref.stats.warmup_bars == 2 * stored
-        assert ref.stats.skipped_not_newer == 0
-        assert all(p["ready"] for p in ref.warmup_progress().values()), ref.warmup_progress()
+        first = start + MS_PER_MINUTE  # the start minute is only partly observed (P-1)
+        observation = rig.runtime.observation
+        assert observation is not None
+        assert observation["observing_from_ms"] == first
+        assert rig.runtime.reference is None  # built at the first observed minute
         service = rig.runtime.service
         assert service is not None
-        assert service.session.lifecycle.signals() == []  # warm-up never trades
-        assert not any(e["type"] == "sim_order_submitted" for e in service.session.sim.events)
 
-        await rig.minute(start_minute - 1)  # the builder's minute arrives live (ws_live)
-        await rig.minute(start_minute)
+        await live(start_minute - 1)  # the builder's minute arrives live (ws_live), unobserved
+        await live(start_minute)  # the partly observed start minute: unobserved
+        assert rig.runtime.reference is None
+        await live(start_minute + 1, usdm=BarSource.REST_RECOVERED)  # the first observed minute
+        ref = rig.runtime.reference
+        assert isinstance(ref, ReferenceLiveStrategy)
+        assert ref.trade_from_ms == first
+        interval = ref.strategy.interval.ms
+        begin = first - first % interval - (ref.strategy.window_bars + 2) * interval
+        assert begin >= end - settings.lookback_ms  # the read lies inside the backfilled window
+        assert [c for c in calls if c[2] == begin] == [(m, s, begin, first) for m, s in KEYS]
+        stored = (first - begin) // MS_PER_MINUTE  # [begin, first): the two live minutes too
+        assert ref.stats.warmup_bars == 2 * stored
+        assert ref.stats.skipped_not_newer == 0
         assert ref.history_breaks == 0
-        assert all(p["ready"] for p in ref.warmup_progress().values())
+        assert all(p["ready"] for p in ref.warmup_progress().values()), ref.warmup_progress()
+        assert service.session.lifecycle.signals() == []  # warm-up never trades
+        assert not any(  # the benchmark buys at the first observed bar by design
+            e["type"] == "sim_order_submitted" and e["aggregate_id"] != "benchmark"
+            for e in service.session.sim.events
+        )
 
-        rig.clock.set(start + 2 * MS_PER_MINUTE + 1_500)  # minute start+1: usdm REST-recovered
-        rig.md.push_bar(make_bar(*KEYS[0], start + MS_PER_MINUTE))
-        rig.md.push_bar(make_bar(*KEYS[1], start + MS_PER_MINUTE, source=BarSource.REST_RECOVERED))
-        await asyncio.sleep(POLL * 6)
         for i in range(start_minute + 2, start_minute + 20):
-            await rig.minute(i)
-        assert ref.history_breaks == 1
+            await live(i)
+        assert ref.history_breaks == 1  # usdm missed its REST-recovered first observed minute
         progress = ref.warmup_progress()
         assert progress["spot:BTCUSDT"]["ready"] is True
         assert progress["usdm:BTCUSDT"]["ready"] is False
         decided = [s.record["decision_time_ms"] for s in service.session.lifecycle.signals()]
-        assert all(d >= start for d in decided)  # nothing decided before the start
+        assert all(d >= first for d in decided)  # nothing decided before the first observed one
         await rig.supervisor.close()
         return rig
 

@@ -232,8 +232,20 @@ def test_p4_complete_backfill_from_live_bars_resumes(tmp_path: Path) -> None:
         assert rig.runtime.state is PaperState.RUNNING
         batches = rig.journal()
         observed = [b[0].payload["observed"] for b in batches]
-        assert observed.count(False) == 6  # minutes 3-5 resolved unobserved (no entries)
         assert len(batches) == 6 + 6 + 2
+        # P-1: each run observes from the first whole minute after its first poll. Minute 0 is
+        # never observed (S1 polled first at T0 or later); minute 1 only if S1 polled before it
+        # opened; minute 2 always. Minutes 3-5 are the downtime backfill (no entries). S2's live
+        # minute 6 is observed only if it opens at or after S2's anchor.
+        assert observed[0:2] == [False, False]
+        assert observed[2:4] in ([False, False], [True, True])
+        assert observed[4:6] == [True, True]
+        assert observed[6:12] == [False] * 6
+        observation = rig.runtime.observation
+        assert observation is not None
+        assert observation["problem"] is None
+        live_6 = observation["observing_from_ms"] <= T0 + 6 * MS_PER_MINUTE
+        assert observed[12:] == [live_6, live_6]
         await rig.supervisor.close()
 
     run(scenario())

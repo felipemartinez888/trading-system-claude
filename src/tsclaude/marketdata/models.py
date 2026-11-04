@@ -111,6 +111,9 @@ class MarketSnapshot(BaseModel):
     as_of_ms: int
     running: bool
     clock_offset_ms: Sourced[int]
+    #: the largest round trip of the clock round behind `clock_offset_ms` (same `as_of_ms`): it
+    #: bounds that offset's error (the paper runtime's observation anchor, P-1)
+    clock_max_rtt_ms: Sourced[int] = Sourced[int].unavailable("not reported")
     rest_banned: dict[str, bool]
     streams: list[StreamStatus]
     symbols: list[SymbolSnapshot]

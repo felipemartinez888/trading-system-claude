@@ -16,8 +16,10 @@
     PASS** from both reviewers, with no new blocking finding (see [Closure review](#closure-review-of-rr-b1--br-1)).
     The M3-PB.2 implementation is accepted as a checkpoint and is committed locally on `task/m3-partb` on top of
     `da42955` (not pushed, not merged).
-  - Production limitation **P-1** (an entry can fill in a minute the downtime overlaps) is confirmed. It is open and
-    not decided, so the delayed-restart property is not accepted.
+  - Production limitation **P-1** (an entry can fill in a minute the downtime overlaps) was confirmed. The owner
+    approved D-19 and D-20 on 2026-11-03. The production fix is implemented, and its independent review gave
+    **CONDITIONAL PASS / CONDITIONAL PASS** (0 blocking). It is committed as a local checkpoint pending hardening (not
+    pushed, not merged); F-1, F-2, F-3, N-1 and N-2 are open (see [P-1 implementation](#p-1-implementation)).
   - **Full Part B and the M3 gate are not accepted.**
   - Evidence: [devlog](../devlog/2026-11-03-m3-partb-close-marks.md), [M3-PB.2
     devlog](../devlog/2026-11-03-m3-pb2-restart-timeline-harness.md).
@@ -379,6 +381,53 @@ copies outside the repository. The repository was hash-verified unchanged afterw
 | Full Part B | **Not accepted** |
 | M3 gate | **Not met** |
 
+## P-1 implementation
+Owner-authorized 2026-11-03 (D-19 L-02 clarification, D-20 harness rule). **Implemented; independent review
+CONDITIONAL PASS / CONDITIONAL PASS; local checkpoint pending hardening, not unconditionally accepted.** Evidence: [P-1 devlog](../devlog/2026-11-03-m3-p1-observation-anchor.md).
+
+- **Root cause.** `PaperTradingService._observed` decided observed from the bar source only; the runtime's
+  `observing_since_ms` was never read. A resting entry filled on the first live bar after a restart even when that
+  minute was only partly observed, and so did the minute the crash interrupted and the minutes queued during the
+  startup wait (audit N-1).
+- **Correction.**
+  - `sim/paper.py`: `observation_anchor_ms` and `clock_uncertainty_ms` (pure functions); a gated service observes a bar
+    only if its source qualifies and it opens at or after `observing_from_ms` (`observe_from`, set once); gated
+    without an anchor nothing is observed. An ungated service keeps continuous observation (tests, the instant oracle).
+  - `runtime/paper_runtime.py`: the service is always gated; the anchor is fixed at the first poll whose clock round is
+    trustworthy, before that poll processes anything; otherwise every bar is processed unobserved and the next poll
+    tries again. `bracket_reference` is built at the first observed bar (`DeferredReference`) with
+    `trade_from_ms = A` and warmed up from the live bar store with every bar closed before A.
+  - `quality/clock.py`, `marketdata/models.py`, `marketdata/service.py`: each clock round keeps its largest round
+    trip, published in `MarketSnapshot.clock_max_rtt_ms` with the offset's `as_of_ms`.
+  - Not changed: `engine.py`, `book.py`, `live_adapter.py`, the `LiveStrategy` protocol, the journal schema,
+    `PAPER_VERSION`, `contracts/`.
+- **Harness (D-20).** `reconnect` sets the anchor with the same function (offset 0, round trip 0: the harness clock is
+  the exchange clock); `recovery_outcome` expects observed iff `open >= A` and reports a service whose anchor
+  differs. `reconnect(..., gated=False)` keeps the pre-fix service so that the checks can be shown to still report P-1.
+  `restart_causality` is unchanged. The instant oracle (`redeliver`) sets no anchor.
+- **Result.** Every pinned P-1 counterexample now gives `[]` (0 / 1 / 58,502; 0 / 2 / 1; 696831125 / 13 / 180,000;
+  853832589 / 176 / 180,000 and 30,000; 23511 / 118 / 30,000; 32438366 / 129 / 24,837; 891223841 / 151 / 35,763), and
+  the boundary cases stay `[]`. On 400 random delayed restarts (RNG 31337) the pre-fix service fills a P-1 entry in 32
+  cases; the fixed one has no problem in any.
+- **Mutants.** 24 caught, 2 equivalent, 1 sound survivor (the service publishing the median round trip, also a
+  proven bound); details in the devlog.
+- **New finding (not P-1, not remediated).** A backlog queued during the startup wait releases its first minute
+  before that minute's second bar is offered (one poll per subscription update), so the minute is processed
+  incomplete, gated or not. It is now processed unobserved.
+- **Independent review (2026-11-03): CONDITIONAL PASS / CONDITIONAL PASS** (`reviewer`, `causality-auditor`, 0
+  blocking; both: acceptable as a local checkpoint; M3-PB.2 preserved). Open, all introduced with P-1:
+  - **F-1:** clock drift or step between the round and the poll is not bounded or detected; a started minute can
+    count as observed (by milliseconds; counterexamples in the devlog).
+  - **F-2:** the producer of `clock_max_rtt_ms` is not pinned (publishing 0 survives).
+  - **F-3:** a negative round trip stops the runtime as `CONSUMER_DIED`, and the round trip's provenance is unchecked.
+  - **N-1:** the Paper page says "No live strategy is selected" while the reference is pending.
+  - **N-2:** the observation state and why no anchor exists are not visible in the API or as a problem.
+  - Also N-4, N-5 and nits ([devlog](../devlog/2026-11-03-m3-p1-observation-anchor.md#independent-review-2026-11-03)).
+
+  The startup backlog defect predates P-1. It loses a late bar of an exposed instrument and changes exit timing
+  (non-blocking for P-1, blocking for Part B).
+- **Not accepted:** P-1 unconditionally (pending hardening), the delayed property, full Part B, the M3 gate.
+
 ## Open decisions for the owner
 1. **Harness timing (F1).** Decided: the harness never polls the restored service before the crash instant
    (M3-PB.2; B-1 and RR-B1 PASS in the independent reviews; committed as a local checkpoint).
@@ -396,7 +445,9 @@ copies outside the repository. The repository was hash-verified unchanged afterw
    `AWAITING_BACKFILL`, so a random empty-minute case fails the property even when the ledgers happen to be equal
    (for example 50553820 / 135, which the previous check passed). This is the open empty-minute limitation, not a harness
    defect; the property can fail on it in CI until item 3 is decided.
-8. **P-1.** Production fills a resting entry in a minute the downtime overlaps. Needs a contract-based decision and a
+8. **P-1.** Decided by the owner on 2026-11-03 (D-19, D-20); implemented, independent review CONDITIONAL PASS /
+   CONDITIONAL PASS, local checkpoint pending hardening ([P-1 implementation](#p-1-implementation)). The text below is the state before that decision.
+   Production fills a resting entry in a minute the downtime overlaps. Needs a contract-based decision and a
    production change. A design proposal is in the
    [M3-PB.2 devlog](../devlog/2026-11-03-m3-pb2-restart-timeline-harness.md#p-1-production-limitation-open), and the
    re-review lists its gaps above.

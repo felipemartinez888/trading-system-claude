@@ -23,6 +23,15 @@ bounded by `backfill_wait_s`) before it opens the session, seeds the risk tracke
 own backfill, so it never reads a half-filled bar store. Updates arriving meanwhile stay queued in
 its subscription; any dropped update stops paper (`STOPPED_OVERFLOW`).
 
+Observation (P-1; L-02 as the owner clarified it for paper). The service is gated: a bar counts as
+observed only if it is a live WebSocket bar that opens at or after the observation anchor, the
+first minute open after the run's first poll in exchange time, bounded with the market-data clock
+round (`observation_anchor_ms`). Until a trustworthy round gives the anchor nothing is observed.
+Bars before it (the downtime backfill, minutes queued during the startup wait, the minute a crash
+interrupted, the partly observed first minute) are processed unobserved, as downtime is
+(SIMULATION §7): resting SL/TP resolve over them, no entry fills on them and no signal is computed.
+`bracket_reference` is built at the first observed bar (`DeferredReference`).
+
 Known limitations, deliberately kept: restore equivalence across a restart is **not** guaranteed,
 and not every divergence is visible. An instrument the live clock released a minute without is a
 gap the session passed (the journal records the close, `minute_closed`), not downtime. A bar that
@@ -61,8 +70,17 @@ from tsclaude.marketdata.bars import BarClosed
 from tsclaude.marketdata.models import MarketSnapshot
 from tsclaude.risk.market import MarketStateTracker
 from tsclaude.sim.clock import order_key
+from tsclaude.sim.engine import SimView
 from tsclaude.sim.live import DEFAULT_SETTLE_MS
-from tsclaude.sim.paper import LiveStrategy, PaperConfig, PaperTradingService, ServiceState
+from tsclaude.sim.paper import (
+    Intent,
+    LiveStrategy,
+    PaperConfig,
+    PaperTradingService,
+    ServiceState,
+    clock_uncertainty_ms,
+    observation_anchor_ms,
+)
 from tsclaude.store.eventstore import EventStore
 from tsclaude.strategies.live_adapter import ReferenceLiveStrategy
 
@@ -90,11 +108,17 @@ LIMITATIONS = (
     "Each monitoring start restores the active paper session again, also after a failure in the "
     "previous run; a new session is only ever created by the operator.",
     "Instrument filters come from configs/backtest.yaml and are unverified placeholders.",
+    "Each monitoring start observes from the first whole minute after its first poll (exchange "
+    "time, bounded with the server-clock round); earlier minutes, the downtime and the minutes "
+    "queued during the startup wait included, are processed unobserved (no entry fills or is "
+    "created on them). Without a fresh server-clock round within the risk limits nothing is "
+    "observed.",
     "strategy bracket_reference (if selected) is REFERENCE / NOT VALIDATED: a pipeline strategy, "
     "not claimed profitable, paper only; its signals are not research results. It needs about 7.8 "
-    "days of unbroken 1m history per instrument before its first decision (warmed up at start "
-    "from the 9-day startup backfill); after the start any minute it does not see (missing, or "
-    "REST-recovered/backfilled: processed unobserved) restarts that ~7.8-day warm-up.",
+    "days of unbroken 1m history per instrument before its first decision. It is built at the "
+    "first observed minute and warmed up from the live bar store (the 9-day startup backfill and "
+    "the unobserved minutes of the start included); after that any minute it does not see "
+    "(missing, or REST-recovered/backfilled: processed unobserved) restarts that ~7.8-day warm-up.",
 )
 
 
@@ -464,6 +488,29 @@ def validate_backfill(
     return check
 
 
+# ---------------------------------------------------------------------- strategy
+class DeferredReference:
+    """`bracket_reference`, built at its first call: the first observed bar (P-1).
+
+    The engine calls a live strategy only on observed bars, and the bars that open before the
+    observation anchor are unobserved, so a strategy built at the start would never see the minutes
+    between the start and the anchor and its history would break (a ~7.8-day warm-up again). Built
+    here it trades from the first observed minute (`trade_from_ms`) and is warmed up with every
+    closed bar of the live bar store before it, those minutes included: the market-data service
+    stores a closed bar before it publishes it, so the bars of the minute before were stored when
+    they were released. A failed build raises, which the service records as a strategy error (no
+    intents for that bar, fail closed); the next observed bar tries again."""
+
+    def __init__(self, build: Callable[[int], ReferenceLiveStrategy]) -> None:
+        self._build = build
+        self.adapter: ReferenceLiveStrategy | None = None
+
+    def on_bar(self, bar: Bar, view: SimView) -> Sequence[Intent]:
+        if self.adapter is None:
+            self.adapter = self._build(bar.open_time_ms)
+        return self.adapter.on_bar(bar, view)
+
+
 # ---------------------------------------------------------------------- runtime
 def _frozen(value: Any) -> Any:
     """A JSON-only deep copy (Decimals as strings): safe to hand to other threads."""
@@ -496,6 +543,8 @@ class PaperRuntime:
         self.service: PaperTradingService | None = None
         self.session_id: str | None = None
         self.observing_since_ms: int | None = None  # first poll of this run (Part B hook)
+        #: the latest attempt to fix the observation anchor of this run (P-1)
+        self.observation: dict[str, Any] | None = None
         self.backfill: dict[str, Any] | None = None
         self.dropped_updates = 0
         self._task: asyncio.Task[None] | None = None
@@ -540,6 +589,7 @@ class PaperRuntime:
             return
         self.service = None
         self.observing_since_ms = None
+        self.observation = None
         self.opened_at_ms = None
         self.backfill = None
         self.dropped_updates = 0
@@ -588,6 +638,7 @@ class PaperRuntime:
                 tracker=tracker,
                 settle_ms=self.settings.settle_ms,
                 strategy=strategy,
+                observation_gated=True,
             )
         except Exception as exc:
             log.exception("paper session could not be opened")
@@ -682,6 +733,8 @@ class PaperRuntime:
                 now = self._clock.now_ms()
                 if self.observing_since_ms is None:
                     self.observing_since_ms = now
+                if service.observing_from_ms is None:
+                    self._establish_observation(service, snap, now)
                 service.poll(now)
                 if service.state is ServiceState.AWAITING_BACKFILL and self.backfill is None:
                     self._attempt_backfill(service, now)
@@ -725,6 +778,49 @@ class PaperRuntime:
         self._set(state, reason)
         self._problem(f"Paper trading stopped: {state}", reason)
 
+    # ------------------------------------------------------------------ observation
+    def _establish_observation(
+        self, service: PaperTradingService, snap: MarketSnapshot | None, now: int
+    ) -> None:
+        """Fix the observation anchor at this poll (P-1, L-02), or fail closed until a later one.
+
+        The anchor is the first minute open after this poll in exchange time, bounded with the
+        market-data clock round (its offset and largest round trip: `observation_anchor_ms`). With
+        no trustworthy round (none, offset and round trip of different rounds, a round from the
+        local future or older than `clock_offset_max_age_ms`, an offset beyond
+        `clock_skew_max_ms`) no anchor is set: the service processes every bar unobserved (resting
+        exits resolve; no entry fills or is created) and the next poll tries again."""
+        risk = service.config.risk
+        info: dict[str, Any] = {"attempted_at_ms": now, "observing_from_ms": None, "problem": None}
+        self.observation = info
+        if snap is None:
+            info["problem"] = "no market-data snapshot"
+            return
+        off, rtt = snap.clock_offset_ms, snap.clock_max_rtt_ms
+        if off.provenance is not Provenance.LIVE or off.value is None or off.as_of_ms is None:
+            info["problem"] = "server clock offset unknown"
+            return
+        if rtt.value is None or rtt.as_of_ms != off.as_of_ms:
+            info["problem"] = "server clock round trip unknown"
+            return
+        age = now - off.as_of_ms
+        if age < 0 or age > risk.clock_offset_max_age_ms:
+            info["problem"] = f"server clock round {age} ms old (0..{risk.clock_offset_max_age_ms})"
+            return
+        if abs(off.value) > risk.clock_skew_max_ms:
+            info["problem"] = (
+                f"server clock offset {off.value} ms beyond {risk.clock_skew_max_ms} ms"
+            )
+            return
+        anchor = observation_anchor_ms(now, off.value, rtt.value)
+        service.observe_from(anchor)
+        info.update(
+            observing_from_ms=anchor,
+            offset_ms=off.value,
+            max_rtt_ms=rtt.value,
+            uncertainty_ms=clock_uncertainty_ms(rtt.value),
+        )
+
     # ------------------------------------------------------------------ backfill
     def _attempt_backfill(self, service: PaperTradingService, now: int) -> None:
         """One all-or-nothing attempt per monitoring start, from the live bar store only."""
@@ -765,16 +861,18 @@ class PaperRuntime:
     def _build_strategy(self, config: PaperConfig) -> LiveStrategy | None:
         """The configured live strategy (tests may inject one through `strategy_factory`).
 
-        `bracket_reference`: decisions only from the start minute on (`trade_from_ms`); its
-        history is warmed up causally from closed bars of the live bar store that closed before
-        that minute (the market-data startup backfill has completed by now)."""
+        `bracket_reference` is built at the first observed bar (`DeferredReference`, P-1)."""
         self.reference = None
         if self._strategy_factory is not None:
             return self._strategy_factory()
         if self.settings.strategy == "none":
             return None
-        now = self._clock.now_ms()
-        start = now - now % MS_PER_MINUTE
+        return DeferredReference(lambda start: self._reference(config, start))
+
+    def _reference(self, config: PaperConfig, start: int) -> ReferenceLiveStrategy:
+        """`bracket_reference` trading from the minute `start` on (`trade_from_ms`), its history
+        warmed up causally from closed bars of the live bar store that closed before that minute
+        (the market-data startup backfill completed before the session opened)."""
         adapter = ReferenceLiveStrategy.create(
             config.cost_model, [s.key for s in config.instruments], trade_from_ms=start
         )
@@ -996,6 +1094,7 @@ class PaperRuntime:
             "session_id": self.session_id,
             "next_session_id": next_session,
             "observing_since_ms": self.observing_since_ms,
+            "observation": self.observation,
             "opened_at_ms": self.opened_at_ms,
             "settle_ms": self.settings.settle_ms,
             "values_as_of_ms": None,

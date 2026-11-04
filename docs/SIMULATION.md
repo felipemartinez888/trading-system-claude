@@ -101,6 +101,23 @@ resting SL/TP orders had been on the exchange), tagged `resolved_from_backfill`.
 created for the downtime. Signals still in `WATCH`/`CONFIRMED` whose validity window passed during
 downtime become `EXPIRED (downtime)`.
 
+**Observation start (P-1, D-19).** The paper runtime observes from the anchor A: the first minute open
+after its first poll in exchange time, bounded above with the market-data clock round (offset plus
+half the round's largest round trip plus 2.5 ms of reading resolution, `observation_anchor_ms`). A
+bar is observed only if its source qualifies (live WebSocket) and it opens at or after A; until a
+trustworthy round (one no older than `clock_offset_max_age_ms`, from the same round as its round trip,
+with `|offset| <= clock_skew_max_ms`) gives A, nothing is observed. Everything before A is handled like
+downtime: the backfill, minutes queued during the startup wait, the minute a crash interrupted and the
+partly observed first minute. On those bars resting SL/TP resolve, no entry fills (a resting entry
+arrives fresh at the first observed open or expires as downtime), and no signal is computed. The
+reference strategy is built at the first observed bar and warmed up from the live bar store with every
+bar closed before it, so the unobserved minutes do not break its history. A direct
+`PaperTradingService` without the gate keeps continuous observation: an idealized model for tests and
+the instant-restart oracle, never the runtime. The bound assumes the offset is constant between the
+clock round and the poll. Drift or an OS clock step in that window (the round may be up to
+`clock_offset_max_age_ms` old) is not yet bounded or detected (review finding F-1, open). It assumes
+one exchange clock for spot and USD-M, and a `serverTime` stamped while the request was in flight.
+
 ## 8. Reports and run manifest
 
 Each run writes `runs/<run_id>/` with `manifest.json` (dataset IDs, strategy ID + version + params hash,

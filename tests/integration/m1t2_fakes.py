@@ -216,6 +216,7 @@ class FakeMarketData:
             as_of_ms=now,
             running=self._running,
             clock_offset_ms=Sourced[int](value=3, provenance=Provenance.LIVE, as_of_ms=now),
+            clock_max_rtt_ms=Sourced[int](value=40, provenance=Provenance.LIVE, as_of_ms=now),
             rest_banned={"spot": False, "usdm": False},
             streams=streams,
             symbols=symbols,

@@ -561,6 +561,36 @@ def replay(
     return session
 
 
+# ---------------------------------------------------------------- observation (P-1)
+def clock_uncertainty_ms(max_rtt_ms: int) -> int:
+    """An upper bound (ms) of the error of a `ClockMonitor` offset, from its round's largest round
+    trip.
+
+    A sample's server reading was taken between its local send and receive readings, so the true
+    offset (server - local) exceeds the sample's estimate (server - midpoint) by less than half its
+    round trip plus 1 ms (the three readings are whole, floored milliseconds). The round's offset
+    is the median of its samples' estimates, rounded (0.5 ms): it is bounded by half the largest
+    round trip of the round, not the median one. The local reading of the poll adds less than 1 ms.
+    In all, less than ``max_rtt_ms / 2 + 2.5``. It assumes the offset did not change between the
+    round and the poll (no drift or clock step while the round is younger than
+    `clock_offset_max_age_ms`)."""
+    if max_rtt_ms < 0:
+        raise ValueError("max_rtt_ms must be >= 0")
+    return (max_rtt_ms + 6) // 2
+
+
+def observation_anchor_ms(local_now_ms: int, offset_ms: int, max_rtt_ms: int) -> int:
+    """The first minute open observed by a service that starts observing at `local_now_ms`.
+
+    L-02 for the paper service: a minute counts as observed only if it lies entirely inside the
+    monitoring interval, which starts when the runtime polls in real time. Bar opens are exchange
+    time, so the start is converted with the measured offset and bounded above by its uncertainty;
+    the anchor is the first minute open at or after that bound. A partly observed minute never
+    counts; an anchor exactly at an open counts that minute."""
+    upper = local_now_ms + offset_ms + clock_uncertainty_ms(max_rtt_ms)
+    return -(-upper // MS_PER_MINUTE) * MS_PER_MINUTE
+
+
 # ---------------------------------------------------------------- the facade
 class ServiceState(StrEnum):
     RUNNING = "RUNNING"
@@ -585,10 +615,17 @@ class PaperTradingService:
         session: PaperSession | None = None,
         start_ms: int | None = None,
         session_id: str = SESSION_AGGREGATE_ID,
+        observation_gated: bool = False,
     ) -> None:
         self.config = config
         self.journal = journal
         self.observed_sources = observed_sources
+        #: P-1 (L-02). Gated, a bar is observed only if it also opens at or after
+        #: `observing_from_ms`, and no bar is observed before that anchor is set (fail closed).
+        #: Without the gate a direct caller keeps continuous observation, an idealized model
+        #: (tests, the instant-restart oracle); the paper runtime always gates.
+        self.observation_gated = observation_gated
+        self.observing_from_ms: int | None = None
         self.tracker = tracker or MarketStateTracker(
             median_window_ms=config.risk.spread.median_window_ms,
             min_samples=config.risk.spread.min_samples,
@@ -676,8 +713,22 @@ class PaperTradingService:
     def on_snapshot(self, snapshot: MarketSnapshot) -> None:
         self.tracker.observe_snapshot(snapshot)
 
+    def observe_from(self, minute_ms: int) -> None:
+        """Set the observation anchor, once: bars opening before it are processed unobserved, as
+        downtime is (SIMULATION §7); also gates a service built without the gate."""
+        if minute_ms % MS_PER_MINUTE:
+            raise ValueError("minute_ms must be a minute open")
+        if self.observing_from_ms is not None and minute_ms != self.observing_from_ms:
+            raise ValueError("the observation anchor is already set")
+        self.observation_gated = True
+        self.observing_from_ms = minute_ms
+
     def _observed(self, bar: Bar) -> bool:
-        return bar.source in self.observed_sources
+        if bar.source not in self.observed_sources:
+            return False
+        if not self.observation_gated:
+            return True
+        return self.observing_from_ms is not None and bar.open_time_ms >= self.observing_from_ms
 
     def _process(self, step: Callable[[], Batch]) -> bool:
         if self.state is ServiceState.FAULTED:
@@ -869,6 +920,10 @@ class PaperTradingService:
             "mode": str(self.session.sim.clock.mode),
             "batches": self.session.batches,
             "awaiting_missing": dict(self.awaiting_missing),
+            "observation": {
+                "gated": self.observation_gated,
+                "observing_from_ms": self.observing_from_ms,
+            },
             "last_minute_ms": self.session.last_minute_ms,
             "clock": vars(self.clock.stats).copy(),
             "books": books,

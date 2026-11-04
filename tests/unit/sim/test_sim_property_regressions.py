@@ -19,6 +19,13 @@
    13073 and 465923499 diverged only through that. The harness now never polls before the crash
    instant, and both examples reproduce the uninterrupted journal and ledgers.
 
+5. Paper restart after downtime, production limitation P-1: the service decided observed from the
+   bar source only, so a resting entry filled in a minute the downtime overlapped (at an open
+   inside it, or in the minute the crash interrupted). The service now observes only from the
+   anchor the runtime fixes at its first poll (`observation_anchor_ms`); the delayed harness applies
+   the same anchor. The pre-fix service (`reconnect(..., gated=False)`) is kept so that the checks
+   can be shown to report P-1 should it come back.
+
 Pinned as characterisations: the pre-crash timeline of 4 (kept, to show what it did), and a
 minute the clock released with no bar at all (not fixed, fails closed).
 """
@@ -601,45 +608,21 @@ def test_the_pre_crash_timeline_is_what_broke_equivalence(seed: int, fail_batch:
         (853832589, 176, 600_000, []),
         # the shrunk property counterexample: a restart at the open itself, then 1 ms later
         (0, 1, 58_501, []),
-        (0, 1, 58_502, ["benchmark:benchmark:BTCUSDT:entry filled at an open during the downtime"]),
-        # production limitation P-1 (see the partly observed minute tests): reported, not fixed.
-        # At an open during the downtime:
-        (
-            853832589,
-            176,
-            180_000,
-            ["shadow:SIG00000000000000000000003:entry filled at an open during the downtime"],
-        ),
-        # at the open of the minute the crash interrupted (L-02: not an observed minute):
-        (
-            23511,
-            118,
-            30_000,
-            ["shadow:SIG00000000000000000000008:entry filled in the minute the crash interrupted"],
-        ),
-        (
-            853832589,
-            176,
-            30_000,
-            ["shadow:SIG00000000000000000000003:entry filled in the minute the crash interrupted"],
-        ),
-        (
-            0,
-            2,
-            1,
-            [
-                "benchmark:benchmark:BTCUSDT:entry filled in the minute the crash interrupted",
-                "benchmark:benchmark:ETHUSDT:entry filled in the minute the crash interrupted",
-            ],
-        ),
+        # P-1, fixed (before the fix each case below reported an entry filled at an open during
+        # the downtime, or in the minute the crash interrupted; see `gated=False` below)
+        (0, 1, 58_502, []),
+        (853832589, 176, 180_000, []),
+        (23511, 118, 30_000, []),
+        (853832589, 176, 30_000, []),
+        (0, 2, 1, []),
     ],
 )
 def test_a_delayed_restart_stays_causal(
     seed: int, fail_batch: int, delay_ms: int, expected: list[str]
 ) -> None:
     """Downtime may change fills, so ledgers are not compared: the recovery goes through the
-    production path (new subscription, AWAITING_BACKFILL, the runtime's backfill) and is causal,
-    except where production itself fills a resting entry in a minute the downtime overlaps (P-1)."""
+    production path (new subscription, the observation anchor, AWAITING_BACKFILL, the runtime's
+    backfill) and is causal; no resting entry fills in a minute the downtime overlaps (P-1)."""
     assert check_restore_equivalence(seed, fail_batch, delay_ms) == expected
 
 
@@ -674,12 +657,28 @@ def test_the_second_empty_minute_example_fails_closed() -> None:
 
 # ---------------------------------------------------------------- restart after downtime (B-1)
 def _reconnected(
-    seed: int, fail_batch: int, delay_ms: int, store: BarStore | None = None
+    seed: int,
+    fail_batch: int,
+    delay_ms: int,
+    store: BarStore | None = None,
+    *,
+    gated: bool = True,
 ) -> Restart:
     r = restore_after_crash(seed, fail_batch, delay_ms)
     assert isinstance(r, Restart)
-    reconnect(r, store)
+    reconnect(r, store, gated=gated)
     return r
+
+
+def _causality(r: Restart) -> list[str]:
+    return restart_causality(
+        r.journal.batches(),
+        r.durable,
+        r.restart_ms,
+        r.closed_through_ms,
+        live_from_ms=r.restart_ms,
+        down_from_ms=r.crash_ms,
+    )
 
 
 def _after(r: Restart) -> list[Batch]:
@@ -727,6 +726,9 @@ def test_a_restart_after_downtime_recovers_as_production_does(
     resolves the downtime over unobserved bars (RUNNING) or, with a downtime bar the store does not
     have, is refused and nothing is processed (AWAITING_BACKFILL)."""
     r = _reconnected(seed, fail_batch, delay_ms)
+    anchor = r.observe_from_ms
+    assert anchor is not None
+    assert r.restart_ms < anchor <= r.restart_ms + M
     assert r.restored.state is state
     assert r.backfill is not None
     assert r.backfill["ok"] is applied
@@ -736,16 +738,20 @@ def test_a_restart_after_downtime_recovers_as_production_does(
         assert downtime
         assert all(b[0].payload["observed"] is False for b in downtime)
         assert all(b[0].payload["released_at_ms"] is None for b in downtime)
-        assert all(b[0].payload["observed"] is True for b in after[len(downtime) :])
+        live = after[len(downtime) :]
+        # P-1: live bars are observed exactly from the anchor, the first whole minute after the
+        # restart; the live minute the restart interrupted is processed unobserved
+        assert all(
+            b[0].payload["observed"] is (b[0].payload["bar"]["open_time_ms"] >= anchor)
+            for b in live
+        )
+        assert any(b[0].payload["observed"] for b in live)
     else:
         assert any("missing from the backfill" in p for p in r.backfill["problems"])
         assert after == []  # fail closed: nothing processed
     assert not set(r.strategy.calls[r.calls_at_restore :]) & {
-        (b.open_time_ms, b.symbol)
-        for k in (BTC, ETH)
-        for b in r.bars[k]
-        if b.close_time_ms < r.restart_ms
-    }  # the strategy never sees a downtime bar
+        (b.open_time_ms, b.symbol) for k in (BTC, ETH) for b in r.bars[k] if b.open_time_ms < anchor
+    }  # the strategy never sees a bar before the anchor (downtime included)
     assert _downtime_problems(r) == []
     assert check_restore_equivalence(seed, fail_batch, delay_ms) == []
 
@@ -803,42 +809,61 @@ def test_a_pending_entry_is_not_filled_during_the_downtime() -> None:
     for oid in pending:
         kind, reason, at = outcome[oid]
         if kind == "sim_order_filled":
-            assert at >= r.restart_ms
+            assert r.observe_from_ms is not None
+            assert at >= r.observe_from_ms
         else:
             assert "downtime" in str(reason)
     assert any("downtime" in str(v[1]) for v in outcome.values())
     assert _downtime_problems(r) == []
 
 
-def test_a_resting_entry_can_fill_at_the_open_of_a_partly_observed_minute() -> None:
-    """Production limitation P-1, NOT fixed (seed=696831125, fail_batch=13, restart 3 minutes after
-    the crash, at minute 10 + 1.5 s). The new subscription delivers minute 10 live, so the service
-    processes it observed, and the entries of SIG3 resting since before the crash fill at its open,
-    1.5 s before the service was running. Under SIMULATION §7 as `book.py` applies it, such an order
-    was not on any exchange during the downtime, and L-02 does not count a partly monitored minute
-    as observed. The runtime records `observing_since_ms` (a Part B hook) but the service
-    does not use it. The check reports it, so the delayed property fails on such cases until a
-    production decision; this task changes tests only."""
-    r = _reconnected(696831125, 13, 180_000)
-    assert r.restart_ms == minute(10) + 1_499
-    early = [
+def _early_entry_fills(r: Restart, before_ms: int) -> list[tuple[str, int, bool]]:
+    return [
         (e.payload["order_id"], e.payload["bar_open_ms"], b[0].payload["observed"])
         for b in _after(r)
         for e in b[1:]
         if e.type == "sim_order_filled"
         and e.payload["role"] == "entry"
-        and e.payload["bar_open_ms"] < r.restart_ms
+        and e.payload["bar_open_ms"] < before_ms
     ]
-    assert early == [
+
+
+def test_a_resting_entry_no_longer_fills_in_a_partly_observed_minute() -> None:
+    """P-1, fixed (seed=696831125, fail_batch=13, restart 3 minutes after the crash, at minute 10 +
+    1.5 s). The new subscription delivers minute 10 live, but the service observes only from the
+    anchor, minute 11, the first whole minute after the restart (L-02 as clarified for paper), so
+    minute 10 is processed unobserved. The entries of SIG3, resting since before the crash, do not
+    fill at its open: the order was not on any exchange before the service observed (SIMULATION §7
+    as `book.py` applies it). Their validity passed in that minute, so they expire as downtime.
+    Before the fix (`gated=False`) both filled at the minute-10 open, which the check reports."""
+    r = _reconnected(696831125, 13, 180_000)
+    assert r.restart_ms == minute(10) + 1_499
+    assert r.observe_from_ms == minute(11)
+    minute_10 = [b for b in _after(r) if b[0].payload["bar"]["open_time_ms"] == minute(10)]
+    assert minute_10
+    assert all(b[0].payload["observed"] is False for b in minute_10)
+    assert _early_entry_fills(r, minute(11)) == []
+    expired = sorted(
+        (e.payload["order_id"], e.payload["reason"], b[0].payload["bar"]["open_time_ms"])
+        for b in _after(r)
+        for e in b[1:]
+        if e.type == "sim_order_expired" and "SIG00000000000000000000003" in e.payload["order_id"]
+    )
+    assert expired == [
+        ("baseline:SIG00000000000000000000003:entry", "valid_until_passed:downtime", minute(10)),
+        ("shadow:SIG00000000000000000000003:entry", "valid_until_passed:downtime", minute(10)),
+    ]
+    assert _downtime_problems(r) == []
+    assert check_restore_equivalence(696831125, 13, 180_000) == []
+    old = _reconnected(696831125, 13, 180_000, gated=False)
+    assert _early_entry_fills(old, minute(11)) == [
         ("baseline:SIG00000000000000000000003:entry", minute(10), True),
         ("shadow:SIG00000000000000000000003:entry", minute(10), True),
     ]
-    expected = [
+    assert _causality(old) == [
         "baseline:SIG00000000000000000000003:entry filled at an open during the downtime",
         "shadow:SIG00000000000000000000003:entry filled at an open during the downtime",
     ]
-    assert _downtime_problems(r) == expected
-    assert check_restore_equivalence(696831125, 13, 180_000) == expected
 
 
 @pytest.mark.parametrize(
@@ -848,29 +873,33 @@ def test_a_resting_entry_can_fill_at_the_open_of_a_partly_observed_minute() -> N
         (891223841, 151, 35_763, "shadow:SIG00000000000000000000012:entry"),
     ],
 )
-def test_an_intrabar_entry_fill_in_the_minute_the_crash_interrupted_is_reported(
+def test_an_intrabar_entry_no_longer_fills_in_the_minute_the_crash_interrupted(
     seed: int, fail_batch: int, delay_ms: int, order_id: str
 ) -> None:
-    """Production limitation P-1, NOT fixed (RR-B1 / BR-1 of the M3-PB.2 re-review). The crash and
-    the restart fall in the same minute, so the subscription delivers that minute live and the
-    service processes it observed; a resting entry fills inside it, intrabar. Its open precedes the
-    crash, but nothing about the minute was durable before it: its fills are journaled with the
-    bar, after its close, and its price path after the crash was not monitored. L-02 does not
-    count the minute as observed, so the fill is reported (before RR-B1 the check passed it)."""
+    """P-1, fixed (RR-B1 / BR-1 of the M3-PB.2 re-review). The crash and the restart fall in the
+    same minute, so the subscription delivers that minute live; its open precedes the crash, but its
+    price path after the crash was not monitored and L-02 does not count it as observed. The
+    service observes only from the anchor after the restart, so the minute is processed unobserved
+    and no entry fills in it, intrabar or at its open. Before the fix (`gated=False`) the resting
+    entry filled inside it, intrabar, which the check reports."""
+
+    def interrupted(r: Restart) -> list[tuple[str, bool, bool]]:
+        return [
+            (e.payload["order_id"], e.payload["at_open"], b[0].payload["observed"])
+            for b in _after(r)
+            for e in b[1:]
+            if e.type == "sim_order_filled"
+            and e.payload["role"] == "entry"
+            and e.payload["bar_open_ms"] < r.crash_ms < e.payload["bar_open_ms"] + M
+        ]
+
     r = _reconnected(seed, fail_batch, delay_ms)
     assert r.restart_ms - r.crash_ms == delay_ms
-    fills = [
-        (e.payload["order_id"], e.payload["at_open"], b[0].payload["observed"])
-        for b in _after(r)
-        for e in b[1:]
-        if e.type == "sim_order_filled"
-        and e.payload["role"] == "entry"
-        and e.payload["bar_open_ms"] < r.crash_ms < e.payload["bar_open_ms"] + M
-    ]
-    assert fills == [(order_id, False, True)]
-    assert check_restore_equivalence(seed, fail_batch, delay_ms) == [
-        f"{order_id} filled in the minute the crash interrupted"
-    ]
+    assert interrupted(r) == []
+    assert check_restore_equivalence(seed, fail_batch, delay_ms) == []
+    old = _reconnected(seed, fail_batch, delay_ms, gated=False)
+    assert interrupted(old) == [(order_id, False, True)]
+    assert _causality(old) == [f"{order_id} filled in the minute the crash interrupted"]
 
 
 def _downtime_fills(
@@ -891,9 +920,11 @@ def _downtime_fills(
 def test_the_downtime_fill_check_covers_each_minute_the_downtime_overlaps() -> None:
     """An entry fill after the restore is reported when its bar's minute overlaps
     ``[down_from_ms, live_from_ms)``, at its open or intrabar, one millisecond either side of each
-    bound; a minute that closed before the crash, or opens at or after the restart, is not."""
+    bound; a minute that closed before the crash, or opens at or after the restart, is not. The
+    journals come from the service before the P-1 fix (`gated=False`), the only one that still
+    makes such fills: the check must keep reporting them should P-1 come back."""
     # an intrabar fill on minute t; the crash 1.5 s into it
-    r = _reconnected(32438366, 129, 24_837)
+    r = _reconnected(32438366, 129, 24_837, gated=False)
     batches, t = r.journal.batches(), r.crash_ms - 1_499
     oid = "shadow:SIG00000000000000000000007:entry"
 
@@ -914,7 +945,7 @@ def test_the_downtime_fill_check_covers_each_minute_the_downtime_overlaps() -> N
     assert found(t - 1, t + 1) == [f"{oid} filled at an open during the downtime"]
     assert found(t - 1, t) == []  # the restart at the open: observed from its start (L-02)
     # the entries of 696831125 / 13 fill at the minute-10 open, inside the downtime
-    r = _reconnected(696831125, 13, 180_000)
+    r = _reconnected(696831125, 13, 180_000, gated=False)
     batches, t = r.journal.batches(), minute(10)
     both = [
         f"{s}:SIG00000000000000000000003:entry filled at an open during the downtime"
@@ -960,8 +991,10 @@ def test_a_bracket_resolves_over_the_backfill() -> None:
         if e.type == "sim_order_filled"
     ]
     assert brackets == ["take_profit"]
-    # only the P-1 entry of the interrupted minute is reported, never the take-profit
-    assert _downtime_problems(r) == [
+    # the take-profit is never reported; since the P-1 fix no entry fills in the interrupted
+    # minute either (before it, `gated=False`, the check reported SIG3's entry there)
+    assert _downtime_problems(r) == []
+    assert _causality(_reconnected(853832589, 176, 30_000, gated=False)) == [
         "shadow:SIG00000000000000000000003:entry filled in the minute the crash interrupted"
     ]
 
@@ -1061,6 +1094,12 @@ def test_recovery_outcome_reports_each_violation() -> None:
     r.strategy.calls.append((head["open_time_ms"], head["symbol"]))
     assert any("the strategy saw downtime bars" in p for p in recovery_outcome(r))
     r.strategy.calls.pop()
+    # a service observing from another anchor than production's
+    anchor = r.restored.observing_from_ms
+    assert anchor is not None
+    r.restored.observing_from_ms = anchor + M
+    assert any(f"not from the anchor {anchor}" in p for p in recovery_outcome(r))
+    r.restored.observing_from_ms = anchor
     # blocked after processing, and faulted
     r.restored.state = ServiceState.AWAITING_BACKFILL
     blocked = recovery_outcome(r)

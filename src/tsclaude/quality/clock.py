@@ -6,6 +6,10 @@ offset is the median. A `CLOCK_SKEW_CHANGED` event is emitted whenever |offset| 
 threshold (default 1 s) in either direction. The first round counts as a crossing only if it is
 already beyond the threshold.
 
+Each round also keeps its largest round trip (`max_rtt_ms`): the error of the median offset is
+bounded by half the round trip of the sample it came from, so by half the largest one (the paper
+runtime's observation anchor uses that bound, P-1).
+
 `server_now_ms()` is the local clock corrected by the last offset; until a round succeeds the
 offset is unknown and `server_now_ms()` falls back to the local clock (`offset_known` is False so
 consumers can fail closed).
@@ -48,6 +52,7 @@ class ClockRound:
     offset_ms: int
     median_rtt_ms: int
     samples: int
+    max_rtt_ms: int
 
 
 class ClockMonitor:
@@ -107,7 +112,8 @@ class ClockMonitor:
     def record(self, samples: list[ClockSample]) -> ClockRound:
         offset = round(statistics.median(s.offset_ms for s in samples))
         rtt = round(statistics.median(s.rtt_ms for s in samples))
-        rnd = ClockRound(self._clock.now_ms(), offset, rtt, len(samples))
+        max_rtt = max(s.rtt_ms for s in samples)
+        rnd = ClockRound(self._clock.now_ms(), offset, rtt, len(samples), max_rtt)
         previous = self._offset
         self._offset = offset
         self.last_round = rnd

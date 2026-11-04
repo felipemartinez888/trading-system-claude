@@ -45,12 +45,20 @@ Evidence: [O-7 devlog](devlog/2026-10-30-m2-o7-qa-rerun.md). Remaining work: [va
 |---|---|---|---|
 | **D-18** | O-7 verification evidence for B03, B10 and B12 | ✅ Accepted with qualifications (owner, 2026-10-30) | Applies to the completed O-7 verification exercise only, not to formal M2 acceptance, canonical promotion or unrestricted research use. D-15 and D-17 stay deferred. Qualifications kept on record: (1) cross-checks cover 2 of 24 months per batch; (2) B03's malformed source row is a known exception, never concealed or silently repaired; (3) Parquet file SHA-256 values differ although content hashes match, cause unknown; (4) the final O-7 tool modifications were not independently re-reviewed; (5) this is not canonical acceptance, promotion or M2 completion; (6) no 2026 holdout sources were authorized for use |
 
+### 2026-11-03: P-1 observation boundary
+Evidence: [P-1 devlog](devlog/2026-11-03-m3-p1-observation-anchor.md), [brief](tasks/M3-PB.md#p-1-implementation).
+
+| ID | Decision | Status | Resolution |
+|---|---|---|---|
+| **D-19** | L-02 observation clarification for the paper runtime | ✅ Approved (owner, 2026-11-03) | A clarification of L-02, not a weakening: for the paper runtime the monitored interval begins at the first verified effective observation boundary, the anchor A. A candle is eligible for live-observed processing only if its source qualifies as observed under the existing provenance rules, it opens at or after A, the observation clock is sufficiently trustworthy, and the other recovery and finality requirements hold. Partial candle observation does not qualify. Implemented as `observation_anchor_ms` (first minute open after the runtime's first poll in exchange time, bounded with the clock round's offset and largest round trip) and the gated `PaperTradingService`. Independent review 2026-11-03: CONDITIONAL PASS / CONDITIONAL PASS. Open residual risk F-1: clock drift or an OS clock step between the round and the poll is not bounded, so a minute that started milliseconds earlier can still count as observed ([devlog](devlog/2026-11-03-m3-p1-observation-anchor.md#independent-review-2026-11-03)) |
+| **D-20** | Recovery harness observation rule | ✅ Approved (owner, 2026-11-03) | `recovery_outcome` and the delayed-restart harness apply the production boundary: a bar is observed iff `bar.open_time_ms >= A`, with A from the same anchor function, never the raw restart instant. The instant-restart oracle stays an explicitly idealized determinism test (no anchor) |
+
 ## Lead decisions (technical, within approved scope)
 
 | ID | Date | Decision | Context |
 |---|---|---|---|
 | L-01 | 2026-10-20 | `Provenance.SYSTEM` added for the app's own runtime state (session, chain, coverage, stream health); `LIVE` is reserved for market data observed from the exchange. | M0-T4 review F6; M1-T1 applies it to stream health. |
-| L-02 | 2026-10-20 | A minute counts as *observed* only if it lies entirely inside a monitoring interval (`start ≤ open_time` and `close_time < end`). Partial overlap is not observation. | M1-T1 review N1 — conservative: observation coverage is never invented. |
+| L-02 | 2026-10-20 | A minute counts as *observed* only if it lies entirely inside a monitoring interval (`start ≤ open_time` and `close_time < end`). Partial overlap is not observation. | M1-T1 review N1 — conservative: observation coverage is never invented. Clarified for the paper runtime by D-19 (2026-11-03). |
 | L-03 | 2026-10-20 | ADR-0012 Amendment 1: certification sample floors (100 design p*, 300 realized p*), realized-payoff uncertainty carried via joint bootstrap, degenerate samples fail closed, alpha ≤ 0.10, power ≥ 0.80, one test per admission gate. | M2-T3 statistical review F1–F3. |
 | L-04 | 2026-10-20 | Same-bar entries may be stopped out in their fill bar but never book a take-profit in it; TP eligible from the next 1m bar. Trades spanning data gaps are flagged and capped. | M2-T2 causality audit F1: the O→nearer-extreme path booked unflagged same-bar wins (4.7 % of winners in random scenarios), biasing win rate upward. |
 | L-05 | 2026-10-20 | ADR-0012 Amendment 2: dependence always accounted for (estimated block length, min of CP and block-bootstrap bounds), design p* checked against realized payoffs, trial counts from the registry. | M2-T3 re-review N1–N4. |

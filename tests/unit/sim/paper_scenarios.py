@@ -27,6 +27,7 @@ from tsclaude.sim.paper import (
     Invalidate,
     PaperTradingService,
     ServiceState,
+    observation_anchor_ms,
     replay,
 )
 from tsclaude.sim.testing import bar, minute
@@ -161,6 +162,7 @@ class Restart:
     calls_at_restore: int  # strategy calls before the restart
     first_live: int | None = None  # restart after downtime: first minute the subscription delivers
     backfill: dict | None = None  # restart after downtime: the runtime's backfill attempt, if any
+    observe_from_ms: int | None = None  # restart after downtime: the service's observation anchor
 
 
 def restore_after_crash(seed: int, fail_batch: int, restart_delay_ms: int = 0) -> Restart | str:
@@ -233,13 +235,23 @@ def redeliver(r: Restart) -> None:
     drive(r.restored, r.bars, list(range(start, 40)), missing=r.missing, not_before_ms=r.restart_ms)
 
 
-def reconnect(r: Restart, store: BarStore | None = None) -> None:
+def reconnect(r: Restart, store: BarStore | None = None, *, gated: bool = True) -> None:
     """Restart after downtime, as the paper runtime does it. The service was disconnected from the
     crash to the restart: a new subscription delivers only the bars that close at or after the
-    restart (as observed live bars), polled from the restart on. The first poll that finds a gap
-    leaves the service AWAITING_BACKFILL, and the runtime's one backfill attempt per start
+    restart (as live bars), polled from the restart on. The first poll that finds a gap leaves the
+    service AWAITING_BACKFILL, and the runtime's one backfill attempt per start
     (`PaperRuntime._attempt_backfill`: the live bar store, `validate_backfill`, completeness, then
-    `resume_after_downtime`, all unobserved) resolves it or leaves the service blocked."""
+    `resume_after_downtime`, all unobserved) resolves it or leaves the service blocked.
+
+    Before its first poll the runtime fixes the observation anchor (P-1): the first minute open
+    after the restart in exchange time, `observation_anchor_ms`. The harness clock is the exchange
+    clock, so the round is exact (offset 0, no round trip) and only the reading resolution bounds
+    it; live bars opening before the anchor are processed unobserved. `gated=False` models the
+    service before the P-1 fix (observed by source only); it exists so that the checks can be
+    shown to report P-1 should it come back."""
+    if gated:
+        r.observe_from_ms = observation_anchor_ms(r.restart_ms, 0, 0)
+        r.restored.observe_from(r.observe_from_ms)
     live = [i for i in range(40) if minute(i) + 59_999 >= r.restart_ms]
     r.first_live = live[0] if live else None
     runtime = SimpleNamespace(
@@ -441,9 +453,12 @@ def _processed(
 def recovery_outcome(r: Restart, store: BarStore | None = None) -> list[str]:
     """What a restart after downtime processed, and the state it ended in.
 
+    - Observation (P-1, L-02 as clarified by the owner): the service observes from the anchor
+      production fixes at the restart (`observation_anchor_ms`). A bar is processed observed only
+      if it opens at or after that anchor; the bars before it (the downtime, and the live minute
+      the restart interrupted) are processed only unobserved, and the strategy never sees one.
     - Inputs: only bars that exist, after the journal (after its last key and outside minutes
-      closed before the crash). Those that closed before the restart are downtime bars, processed
-      only unobserved, and the strategy never sees one; live bars are processed observed. With the
+      closed before the crash). Those that closed before the restart are downtime bars. With the
       service RUNNING, every live bar the uninterrupted session released is processed, and every
       downtime bar of an instrument exposed at the restore (one with nothing to resolve may be
       left out, as `missing_before` allows).
@@ -456,6 +471,9 @@ def recovery_outcome(r: Restart, store: BarStore | None = None) -> list[str]:
     read = store or bar_store(r)
     if svc.state is ServiceState.FAULTED:
         return [f"restored service faulted: {svc.fault}"]
+    anchor = observation_anchor_ms(r.restart_ms, 0, 0)
+    if svc.observing_from_ms != anchor:
+        problems.append(f"observing from {svc.observing_from_ms}, not from the anchor {anchor}")
     after = _processed(r.journal.batches()[r.durable :])
     keys = {k for k, _ in after}
 
@@ -474,10 +492,11 @@ def recovery_outcome(r: Restart, store: BarStore | None = None) -> list[str]:
         b = existing.get(k)
         if b is None:
             problems.append(f"{k} processed but not a bar after the journal")
-        elif observed != (b.close_time_ms >= r.restart_ms):
+        elif observed != (b.open_time_ms >= anchor):
             problems.append(f"{k} processed {'observed' if observed else 'unobserved'}")
     downtime = {k for k, b in existing.items() if b.close_time_ms < r.restart_ms}
-    seen = {(k[0], k[2]) for k in downtime} & set(r.strategy.calls[r.calls_at_restore :])
+    unobserved = {k for k, b in existing.items() if b.open_time_ms < anchor}
+    seen = {(k[0], k[2]) for k in unobserved} & set(r.strategy.calls[r.calls_at_restore :])
     if seen:
         problems.append(f"the strategy saw downtime bars {sorted(seen)}")
     # complete: the store has every instrument's bar for every downtime minute after the journal

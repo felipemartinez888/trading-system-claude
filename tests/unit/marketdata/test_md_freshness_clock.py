@@ -156,6 +156,7 @@ def test_clock_round_with_fetcher(clock: ManualClock, sink: Sink) -> None:
     assert calls["n"] == 5
     assert rnd.offset_ms == 3000
     assert rnd.median_rtt_ms == 20
+    assert rnd.max_rtt_ms == 20  # every sample took 20 ms
     assert mon.skew_exceeded
     assert len(sink.of(EventType.CLOCK_SKEW_CHANGED)) == 1
 
