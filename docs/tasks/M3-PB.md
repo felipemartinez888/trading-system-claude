@@ -22,7 +22,9 @@
     pushed, not merged). The P-1 hardening (F-1, F-2, F-3, N-1, N-2) is a local checkpoint; its independent review gave
     **CONDITIONAL PASS / CONDITIONAL PASS** (0 blocking): F-2, F-3, N-1, N-2 closed, F-1 conditionally closed; P-1
     acceptance is conditional on NB-1 (same-clock assumption, sequential step + suspend counterexample) and R-1/NB-2
-    (producer continuity tests) ([hardening devlog](../devlog/2026-11-03-m3-p1-hardening.md#independent-review-2026-11-03);
+    (producer continuity tests). Follow-up (uncommitted): R-1/NB-2 tests added (M10/M17, M11, M19 caught); NB-1's
+    assumption restated, its residual risk remains real and unmitigated, so P-1 acceptance stays conditional unless
+    the owner accepts that risk ([hardening devlog](../devlog/2026-11-03-m3-p1-hardening.md#independent-review-2026-11-03);
     see also [P-1 implementation](#p-1-implementation)).
   - **Full Part B and the M3 gate are not accepted.**
   - Evidence: [devlog](../devlog/2026-11-03-m3-partb-close-marks.md), [M3-PB.2

@@ -634,6 +634,166 @@ def test_without_a_monotonic_clock_there_is_no_continuity_evidence(tmp_path: Pat
     asyncio.run(asyncio.wait_for(scenario(), 20))
 
 
+# (scenario, the fault, expected published continuity fields, expected runtime code)
+CLOCK_FAULTS = [
+    # D: both clocks advance, the wall clock 1 ms more (within the tolerance): each field from its
+    # own clock, and the bound uses the larger elapsed time
+    (
+        "valid",
+        "both",
+        {"elapsed_ms": 120_000, "wall_elapsed_ms": 120_001, "round_step_ms": 0},
+        None,
+    ),
+    # A: the OS steps the wall clock back 300 ms after the round (monotonic exact)
+    (
+        "wall step back after the round",
+        "wall_back",
+        {"elapsed_ms": 60_000, "wall_elapsed_ms": 59_700, "round_step_ms": 0},
+        "clock_discontinuity",
+    ),
+    # B: a 59 s suspend after the round: the monotonic clock stops, the wall clock runs
+    (
+        "monotonic suspend after the round",
+        "suspend",
+        {"elapsed_ms": 1_000, "wall_elapsed_ms": 60_000, "round_step_ms": 0},
+        "clock_discontinuity",
+    ),
+    # C: the wall clock jumps 500 ms forward during the second request of the round
+    (
+        "wall step within the round",
+        "in_round",
+        {"elapsed_ms": 0, "wall_elapsed_ms": 0, "round_step_ms": 500},
+        "clock_step_in_round",
+    ),
+    # E: contradictory evidence: a monotonic clock that went back, a wall clock behind the round
+    (
+        "monotonic clock went back",
+        "mono_back",
+        {"elapsed_ms": -5, "wall_elapsed_ms": 0, "round_step_ms": 0},
+        "clock_evidence_inconsistent",
+    ),
+    (
+        "wall clock behind the round",
+        "wall_behind",
+        {"elapsed_ms": 0, "wall_elapsed_ms": -10, "round_step_ms": 0},
+        "clock_round_future",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("fault", "published", "code"),
+    [pytest.param(f, pub, c, id=name) for name, f, pub, c in CLOCK_FAULTS],
+)
+def test_the_producer_publishes_wall_and_monotonic_evidence_from_their_own_clocks(
+    tmp_path: Path, fault: str, published: dict[str, int], code: str | None
+) -> None:
+    """R-1 / NB-2, through the production producer (ClockMonitor inside MarketDataService, the
+    snapshot's `clock_continuity`, the runtime's evidence check): the wall and monotonic clocks
+    are driven separately, so `wall_elapsed_ms` must come from the wall clock, `elapsed_ms` from the
+    monotonic clock and `round_step_ms` from the round's wall/monotonic spread. Every fault the
+    detector can see blocks observation with its code; the next valid round restores it, and the
+    evidence always belongs to the same round as the offset and the round trip."""
+
+    async def scenario() -> None:
+        wall = SteppableClock(T0 + 30_000)
+        mono = SteppableClock(7_000_000)
+        delays: list[tuple[int, int]] = []  # (wall ms, monotonic ms) per time request
+        rest = _exchange(wall)  # type: ignore[arg-type]
+
+        def handler(request: Any) -> Any:
+            if request.url.path in ("/api/v3/time", "/fapi/v1/time"):
+                d_wall, d_mono = delays.pop(0) if delays else (0, 0)
+                wall.now += d_wall
+                mono.now += d_mono
+                return httpx.Response(200, json={"serverTime": wall.now + 7})
+            return rest(request)
+
+        svc = MarketDataService(
+            CONFIG,
+            store := EventStore(tmp_path / "state.db"),
+            wall,
+            http_transport=httpx.MockTransport(handler),
+            ws_connect=FakeExchange().connect,
+            session_id="S1",
+            monotonic=mono,
+        )
+
+        def verdict() -> Any:
+            snap = svc.snapshot()
+            return snap, PaperRuntime._observation_verdict(None, RISK, snap)  # type: ignore[arg-type]
+
+        def same_round(snap: Any) -> int:
+            off, rtt, cont = snap.clock_offset_ms, snap.clock_max_rtt_ms, snap.clock_continuity
+            assert off.provenance is rtt.provenance is cont.provenance is Provenance.LIVE
+            assert off.as_of_ms == rtt.as_of_ms == cont.as_of_ms
+            return int(off.as_of_ms)
+
+        if fault == "in_round":
+            delays[:] = [(10, 10), (510, 10), (10, 10)]
+        else:
+            delays[:] = [(10, 10), (20, 20), (10, 10)]
+        await svc.start()
+        await svc.wait_backfill(5)
+        round_at = wall.now
+        if fault == "both":
+            wall.now += 120_001
+            mono.now += 120_000
+        elif fault == "wall_back":
+            wall.now += 60_000 - 300
+            mono.now += 60_000
+        elif fault == "suspend":
+            wall.now += 60_000
+            mono.now += 1_000
+        elif fault == "mono_back":
+            mono.now -= 5
+        elif fault == "wall_behind":
+            wall.now -= 10
+        snap, v = verdict()
+        assert same_round(snap) == round_at
+        cont = snap.clock_continuity.value
+        assert cont is not None
+        assert {k: getattr(cont, k) for k in published} == published
+        assert cont.samples == 3
+        # each stamp is the wall clock at the receive + 7 ms: offset 7 + rtt / 2, median 12
+        assert snap.clock_offset_ms.value == 12
+        assert snap.clock_max_rtt_ms.value == (510 if fault == "in_round" else 20)
+        if code is None:
+            assert v.code is None
+            assert v.anchor_ms is not None
+            assert v.details["round_age_ms"] == max(
+                published["elapsed_ms"], published["wall_elapsed_ms"]
+            )
+        else:
+            assert (v.anchor_ms, v.code) == (None, code)
+        moved = {
+            "wall_back": "moved -300 ms",
+            "suspend": "moved 59000 ms",
+            "in_round": "moved 500 ms",
+        }
+        if fault in moved:
+            assert moved[fault] in str(v.problem)
+
+        # recovery: a later valid round replaces the evidence, from that round only
+        if fault == "wall_behind":
+            wall.now += 10  # the wall clock catches up before the next round
+        delays[:] = [(10, 10), (20, 20), (10, 10)]
+        await svc._sample_clock()
+        snap, v = verdict()
+        assert same_round(snap) == wall.now
+        cont = snap.clock_continuity.value
+        assert cont is not None
+        assert (cont.elapsed_ms, cont.wall_elapsed_ms, cont.round_step_ms) == (0, 0, 0)
+        assert snap.clock_max_rtt_ms.value == 20
+        assert (v.code, v.anchor_ms is not None) == (None, True)
+
+        await svc.stop()
+        svc.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
 def test_the_production_service_factory_supplies_a_monotonic_clock(tmp_path: Path) -> None:
     """F-1 wiring: without it every run would stay blocked on `clock_continuity_unknown`."""
     from tsclaude.quality.clock import MonotonicClock

@@ -2,7 +2,9 @@
 
 Status: **implemented on `task/m3-partb` (on `91e9f4e`); independent review CONDITIONAL PASS / CONDITIONAL PASS
 (0 blocking, [below](#independent-review-2026-11-03)); committed as a local checkpoint (not pushed, not merged).**
-P-1 is **not** unconditionally accepted (conditions NB-1 and R-1/NB-2); Part B and the M3 gate are not accepted. Owner authorization: "P-1 Focused Hardening
+P-1 is **not** unconditionally accepted; Part B and the M3 gate are not accepted. Follow-up (uncommitted, on
+`42d6b0a`): R-1/NB-2 test coverage added and NB-1's assumption restated; NB-1's compound-clock risk remains
+([follow-up](#follow-up-nb-1-and-r-1nb-2-2026-11-03)). Owner authorization: "P-1 Focused Hardening
 Authorization" (2026-11-03). Protected code untouched: engine, book, live adapter, journal schema, `PAPER_VERSION`,
 `src/tsclaude/contracts/`. Startup backlog, empty minute and backfill closes were not worked on.
 
@@ -24,8 +26,8 @@ Notation: true time is exchange time; W is the wall clock, M the local monotonic
 - **Assumptions (and limits).** Each `serverTime` stamp is taken while its request is in flight; M runs within r of
   exchange time during the round; after the round **one and the same clock (M or W) runs within r over the whole
   interval from the round end to the poll** (M may pause in a suspend, or W may be stepped or slewed, but not one after
-  the other; see NB-1 below: the wording "at least one at each instant", also in the `observation_bound` docstring, is
-  weaker than the proof needs); one exchange clock for spot and USD-M. 500 ppm is 5x the usual ±100 ppm crystal
+  the other; the clock that satisfies it cannot switch midway; see NB-1 below); one exchange clock for spot and
+  USD-M. 500 ppm is an external assumption about the host's clocks: the runtime cannot verify it. 500 ppm is 5x the usual ±100 ppm crystal
   tolerance; it does **not** cover a CLOCK_MONOTONIC slewed by NTP faster than 500 ppm (only used where
   CLOCK_MONOTONIC_RAW is missing), a monotonic clock that is not monotonic, or simultaneous step of W and pause of M.
   A drift allowance is not protection against steps: steps are detected (below), not absorbed.
@@ -138,3 +140,48 @@ evidence probes pass, the bound is monotone and never raises. Findings (all non-
   killed, 1 safe survivor (NB-3).
 
 Still open beyond P-1: the startup backlog, the empty minute, closes made by a backfill, full CI and a Linux run.
+
+## Follow-up: NB-1 and R-1/NB-2 (2026-11-03)
+Owner authorization "Final P-1 Conditional Review Follow-up". Uncommitted, on `42d6b0a`. No runtime, formula, API,
+frontend, journal, risk, strategy or contract change: the only source change is the `observation_bound` docstring.
+
+- **R-1/NB-2, coverage added.** `test_the_producer_publishes_wall_and_monotonic_evidence_from_their_own_clocks`
+  (`tests/integration/marketdata/test_mdi_service.py`, 6 cases) runs the real `MarketDataService` and `ClockMonitor`
+  with separate fake wall and monotonic clocks and checks the published `elapsed_ms`, `wall_elapsed_ms` and
+  `round_step_ms`, the offset (12) and round trip, LIVE provenance and the same round for all three, the code the
+  runtime's `_observation_verdict` gives, and recovery on the next valid round. Cases: valid clocks (wall 1 ms ahead
+  of monotonic over 120 s: anchor, `round_age_ms` = the larger elapsed), wall step back 300 ms after the round
+  (`clock_discontinuity`), 59 s monotonic suspend after the round (`clock_discontinuity`), wall step +500 ms inside
+  the round (`clock_step_in_round`), monotonic clock 5 ms back (`clock_evidence_inconsistent`), wall clock 10 ms behind
+  the round (`clock_round_future`). Mutants on a disposable copy (oracle: the 5 focused files, 109 passed unmutated):
+  `wall_elapsed_ms` from the monotonic clock (M10/M17) 5 failed, `elapsed_ms` from the wall clock (M11) 5 failed,
+  `round_step_ms` = 0 (M19) 1 failed, monitor step not measured 3 failed, monitor min round trip from the maximum
+  2 failed: 5 of 5 caught. Before this test the first three passed every repo test (103 passed).
+- **NB-1, assumption restated** (docstring, this devlog, SIMULATION §7, D-19): the bound holds only if one and the
+  same clock, wall or monotonic, stays within 500 ppm over the whole interval from the clock round to the poll; the
+  clock that satisfies it cannot switch midway.
+- **NB-1, residual limitation (real, not fixed).** A wall-clock step back followed by a roughly compensating
+  monotonic suspend cancels in the discontinuity check: re-reproduced on the current code through
+  `ClockMonitor.sample_round` -> `_clock_continuity` -> `_observation_verdict` (X = Y = 1,000 ms at about 600 s: no
+  code, anchor in a minute that started 300 ms before the poll; X = 1,000 / Y = 1,500 at about 850 s: 300 ms;
+  X = Y = 2,000 at about 30 s: 600 ms; X = 1,000 / Y = 2,500: detected). Also not detectable: other sequential or
+  compound anomalies whose net wall/monotonic movement stays within the tolerance, anomalies of both clocks at once (a
+  slew shared by both), a VM pause or live migration that freezes both clocks, a host clock outside 500 ppm (an
+  external assumption). What the runtime can detect still fails closed: a net wall/monotonic movement beyond
+  `continuity_tolerance_ms` during or since the round, a negative round trip, inconsistent, missing, non-LIVE or
+  other-round evidence, a stale round, an offset beyond the skew limit. No new runtime mitigation was implemented.
+- **Design note (not implemented; the owner did not authorize it): a fresh clock round at paper start.** It would
+  bound the round-to-poll interval to the round's own duration (about a second) instead of up to
+  `clock_offset_max_age_ms` (15 min), so a step and a matching suspend would both have to fall inside that second:
+  a large reduction of NB-1 exposure, not its removal (the cancellation does not depend on the round's age; X = Y =
+  2,000 at 30 s is still undetected). It would add an operational dependency: paper start (anchor establishment)
+  would need the REST time endpoint reachable at that moment, adding latency, request weight and a new fail-closed
+  path (no anchor while that request fails), and it would change startup sequencing.
+- **Not changed:** the runtime `LIMITATIONS` text served by `/api/paper/status` ("assumes the local monotonic clock
+  runs within 500 ppm…") is left as is because API output changes were not authorized; it does not state the
+  same-clock condition.
+- **Validation:** `test_mdi_service`, `tests/unit/marketdata` (incl. freshness/clock) 127 passed;
+  `test_observation_clock`, `test_paper_observation`, `test_sim_property_regressions`, `test_p1_observation_anchor`,
+  `test_mvp2_paper_api` 168 passed; ruff, format (touched files), mypy `src` (116 files) clean.
+- **Status:** P-1 technical acceptance remains **conditional** unless a separate owner decision explicitly accepts
+  the NB-1 residual risk. Part B and the M3 gate are not accepted.

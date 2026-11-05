@@ -628,8 +628,16 @@ def observation_bound(e: ClockEvidence, *, max_age_ms: int, skew_max_ms: int) ->
     The bound, at the snapshot instant P (true time t is exchange time; W wall, M monotonic; every
     reading floored; r = `CLOCK_DRIFT_PPM`):
     - Assumed: each server stamp was taken while its request was in flight; during the round M
-      runs within r of exchange time; after it, at least one of M and W does (M may stop in a
-      suspend, W may step or be slewed, not both at once); one exchange clock for spot and USD-M.
+      runs within r of exchange time; from the round end R to the snapshot P one and the same
+      clock, M or W, runs within r over the whole interval (the clock that satisfies it may not
+      switch midway: M may stop in a suspend, or W may step or be slewed, but not one after the
+      other); one exchange clock for spot and USD-M. r is an external assumption about the host's
+      clocks: nothing here can verify it.
+    - Not covered (residual risk NB-1): a wall step followed by a roughly compensating monotonic
+      suspend (or the reverse) cancels out in the discontinuity check below and can give an anchor
+      in a minute that had already started; so can anomalies of both clocks at once (a VM pause or
+      live migration that freezes both, a slew shared by both). The checks below detect only a net
+      wall/monotonic movement beyond the tolerance, a negative round trip and inconsistent evidence.
     - Round end R, in the monotonic frame (as `clock_uncertainty_ms` shows for the wall frame):
       some sample j has `phi(stamp_j) < median(x_i - mid_i(M)) + max_rtt(M) / 2 + 1`, with
       phi = t - M, and phi grows by at most `r / (1 - r)` per monotonic ms up to R.
@@ -637,9 +645,9 @@ def observation_bound(e: ClockEvidence, *, max_age_ms: int, skew_max_ms: int) ->
       (`round_step_ms`): the monotonic median is at most the wall offset + 0.5 (rounding) + max d,
       the monotonic round trips at most the wall ones + S, and `m_R = w_R - d_R`. So
       `t(R) < w_R + offset + clock_uncertainty_ms(max_rtt) + 1.5 S + r / (1 - r) (span + 1)`.
-    - R to P: with E the larger of the two elapsed times, whichever clock ran within r gives
-      `t(P) - t(R) < (E + 1) / (1 - r)`. A backward wall step or a monotonic pause can only make
-      its own clock read less, and the other one is used.
+    - R to P: with E the larger of the two elapsed times, the clock that ran within r over all of
+      [R, P] gives `t(P) - t(R) < (E + 1) / (1 - r)`. A backward wall step or a monotonic pause
+      can only make its own clock read less, and E takes the other one.
     - So `t(P) < w_R + E + offset + clock_uncertainty_ms(max_rtt) + 1 + ceil(1.5 S) +
       drift_allowance_ms(span + E + 2)`.
 

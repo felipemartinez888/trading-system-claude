@@ -121,9 +121,12 @@ spread inside the round and a 500 ppm drift allowance over the round and the tim
 negative round trip, or shows the wall clock moving against the monotonic clock beyond the tolerance
 (a step, a suspend or a fast slew): paper keeps running unobserved and retries at every poll. It assumes
 one exchange clock for spot and USD-M, a `serverTime` stamped while the request was in flight, and that
-after the round one and the same local clock runs within 500 ppm until the poll. A wall step followed by a
-suspend of matching size is not detected (review finding NB-1, open); the drift allowance does not absorb steps,
-they are detected ([hardening devlog](devlog/2026-11-03-m3-p1-hardening.md)).
+after the round one and the same local clock (wall or monotonic) runs within 500 ppm until the poll; the clock
+that satisfies it cannot switch midway, and 500 ppm is an external assumption the runtime cannot verify. Residual
+risk NB-1 (open, not fixed): a wall step followed by a roughly compensating suspend, other compound anomalies whose
+net wall/monotonic movement stays within the tolerance, a slew shared by both clocks, or a VM pause or migration
+that freezes both are not detected and can give an anchor in a minute that had started. Only what is detectable
+fails closed; the drift allowance does not absorb steps ([hardening devlog](devlog/2026-11-03-m3-p1-hardening.md#follow-up-nb-1-and-r-1nb-2-2026-11-03)).
 
 ## 8. Reports and run manifest
 
