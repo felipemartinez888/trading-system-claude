@@ -2,9 +2,14 @@
 
 Status: **implemented on `task/m3-partb` (on `91e9f4e`); independent review CONDITIONAL PASS / CONDITIONAL PASS
 (0 blocking, [below](#independent-review-2026-11-03)); committed as a local checkpoint (not pushed, not merged).**
-P-1 is **not** unconditionally accepted; Part B and the M3 gate are not accepted. Follow-up (uncommitted, on
-`42d6b0a`): R-1/NB-2 test coverage added and NB-1's assumption restated; NB-1's compound-clock risk remains
-([follow-up](#follow-up-nb-1-and-r-1nb-2-2026-11-03)). Owner authorization: "P-1 Focused Hardening
+P-1 is **not** unconditionally accepted; Part B and the M3 gate are not accepted. Follow-up: R-1/NB-2 test
+coverage added and NB-1's assumption restated, committed as local checkpoint `b4f8d01` (2026-11-04; not pushed, not
+merged); its independent closure review gave **PASS** (R-1/NB-2 CLOSED, NB-1 wording CLOSED, 0 blocking;
+[below](#closure-review-2026-11-04)). NB-1's compound-clock risk remains; the owner chose mitigation option B with a
+conditional acceptance of the residual risk (D-21), implemented in the
+[NB-1 devlog](2026-11-04-m3-p1-nb1-fresh-round.md) ([follow-up](#follow-up-nb-1-and-r-1nb-2-2026-11-03)); its
+independent causality review gave PASS (0 blocking) and the owner **closed NB-1** under D-21 on 2026-11-04 (residual
+risk explicitly accepted for the supervised paper-only MVP). Owner authorization: "P-1 Focused Hardening
 Authorization" (2026-11-03). Protected code untouched: engine, book, live adapter, journal schema, `PAPER_VERSION`,
 `src/tsclaude/contracts/`. Startup backlog, empty minute and backfill closes were not worked on.
 
@@ -142,7 +147,8 @@ evidence probes pass, the bound is monotone and never raises. Findings (all non-
 Still open beyond P-1: the startup backlog, the empty minute, closes made by a backfill, full CI and a Linux run.
 
 ## Follow-up: NB-1 and R-1/NB-2 (2026-11-03)
-Owner authorization "Final P-1 Conditional Review Follow-up". Uncommitted, on `42d6b0a`. No runtime, formula, API,
+Owner authorization "Final P-1 Conditional Review Follow-up". Written on `42d6b0a`; committed as local checkpoint
+`b4f8d01` on 2026-11-04 (not pushed, not merged). No runtime, formula, API,
 frontend, journal, risk, strategy or contract change: the only source change is the `observation_bound` docstring.
 
 - **R-1/NB-2, coverage added.** `test_the_producer_publishes_wall_and_monotonic_evidence_from_their_own_clocks`
@@ -185,3 +191,33 @@ frontend, journal, risk, strategy or contract change: the only source change is 
   `test_mvp2_paper_api` 168 passed; ruff, format (touched files), mypy `src` (116 files) clean.
 - **Status:** P-1 technical acceptance remains **conditional** unless a separate owner decision explicitly accepts
   the NB-1 residual risk. Part B and the M3 gate are not accepted.
+
+## Closure review (2026-11-04)
+Owner authorization "Execute Approved Preservation and P-1 Review" (Steps 1-5). Before the review the follow-up was
+preserved outside git (`C:\Users\felip\TSC_preservation\2026-11-04\`, SHA-256 manifest, 0 mismatches), re-validated
+(`test_mdi_service` + `tests/unit/marketdata` 127 passed; the five observation files 168 passed; ruff, format and
+mypy `src` (116 files) clean; mypy ran with a fresh cache because the local `.mypy_cache` is corrupt, and the project
+`.venv` interpreter was used because `uv run` fails on this machine) and committed as local checkpoint `b4f8d01`
+(parent `42d6b0a`, exactly the 8 reviewed files).
+
+Independent `causality-auditor`, isolated context, read-only, on `git diff 42d6b0a b4f8d01`; mutants only in a
+disposable `git archive` copy with `tsclaude` imported from the copy (verified). **Verdict: PASS, 0 blocking.**
+- R-1/NB-2 **CLOSED**: the producer test drives the real `MarketDataService` -> `ClockMonitor` -> `clock_continuity` ->
+  `_observation_verdict` path; assertions are not vacuous. 20 mutants: 19 killed by the focused suite (oracle 119
+  passed), 15 by the new test alone; M10/M17, M11 and M19 (the previous survivors) killed.
+- NB-1 wording **CLOSED**: the same-clock assumption and the residual cases are stated consistently; the auditor
+  re-derived the bound under it. The AST of `paper.py` is equal ignoring docstrings: no implementation change.
+- NB-1 residual risk **still open** (re-reproduced on `b4f8d01`).
+- Non-blocking: **N-1** the new test does not pin the anchor value (unit tests do); **N-2** mutant X9 (receive
+  readings dropped from the round's step spread) survives every test, a `ClockMonitor` internal, not an R-1 field;
+  **N-3** the anchor overshoot under the NB-1 counterexample has no fixed cap, about the step size minus the
+  allowance over all phases (677 ms for X = Y = 1 s, 1,963 ms for X = Y = 2 s); the "300 to 600 ms" quoted above are
+  instances; **N-4** the served `LIMITATIONS` text lacked the same-clock condition and NB-1; **N-5** status texts still
+  said "uncommitted".
+- N-3, N-4 and N-5 are addressed with D-21 ([NB-1 devlog](2026-11-04-m3-p1-nb1-fresh-round.md)); N-1 and N-2 stay
+  open (minor).
+- **Status:** R-1/NB-2 closed. P-1 acceptance stays conditional on D-21's conditions (the mitigation's regression
+  tests and its own independent causality review). Part B and the M3 gate are not accepted.
+- **Update (2026-11-04):** D-21's conditions are met (full non-live suite 1513 passed; independent causality review
+  PASS, 0 blocking) and the owner **closed NB-1** ([NB-1 devlog](2026-11-04-m3-p1-nb1-fresh-round.md)). Part B and
+  the M3 gate are still not accepted.

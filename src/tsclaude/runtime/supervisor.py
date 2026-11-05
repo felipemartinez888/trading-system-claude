@@ -290,11 +290,15 @@ class MonitoringSupervisor:
             try:
                 # the real service backfills the downtime in the background; paper opens after it
                 wait_backfill = getattr(service, "wait_backfill", None)
+                # D-21: the fresh clock round paper needs before its observation anchor; a
+                # service without it leaves paper unobserved (fail closed)
+                resync_clock = getattr(service, "resync_clock", None)
                 await paper.start(
                     paper_subscription,
                     snapshot=self.snapshot,
                     market_running=lambda: self.running,
                     ready=wait_backfill if callable(wait_backfill) else None,
+                    resync_clock=resync_clock if callable(resync_clock) else None,
                 )
             except Exception as exc:  # defensive: PaperRuntime.start reports its own failures
                 paper_subscription.close()

@@ -119,7 +119,7 @@ round to the poll with the larger of the monotonic and wall time elapsed, and ad
 spread inside the round and a 500 ppm drift allowance over the round and the time since it
 (`observation_bound`). No anchor while the evidence is missing, from another round, inconsistent, has a
 negative round trip, or shows the wall clock moving against the monotonic clock beyond the tolerance
-(a step, a suspend or a fast slew): paper keeps running unobserved and retries at every poll. It assumes
+(a step, a suspend or a fast slew): paper keeps running unobserved and retries with a new round (below). It assumes
 one exchange clock for spot and USD-M, a `serverTime` stamped while the request was in flight, and that
 after the round one and the same local clock (wall or monotonic) runs within 500 ppm until the poll; the clock
 that satisfies it cannot switch midway, and 500 ppm is an external assumption the runtime cannot verify. Residual
@@ -127,6 +127,22 @@ risk NB-1 (open, not fixed): a wall step followed by a roughly compensating susp
 net wall/monotonic movement stays within the tolerance, a slew shared by both clocks, or a VM pause or migration
 that freezes both are not detected and can give an anchor in a minute that had started. Only what is detectable
 fails closed; the drift allowance does not absorb steps ([hardening devlog](devlog/2026-11-03-m3-p1-hardening.md#follow-up-nb-1-and-r-1nb-2-2026-11-03)).
+
+**Fresh round before the anchor (NB-1 option B, D-21).** The runtime evaluates the anchor only right after a
+server-clock round it requested itself succeeded (`MarketDataService.resync_clock`, serialized with the periodic
+round), from a snapshot taken after that round, and only if the snapshot's round is at most
+`anchor_round_max_age_ms` (default 5 s) old on both clocks (`clock_round_not_fresh` otherwise). The request runs in
+the background; while it is pending (`clock_resync_pending`, transient, no problem raised), failed or timed out
+(`clock_resync_failed`), or when market data offers no resync (`clock_resync_unavailable`), nothing is observed.
+Retries: one request at a time, after `resync_retry_s` (15 s) doubling up to `resync_retry_max_s` (240 s); every
+monitoring start requests its own round. The other evidence checks above still apply to the fresh round. Effect
+on NB-1: the round-to-anchor interval shrinks from up to the round's maximum age (15 min; periodic rounds every
+5 min) to about the round's own duration plus one poll (a few seconds). **The risk is reduced, not removed, and no
+fixed error bound is claimed:** a wall step with a compensating monotonic suspend inside that interval, an anomaly
+shared by both clocks (a VM pause or migration, a common slew) and a clock outside 500 ppm are still undetected, and
+the anchor can then fall inside a started minute by an amount that grows with the anomaly (review finding N-3:
+677 ms for 1 s anomalies, 1,963 ms for 2 s ones, before this change). The anchor evidence is still not journaled
+([NB-1 devlog](devlog/2026-11-04-m3-p1-nb1-fresh-round.md)).
 
 ## 8. Reports and run manifest
 

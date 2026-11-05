@@ -95,7 +95,10 @@ class Rig:
 
     def _runtime(self, enabled: bool) -> PaperRuntime:
         return PaperRuntime(
-            PaperSettings(enabled=enabled, poll_s=POLL),
+            # D-21: a failed fresh clock round is retried after one poll (no growing backoff)
+            PaperSettings(
+                enabled=enabled, poll_s=POLL, resync_retry_s=POLL, resync_retry_max_s=POLL
+            ),
             self.store,
             self.clock,
             config_factory=lambda: self.config_factory(),

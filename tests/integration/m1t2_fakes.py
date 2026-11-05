@@ -117,6 +117,10 @@ class FakeMarketData:
         # Provenance overrides per field, to check the API passes them through unchanged.
         self.book_provenance = Provenance.LIVE
         self.crashes = 0
+        # D-21: outcomes of the next fresh clock rounds (popped; True when empty); an exception
+        # is raised, a float is a delay in seconds before succeeding
+        self.resync_results: list[bool | float | Exception] = []
+        self.resync_calls = 0
 
     # ------------------------------------------------------------------ protocol
     @property
@@ -143,6 +147,18 @@ class FakeMarketData:
 
     def close(self) -> None:
         self.closed = True
+
+    async def resync_clock(self) -> bool:
+        """Like `MarketDataService.resync_clock`; this fake's snapshot always carries a round
+        taken at the snapshot instant, so a success is always fresh."""
+        self.resync_calls += 1
+        outcome = self.resync_results.pop(0) if self.resync_results else True
+        if isinstance(outcome, Exception):
+            raise outcome
+        if isinstance(outcome, float):
+            await asyncio.sleep(outcome)
+            return True
+        return outcome and self._running
 
     def subscribe(self, maxsize: int = 10_000) -> FakeSubscription:
         sub = FakeSubscription(self)

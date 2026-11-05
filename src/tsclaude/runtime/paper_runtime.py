@@ -29,6 +29,21 @@ first minute open after the run's first poll in exchange time, bounded with the 
 round, the drift since it on the monotonic clock and the wall clock's movement against it
 (`observation_bound`). Until trustworthy clock evidence gives the anchor nothing is observed, and
 the reason is published (`observation`) and raised as a problem.
+Fresh round before the anchor (NB-1 option B, owner decision D-21). The anchor is evaluated only
+right after a server-clock round that this run requested succeeded (`resync_clock`, the
+market-data service's `resync_clock`), from a snapshot taken after it, and only if the snapshot's
+round (the requested one, or a periodic one that finished after it) is at most
+`anchor_round_max_age_ms` old on both clocks; an older round never gives the anchor. The request
+runs in the background (the consumer keeps polling); one request at a time, bounded by
+`resync_timeout_s`, retried after `resync_retry_s` doubling up to `resync_retry_max_s` while it
+fails or its round gives no anchor. Without a resync hook, while a request is pending or failed,
+or when the round is not fresh enough, nothing is observed (fail closed: resting SL/TP still
+resolve, no entry fills or is created). This shortens the interval from the round to the anchor
+from up to the round's maximum age (15 min; rounds run every 5 min) to about the round's own
+duration plus a poll; it does **not** remove NB-1: a wall step and a compensating monotonic
+suspend inside that interval, an anomaly shared by both clocks (a VM pause or migration, a common
+slew) or a clock outside the 500 ppm assumption can still give an anchor in a minute that had
+started, by an amount that grows with the size of the anomaly (no fixed bound).
 Bars before it (the downtime backfill, minutes queued during the startup wait, the minute a crash
 interrupted, the partly observed first minute) are processed unobserved, as downtime is
 (SIMULATION §7): resting SL/TP resolve over them, no entry fills on them and no signal is computed.
@@ -114,11 +129,18 @@ LIMITATIONS = (
     "Each monitoring start observes from the first whole minute after its first poll (exchange "
     "time, bounded with the server-clock round); earlier minutes, the downtime and the minutes "
     "queued during the startup wait included, are processed unobserved (no entry fills or is "
-    "created on them). Without a fresh server-clock round within the risk limits nothing is "
-    "observed. The bound assumes the local monotonic clock runs within 500 ppm of exchange time "
-    "and the exchange stamps server time while the request is in flight; a wall-clock step, "
-    "suspend or fast slew detected against the monotonic clock blocks observation until a new "
-    "round.",
+    "created on them). The anchor is fixed only from a server-clock round requested by this run "
+    "right before it and found fresh at the poll; while that round is pending, failed or too old, "
+    "nothing is observed (retried with backoff). The bound assumes that one and the same local "
+    "clock (wall or monotonic) runs within 500 ppm of exchange time over the whole interval from "
+    "the round to the poll, without switching clocks midway (an external assumption the runtime "
+    "cannot verify), and that the exchange stamps server time while the request is in flight. A "
+    "net wall-clock step, suspend or fast slew detected against the monotonic clock blocks "
+    "observation until a new round. Not detected (residual risk NB-1): a wall step followed by a "
+    "roughly compensating monotonic suspend (or the reverse) inside that interval, an anomaly "
+    "shared by both clocks (a VM pause or migration, a common slew), or a clock outside 500 ppm; "
+    "each can count a minute that had already started as observed, by an amount that grows with "
+    "the anomaly (no fixed bound).",
     "strategy bracket_reference (if selected) is REFERENCE / NOT VALIDATED: a pipeline strategy, "
     "not claimed profitable, paper only; its signals are not research results. It needs about 7.8 "
     "days of unbroken 1m history per instrument before its first decision. It is built at the "
@@ -174,6 +196,16 @@ class PaperSettings:
     silence_s: float = 180.0
     #: longest wait for the market-data startup backfill before opening (then UNAVAILABLE)
     backfill_wait_s: float = 900.0
+    #: NB-1 option B (D-21): the anchor needs a round this run requested, at most this old at the
+    #: poll on both clocks (the round itself takes a few round trips; the next poll follows within
+    #: `poll_s`)
+    anchor_round_max_age_ms: int = 5_000
+    #: longest wait for one requested round (then it counts as failed)
+    resync_timeout_s: float = 30.0
+    #: wait before the next request after a failed one (or one whose round gave no anchor),
+    #: doubling per consecutive failure up to `resync_retry_max_s`
+    resync_retry_s: float = 15.0
+    resync_retry_max_s: float = 240.0
     source: str = "defaults"
 
     def __post_init__(self) -> None:
@@ -187,6 +219,12 @@ class PaperSettings:
             raise ValueError("settle_ms must be >= 0, poll_s > 0 and silence_s > poll_s")
         if self.backfill_wait_s <= 0:
             raise ValueError("backfill_wait_s must be > 0")
+        if self.anchor_round_max_age_ms <= 0:
+            raise ValueError("anchor_round_max_age_ms must be > 0")
+        if not 0 < self.resync_retry_s <= self.resync_retry_max_s or self.resync_timeout_s <= 0:
+            raise ValueError(
+                "resync_timeout_s must be > 0 and 0 < resync_retry_s <= resync_retry_max_s"
+            )
         if self.starting_equity <= 0:
             raise ValueError("starting_equity must be positive")
 
@@ -211,6 +249,10 @@ class PaperSettings:
             "backfill_from_live_bars",
             "silence_s",
             "backfill_wait_s",
+            "anchor_round_max_age_ms",
+            "resync_timeout_s",
+            "resync_retry_s",
+            "resync_retry_max_s",
         }
         unknown = sorted(set(raw) - known)
         if unknown:
@@ -230,6 +272,10 @@ class PaperSettings:
             backfill_from_live_bars=bool(raw.get("backfill_from_live_bars", True)),
             silence_s=float(raw.get("silence_s", 180.0)),
             backfill_wait_s=float(raw.get("backfill_wait_s", 900.0)),
+            anchor_round_max_age_ms=int(raw.get("anchor_round_max_age_ms", 5_000)),
+            resync_timeout_s=float(raw.get("resync_timeout_s", 30.0)),
+            resync_retry_s=float(raw.get("resync_retry_s", 15.0)),
+            resync_retry_max_s=float(raw.get("resync_retry_max_s", 240.0)),
             source=str(path),
         )
 
@@ -560,6 +606,14 @@ class PaperRuntime:
         self._sub: SubscriptionLike | None = None
         self._snapshot: Callable[[], MarketSnapshot | None] = lambda: None
         self._market_running: Callable[[], bool] = lambda: False
+        #: NB-1 option B (D-21): the market-data hook that takes a fresh clock round, and this
+        #: run's request state (one request at a time, backoff after a failure)
+        self._resync: Callable[[], Awaitable[bool]] | None = None
+        self._resync_task: asyncio.Task[tuple[bool, str | None]] | None = None
+        self._resync_attempts = 0
+        self._resync_failures = 0  # consecutive
+        self._resync_next_at: float | None = None  # loop time; None: request at the next poll
+        self._resync_last_error: str | None = None
         #: (snapshot, published_at_ms): one tuple, replaced in a single assignment (H2)
         self._published: tuple[dict[str, Any], int | None] = ({}, None)
         self.opened_at_ms: int | None = None
@@ -581,13 +635,17 @@ class PaperRuntime:
         snapshot: Callable[[], MarketSnapshot | None],
         market_running: Callable[[], bool],
         ready: Callable[[], Awaitable[None]] | None = None,
+        resync_clock: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         """Open or restore the paper session and start consuming. Never raises: any failure
         leaves the state `UNAVAILABLE` with the reason, and the subscription closed.
 
         `ready` (the market-data service's `wait_backfill`) is awaited in the background task,
         bounded by `backfill_wait_s`, before the session is opened and the risk tracker seeded, so
-        neither reads a bar store that the startup backfill is still filling."""
+        neither reads a bar store that the startup backfill is still filling.
+
+        `resync_clock` (the market-data service's `resync_clock`) takes the fresh server-clock
+        round the observation anchor needs (D-21); without it this run never observes."""
         if not self.enabled:
             subscription.close()
             return
@@ -604,6 +662,8 @@ class PaperRuntime:
         self.dropped_updates = 0
         self._snapshot = snapshot
         self._market_running = market_running
+        self._resync = resync_clock
+        self._reset_resync()
         self._sub = subscription
         self._stop = asyncio.Event()
         if ready is None:
@@ -678,6 +738,7 @@ class PaperRuntime:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+        await self._cancel_resync()
         if self._sub is not None:
             self._sub.close()
             self._sub = None
@@ -743,7 +804,7 @@ class PaperRuntime:
                 if self.observing_since_ms is None:
                     self.observing_since_ms = now
                 if service.observing_from_ms is None:
-                    self._establish_observation(service, snap, now)
+                    self._anchor_step(service, snap, now)
                 service.poll(now)
                 if service.state is ServiceState.AWAITING_BACKFILL and self.backfill is None:
                     self._attempt_backfill(service, now)
@@ -787,9 +848,143 @@ class PaperRuntime:
         self._set(state, reason)
         self._problem(f"Paper trading stopped: {state}", reason)
 
+    # ------------------------------------------------------------------ fresh round (D-21)
+    def _reset_resync(self) -> None:
+        self._resync_task = None
+        self._resync_attempts = 0
+        self._resync_failures = 0
+        self._resync_next_at = None
+        self._resync_last_error = None
+
+    async def _cancel_resync(self) -> None:
+        task, self._resync_task = self._resync_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def _request_round(self) -> tuple[bool, str | None]:
+        """One fresh server-clock round through the hook: (True, None) or (False, why). Never
+        raises except on cancellation."""
+        resync = self._resync
+        if resync is None:
+            return False, "no resync hook"
+        try:
+            ok = await asyncio.wait_for(resync(), timeout=self.settings.resync_timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            return False, f"no server-clock round within {self.settings.resync_timeout_s:g} s"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        if ok is not True:
+            return False, "the server-clock round produced no sample"
+        return True, None
+
+    def _resync_state(self) -> dict[str, Any]:
+        retry_in = None
+        if self._resync_task is None and self._resync_next_at is not None:
+            retry_in = max(0.0, round(self._resync_next_at - asyncio.get_running_loop().time(), 1))
+        return {
+            "available": self._resync is not None,
+            "pending": self._resync_task is not None,
+            "attempts": self._resync_attempts,
+            "consecutive_failures": self._resync_failures,
+            "last_error": self._resync_last_error,
+            "retry_in_s": retry_in,
+        }
+
+    def _anchor_step(
+        self, service: PaperTradingService, snap: MarketSnapshot | None, now: int
+    ) -> None:
+        """One poll of the anchor gate (NB-1 option B, D-21), while this run has no anchor.
+
+        No hook: blocked (`clock_resync_unavailable`). Otherwise the gate requests one fresh
+        server-clock round in the background (the consumer keeps polling; blocked as
+        `clock_resync_pending`, no problem raised for that transient state). When it finished:
+        on failure blocked (`clock_resync_failed`); on success the anchor is evaluated once, from
+        a snapshot taken now, so after that round, by `_establish_observation`, which also
+        requires the round to be at most `anchor_round_max_age_ms` old on both clocks. Any outcome
+        without an anchor waits `resync_retry_s`, doubling per consecutive failure up to
+        `resync_retry_max_s`, before the next request; the last blocked reason stays published.
+        Bars meanwhile are processed unobserved (fail closed)."""
+        if self._resync is None:
+            self._record_observation(
+                service,
+                ObservationVerdict(
+                    None,
+                    "clock_resync_unavailable",
+                    "no fresh server-clock round can be requested (market data has no resync)",
+                ),
+                now,
+            )
+            return
+        loop = asyncio.get_running_loop()
+        task = self._resync_task
+        if task is None:
+            if self._resync_next_at is not None and loop.time() < self._resync_next_at:
+                if self.observation is not None:  # keep the reason, refresh the retry state
+                    self.observation = {**self.observation, "resync": self._resync_state()}
+                return
+            self._resync_attempts += 1
+            self._resync_task = asyncio.create_task(
+                self._request_round(), name="paper-clock-resync"
+            )
+            self._record_pending(now)
+            return
+        if not task.done():
+            self._record_pending(now)
+            return
+        self._resync_task = None
+        ok: bool
+        error: str | None
+        if task.cancelled():
+            ok, error = False, "the server-clock round was cancelled"
+        else:
+            ok, error = task.result()
+        if ok:
+            self._establish_observation(service, self._snapshot(), self._clock.now_ms())
+            if service.observing_from_ms is not None:
+                self._resync_failures = 0
+                self._resync_last_error = None
+                self.observation = {**(self.observation or {}), "resync": self._resync_state()}
+                return
+            error = (self.observation or {}).get("problem") or "no anchor"
+        self._resync_failures += 1
+        self._resync_last_error = error
+        exponent = min(self._resync_failures - 1, 16)
+        delay = min(self.settings.resync_retry_s * 2**exponent, self.settings.resync_retry_max_s)
+        self._resync_next_at = loop.time() + delay
+        if not ok:
+            self._record_observation(
+                service,
+                ObservationVerdict(
+                    None, "clock_resync_failed", f"fresh server-clock round failed: {error}"
+                ),
+                now,
+            )
+        else:  # blocked by the verdict, already recorded: refresh the retry state
+            self.observation = {**(self.observation or {}), "resync": self._resync_state()}
+
+    def _record_pending(self, now: int) -> None:
+        """Published, but no problem is raised and the last blocked code is kept (transient)."""
+        self.observation = {
+            "state": "blocked",
+            "attempted_at_ms": now,
+            "observing_from_ms": None,
+            "problem": "waiting for a fresh server-clock round before fixing the anchor",
+            "code": "clock_resync_pending",
+            "resync": self._resync_state(),
+        }
+
     # ------------------------------------------------------------------ observation
     def _establish_observation(
-        self, service: PaperTradingService, snap: MarketSnapshot | None, now: int
+        self,
+        service: PaperTradingService,
+        snap: MarketSnapshot | None,
+        now: int,
+        *,
+        bound_only: bool = False,
     ) -> None:
         """Fix the observation anchor at this poll (P-1, L-02), or fail closed until a later one.
 
@@ -799,9 +994,30 @@ class PaperRuntime:
         trustworthy evidence (no snapshot; an offset, round trip or monotonic evidence that is not
         LIVE or comes from another round; or a verdict without an anchor) no anchor is set: the
         service processes every bar unobserved (resting exits resolve; no entry fills or is
-        created), the reason is published and raised as a problem when it changes, and the next
-        poll tries again."""
+        created), the reason is published and raised as a problem when it changes, and a later
+        poll tries again.
+
+        D-21: a round older than `anchor_round_max_age_ms` (on either clock) at the snapshot gives
+        no anchor (`clock_round_not_fresh`); the runtime calls this only right after a fresh round
+        it requested (`_anchor_step`). `bound_only` skips that freshness rule, for tests of the
+        bound alone."""
         verdict = self._observation_verdict(service, snap)
+        if verdict.anchor_ms is not None and not bound_only:
+            age = verdict.details.get("round_age_ms")
+            limit = self.settings.anchor_round_max_age_ms
+            if age is None or age > limit:
+                verdict = ObservationVerdict(
+                    None,
+                    "clock_round_not_fresh",
+                    f"server clock round {age} ms old at the poll; the anchor needs a fresh "
+                    f"round at most {limit} ms old",
+                    details=dict(verdict.details),
+                )
+        self._record_observation(service, verdict, now)
+
+    def _record_observation(
+        self, service: PaperTradingService, verdict: ObservationVerdict, now: int
+    ) -> None:
         info: dict[str, Any] = {
             "state": "active" if verdict.anchor_ms is not None else "blocked",
             "attempted_at_ms": now,
@@ -809,6 +1025,7 @@ class PaperRuntime:
             "problem": verdict.problem,
             "code": verdict.code,
             **verdict.details,
+            "resync": self._resync_state(),
         }
         self.observation = info
         if verdict.anchor_ms is None:

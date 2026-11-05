@@ -22,9 +22,16 @@
     pushed, not merged). The P-1 hardening (F-1, F-2, F-3, N-1, N-2) is a local checkpoint; its independent review gave
     **CONDITIONAL PASS / CONDITIONAL PASS** (0 blocking): F-2, F-3, N-1, N-2 closed, F-1 conditionally closed; P-1
     acceptance is conditional on NB-1 (same-clock assumption, sequential step + suspend counterexample) and R-1/NB-2
-    (producer continuity tests). Follow-up (uncommitted): R-1/NB-2 tests added (M10/M17, M11, M19 caught); NB-1's
-    assumption restated, its residual risk remains real and unmitigated, so P-1 acceptance stays conditional unless
-    the owner accepts that risk ([hardening devlog](../devlog/2026-11-03-m3-p1-hardening.md#independent-review-2026-11-03);
+    (producer continuity tests). Follow-up: R-1/NB-2 tests added and NB-1's assumption restated, local checkpoint
+    `b4f8d01`; its independent closure review gave **PASS** (R-1/NB-2 and the NB-1 wording CLOSED, 0 blocking;
+    [closure review](../devlog/2026-11-03-m3-p1-hardening.md#closure-review-2026-11-04)). The owner decided NB-1 on
+    2026-11-04 (**D-21**: option B, a fresh clock round before the anchor, fail closed, plus a conditional acceptance
+    of the residual risk for the supervised paper-only MVP if the mitigation passes its tests and an independent
+    causality review). Option B is implemented (uncommitted, on `b4f8d01`); full non-live suite 1513 passed and its
+    independent causality review gave **PASS** (0 blocking, 5 non-blocking); **NB-1 closed** by the owner under D-21
+    (2026-11-04; residual risk explicitly accepted for the supervised paper-only MVP; local checkpoint, not pushed)
+    ([NB-1 devlog](../devlog/2026-11-04-m3-p1-nb1-fresh-round.md)); the residual risk is reduced, not removed
+    ([hardening devlog](../devlog/2026-11-03-m3-p1-hardening.md#independent-review-2026-11-03);
     see also [P-1 implementation](#p-1-implementation)).
   - **Full Part B and the M3 gate are not accepted.**
   - Evidence: [devlog](../devlog/2026-11-03-m3-partb-close-marks.md), [M3-PB.2

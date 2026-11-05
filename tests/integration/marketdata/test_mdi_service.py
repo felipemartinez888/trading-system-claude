@@ -805,3 +805,80 @@ def test_the_production_service_factory_supplies_a_monotonic_clock(tmp_path: Pat
     assert isinstance(svc._monotonic, MonotonicClock)
     svc.close()
     store.close()
+
+
+def test_resync_clock_takes_a_fresh_round_now_or_reports_failure(tmp_path: Path) -> None:
+    """D-21 (NB-1 option B), producer side: `resync_clock` takes one round at once, outside the
+    5-minute schedule. True only when that round produced samples and is the last round (the
+    snapshot's evidence is then from it, 0 ms old); False before start, after stop, and when every
+    sample fails, in which case the previous round stays the last one and keeps ageing (never
+    refreshed or relabelled)."""
+
+    async def scenario() -> None:
+        wall = SteppableClock(T0 + 30_000)
+        mono = SteppableClock(7_000_000)
+        state = {"fail": False, "locked": []}
+        rest = _exchange(wall)  # type: ignore[arg-type]
+        svc: MarketDataService | None = None
+
+        def handler(request: Any) -> Any:
+            if request.url.path in ("/api/v3/time", "/fapi/v1/time"):
+                if svc is not None and svc.running:
+                    state["locked"].append(svc._clock_lock.locked())
+                if state["fail"]:
+                    return httpx.Response(400, json={"code": -1, "msg": "down"})
+                wall.now += 10
+                mono.now += 10
+                return httpx.Response(200, json={"serverTime": wall.now + 7})
+            return rest(request)
+
+        svc = MarketDataService(
+            CONFIG,
+            store := EventStore(tmp_path / "state.db"),
+            wall,
+            http_transport=httpx.MockTransport(handler),
+            ws_connect=FakeExchange().connect,
+            session_id="S1",
+            monotonic=mono,
+        )
+        assert await svc.resync_clock() is False  # not started: no monitor
+        await svc.start()
+        await svc.wait_backfill(5)
+        first = svc.snapshot().clock_offset_ms.as_of_ms
+        assert first is not None
+        wall.now += 600_000
+        mono.now += 600_000
+        old = svc.snapshot().clock_continuity.value
+        assert old is not None
+        assert old.elapsed_ms == 600_000  # the startup round, 10 min old
+
+        assert await svc.resync_clock() is True
+        snap = svc.snapshot()
+        cont = snap.clock_continuity.value
+        assert cont is not None
+        assert snap.clock_offset_ms.as_of_ms == snap.clock_continuity.as_of_ms == wall.now > first
+        assert (cont.elapsed_ms, cont.wall_elapsed_ms, cont.samples) == (0, 0, 3)
+        assert snap.clock_offset_ms.provenance is Provenance.LIVE
+
+        fresh_at = wall.now
+        wall.now += 60_000
+        mono.now += 60_000
+        state["fail"] = True
+        assert await svc.resync_clock() is False  # every sample failed
+        snap = svc.snapshot()
+        cont = snap.clock_continuity.value
+        assert cont is not None
+        assert snap.clock_offset_ms.as_of_ms == fresh_at  # the previous round, not relabelled
+        assert (cont.elapsed_ms, cont.wall_elapsed_ms) == (60_000, 60_000)
+
+        state["fail"] = False
+        await asyncio.gather(svc._sample_clock(), svc.resync_clock(), svc._sample_clock())
+        assert state["locked"]
+        assert all(state["locked"])  # every round after start serialized
+
+        await svc.stop()
+        assert await svc.resync_clock() is False  # stopped
+        svc.close()
+        store.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 30))

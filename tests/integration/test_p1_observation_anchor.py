@@ -62,6 +62,16 @@ def _flags(rig: Rig) -> dict[int, list[bool]]:
     return out
 
 
+async def _settled(rig: Rig) -> dict[str, Any]:
+    """The runtime's observation once it is not the transient wait for a fresh round (D-21)."""
+    for _ in range(500):
+        observation = rig.runtime.observation
+        if observation is not None and observation["code"] != "clock_resync_pending":
+            return observation
+        await asyncio.sleep(POLL)
+    raise AssertionError(f"observation stayed pending: {rig.runtime.observation}")
+
+
 # ---------------------------------------------------------------- the anchor at the first poll
 def test_the_runtime_observes_from_the_first_whole_minute_after_its_first_poll(
     tmp_path: Path,
@@ -87,7 +97,17 @@ def test_the_runtime_observes_from_the_first_whole_minute_after_its_first_poll(
             "step_ms": 0,
             "allowance_ms": 2,  # + 1 ms for the elapsed reading
             "round_age_ms": 0,
+            # D-21: one fresh round requested by this run, and it gave the anchor
+            "resync": {
+                "available": True,
+                "pending": False,
+                "attempts": 1,
+                "consecutive_failures": 0,
+                "last_error": None,
+                "retry_in_s": None,
+            },
         }
+        assert rig.md.resync_calls == 1
         service = rig.runtime.service
         assert service is not None
         assert service.observing_from_ms == T0 + M
@@ -289,7 +309,7 @@ def test_the_anchor_converts_the_poll_to_exchange_time_with_its_uncertainty(
     service = PaperTradingService(paper_config(), MemoryJournal(), observation_gated=True)
     as_of = local - age
     snap = _snapshot(tmp_path, local, **_round(offset, 40, as_of, elapsed=age))
-    rig.runtime._establish_observation(service, snap, local)
+    rig.runtime._establish_observation(service, snap, local, bound_only=True)  # the bound alone
     assert service.observing_from_ms == expected
     allowance = 1 + drift_allowance_ms(120 + age + 2)
     assert expected == observation_anchor_ms(local, offset, 40, allowance_ms=allowance)
@@ -321,11 +341,11 @@ def test_a_stale_clock_blocks_observation_until_a_fresh_round_arrives(tmp_path: 
         await rig.idle(T0 + 20_000)
         for i in range(2):
             await rig.minute(i)
-        observation = rig.runtime.observation
-        assert observation is not None
+        observation = await _settled(rig)
         assert observation["observing_from_ms"] is None
         assert "old" in observation["problem"]
-        assert observation["attempted_at_ms"] == T0 + 2 * M + 1_500  # retried at every poll
+        assert observation["attempted_at_ms"] == T0 + 2 * M + 1_500  # retried (D-21: a new round)
+        assert rig.md.resync_calls >= 3  # one fresh round per retry, never the stale one reused
         fresh["ok"] = True
         for i in range(2, 5):
             await rig.minute(i)  # the first fresh poll is at minute 2's close + 1.5 s
@@ -384,8 +404,7 @@ def test_invalid_clock_evidence_blocks_observation_without_stopping_paper(tmp_pa
             phase["n"] = n
             for i in minutes:
                 await rig.minute(i)
-                observation = rig.runtime.observation
-                assert observation is not None
+                observation = await _settled(rig)
                 codes.append(observation["code"])
                 problems.append(observation["problem"])
                 assert observation["state"] == "blocked"

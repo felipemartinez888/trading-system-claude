@@ -177,6 +177,8 @@ class MarketDataService:
         self._rest: dict[Market, BinanceRest] = {}
         self._ws: WsManager | None = None
         self._clock_monitor: ClockMonitor | None = None
+        #: one clock round at a time: the periodic round and `resync_clock` share the monitor
+        self._clock_lock = asyncio.Lock()
         self.freshness: FreshnessMonitor | None = None
         self._tasks: list[asyncio.Task[Any]] = []
         self._books: dict[tuple[Market, str], BookTop] = {}
@@ -420,7 +422,23 @@ class MarketDataService:
 
     async def _sample_clock(self) -> None:
         if self._clock_monitor is not None:
-            await self._clock_monitor.sample_round()
+            async with self._clock_lock:
+                await self._clock_monitor.sample_round()
+
+    async def resync_clock(self) -> bool:
+        """Take one server-clock round now, outside the periodic schedule (NB-1 option B, D-21:
+        the paper runtime asks for one right before it fixes its observation anchor).
+
+        True only if this round produced at least one sample and is the monitor's last round;
+        False if the service is not running, has no clock monitor yet, or every sample failed (the
+        previous round, if any, stays the last one and must not be taken as fresh). A failed
+        sample never raises here; the round is serialized with the periodic one."""
+        cm = self._clock_monitor
+        if cm is None or not self._running:
+            return False
+        async with self._clock_lock:
+            rnd = await cm.sample_round()
+            return rnd is not None and cm.last_round is rnd
 
     async def check_watermarks(self) -> None:
         """One watermark pass over every builder, plus bounded gap retries when due."""

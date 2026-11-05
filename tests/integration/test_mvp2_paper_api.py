@@ -41,7 +41,9 @@ def _app(tmp_path: Path, *, enabled: bool = True, paper: bool = True) -> TestCli
     if paper:
         supervisor.attach_paper(
             PaperRuntime(
-                PaperSettings(enabled=enabled, poll_s=0.01),
+                PaperSettings(
+                    enabled=enabled, poll_s=0.01, resync_retry_s=0.01, resync_retry_max_s=0.01
+                ),
                 store,
                 clock,
                 config_factory=lambda: PaperConfig(
@@ -104,12 +106,15 @@ def test_the_status_shows_why_paper_is_not_observing(
 
     monkeypatch.setattr(FakeMarketData, "snapshot", snapshot)
 
+    PENDING = "clock_resync_pending"
+
     def observation(c: TestClient, state: str) -> dict[str, Any]:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             value = c.get("/api/paper/status").json()["status"]["value"]
             got = value["observation"]
-            if got is not None and got["state"] == state:
+            # skip the transient wait for the fresh clock round (D-21)
+            if got is not None and got["state"] == state and got["code"] != PENDING:
                 return value
             time.sleep(0.02)
         raise AssertionError(f"observation never became {state}: {got}")
