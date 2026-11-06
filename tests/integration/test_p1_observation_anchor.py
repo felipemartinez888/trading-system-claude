@@ -145,10 +145,10 @@ def test_minutes_queued_during_the_startup_wait_are_processed_unobserved(tmp_pat
         for i in (3, 4):
             await rig.minute(i)
         flags = _flags(rig)
-        # every bar before the anchor is unobserved. (Not P-1: the runtime polls once per update,
-        # so the backlog's first minute is released before its second bar is offered, which then
-        # is late; the same happens without the gate. Recorded as a separate finding.)
+        # every bar before the anchor is unobserved; the backlog is drained before the first poll,
+        # so its first minute keeps both bars (M3-PB.3, test_pb3_startup_backlog.py)
         assert sorted(m for m in flags if m < T0 + 4 * M) == [T0 + i * M for i in range(4)]
+        assert flags[T0] == [False, False]
         assert not any(any(v) for m, v in flags.items() if m < T0 + 4 * M)
         assert flags[T0 + 4 * M] == [True, True]
         assert recorder.calls == [T0 + 4 * M, T0 + 4 * M]

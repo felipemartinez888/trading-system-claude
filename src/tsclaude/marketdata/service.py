@@ -20,6 +20,7 @@ its queue is bounded and overflow is counted on the subscription (the data itsel
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
@@ -87,12 +88,24 @@ PUBLISHED_EVENTS = frozenset(
 type Update = BarClosed | Event
 
 
+class _UpdateQueue(asyncio.Queue[Update | None]):
+    """`asyncio.Queue` whose head can be inspected without removing it. Storage is exactly the
+    stock one (a deque, as `asyncio.Queue._init` creates); only its type is declared here."""
+
+    def _init(self, maxsize: int) -> None:
+        self._queue: collections.deque[Update | None] = collections.deque()
+
+    def head_is_close_sentinel(self) -> bool:
+        return bool(self._queue) and self._queue[0] is None
+
+
 class Subscription:
     """Async iterator of updates (closed bars and market-data events) for one consumer."""
 
     def __init__(self, owner: MarketDataService, maxsize: int) -> None:
         self._owner = owner
-        self._queue: asyncio.Queue[Update | None] = asyncio.Queue(maxsize=maxsize)
+        self._queue = _UpdateQueue(maxsize=maxsize)
+        self._closed = False
         self.dropped = 0
 
     def _put(self, item: Update | None) -> None:
@@ -101,10 +114,25 @@ class Subscription:
         except asyncio.QueueFull:
             self.dropped += 1  # durable copies remain in state.db / the event log
 
+    @property
+    def closed(self) -> bool:
+        """True once `close()` was called (tells "closed" apart from "empty" for `get_nowait`)."""
+        return self._closed
+
     def close(self) -> None:
+        self._closed = True
         self._owner._subscribers.discard(self)
         with contextlib.suppress(asyncio.QueueFull):
             self._queue.put_nowait(None)
+
+    def get_nowait(self) -> Update | None:
+        """The oldest queued update without awaiting (FIFO, same order as `get()`), or None when
+        the queue is empty. The close sentinel is left queued (None is returned) so the next
+        `get()` / iteration still sees the closure; use `closed` to tell closed from empty.
+        Never blocks, never yields to the event loop, never changes `dropped`."""
+        if self._queue.empty() or self._queue.head_is_close_sentinel():
+            return None
+        return self._queue.get_nowait()
 
     def __aiter__(self) -> AsyncIterator[Update]:
         return self._iter()

@@ -8,11 +8,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal as D
 from types import SimpleNamespace
+from typing import Literal
 
 from paper_helpers import BTC, ETH, ScriptedStrategy, config, drive, new_service, record, sid
+from risk_helpers import snapshot
 
 from tsclaude.contracts.market import Bar, BarSource, Market
 from tsclaude.contracts.signals import EntryRuleKind, Side, SignalStatus
+from tsclaude.marketdata.bars import BarClosed
 from tsclaude.risk.config import RiskConfig
 from tsclaude.risk.engine import RiskEngine, RiskStatus
 from tsclaude.risk.market import MarketView, SymbolMarket
@@ -163,6 +166,9 @@ class Restart:
     first_live: int | None = None  # restart after downtime: first minute the subscription delivers
     backfill: dict | None = None  # restart after downtime: the runtime's backfill attempt, if any
     observe_from_ms: int | None = None  # restart after downtime: the service's observation anchor
+    #: restart after downtime with a startup wait (`reconnect(delivery=...)`): the wall time of the
+    #: service's first poll; the anchor is fixed there, where the runtime starts monitoring
+    first_poll_ms: int | None = None
 
 
 def restore_after_crash(seed: int, fail_batch: int, restart_delay_ms: int = 0) -> Restart | str:
@@ -211,6 +217,8 @@ def restore_after_crash(seed: int, fail_batch: int, restart_delay_ms: int = 0) -
 
 
 BarStore = Callable[[Market, str, int, int], Sequence[Bar]]
+#: how a restarted consumer hands a queued backlog to the service (`reconnect`, M3-PB.3)
+Delivery = Literal["per_update", "drained"]
 
 
 def bar_store(r: Restart) -> BarStore:
@@ -235,7 +243,14 @@ def redeliver(r: Restart) -> None:
     drive(r.restored, r.bars, list(range(start, 40)), missing=r.missing, not_before_ms=r.restart_ms)
 
 
-def reconnect(r: Restart, store: BarStore | None = None, *, gated: bool = True) -> None:
+def reconnect(
+    r: Restart,
+    store: BarStore | None = None,
+    *,
+    gated: bool = True,
+    delivery: Delivery | None = None,
+    startup_wait_ms: int = 0,
+) -> None:
     """Restart after downtime, as the paper runtime does it. The service was disconnected from the
     crash to the restart: a new subscription delivers only the bars that close at or after the
     restart (as live bars), polled from the restart on. The first poll that finds a gap leaves the
@@ -248,9 +263,34 @@ def reconnect(r: Restart, store: BarStore | None = None, *, gated: bool = True) 
     clock, so the round is exact (offset 0, no round trip) and only the reading resolution bounds
     it; live bars opening before the anchor are processed unobserved. `gated=False` models the
     service before the P-1 fix (observed by source only); it exists so that the checks can be
-    shown to report P-1 should it come back."""
+    shown to report P-1 should it come back.
+
+    `delivery` (M3-PB.3, default None: the model above, unchanged) models how production consumes
+    the subscription after a startup wait: the service first polls at
+    ``r.restart_ms + startup_wait_ms`` (`r.first_poll_ms`), where the runtime starts monitoring and
+    fixes the anchor. Live bars whose minute closed before that first poll are queued, in
+    subscription order (per minute ETH's bar before BTC's, as `drive`), and delivered at the first
+    poll's wall time:
+
+    - ``"per_update"``: the consumer before M3-PB.3. One queued bar is offered, then the service
+      polls; then the next bar, and so on. A queued minute past its settle deadline is released
+      with its first bar only and the rest of it is late.
+    - ``"drained"``: the consumer after M3-PB.3. Every queued bar is offered, then one poll.
+
+    In both, the runtime's backfill attempt follows the poll that finds the gap (`_run`), and once
+    the queue is empty the consumer polls again (its next `get` times out). The market snapshots
+    of the queued minutes are the ones `drive` gives (taken before each close), recorded before
+    the first poll in both variants, so that the variants differ in delivery only. Later minutes
+    arrive on time, as in the default model, never polled before the first poll."""
+    if delivery is None and startup_wait_ms:
+        raise ValueError("startup_wait_ms needs a delivery mode")
+    if startup_wait_ms < 0:
+        raise ValueError("startup_wait_ms must be >= 0")
+    first_poll = r.restart_ms + startup_wait_ms
+    if delivery is not None:
+        r.first_poll_ms = first_poll
     if gated:
-        r.observe_from_ms = observation_anchor_ms(r.restart_ms, 0, 0)
+        r.observe_from_ms = observation_anchor_ms(first_poll, 0, 0)
         r.restored.observe_from(r.observe_from_ms)
     live = [i for i in range(40) if minute(i) + 59_999 >= r.restart_ms]
     r.first_live = live[0] if live else None
@@ -259,13 +299,54 @@ def reconnect(r: Restart, store: BarStore | None = None, *, gated: bool = True) 
         _bars=store or bar_store(r),
         backfill=None,
     )
-    for i in live:
-        drive(r.restored, r.bars, [i], missing=r.missing, not_before_ms=r.restart_ms)
+
+    def attempt_backfill(now: int) -> bool:
         if r.restored.state is ServiceState.AWAITING_BACKFILL and runtime.backfill is None:
-            now = max(minute(i) + 59_999 + 1_500, r.restart_ms)
             PaperRuntime._attempt_backfill(runtime, r.restored, now)  # type: ignore[arg-type]
             r.backfill = runtime.backfill
+            return True
+        return False
+
+    if delivery is not None:
+        queued = [i for i in live if minute(i) + 59_999 < first_poll]
+        live = live[len(queued) :]
+        for i in queued:
+            close = minute(i) + 59_999
+            r.restored.on_snapshot(snapshot(close - 200, symbols=(BTC, ETH)))
+        bars = [
+            r.bars[key][i] for i in queued for key in (ETH, BTC) if (i, key[1]) not in r.missing
+        ]
+        deliver_backlog(r.restored, bars, first_poll, delivery, attempt_backfill)
+    for i in live:
+        drive(r.restored, r.bars, [i], missing=r.missing, not_before_ms=first_poll)
+        now = max(minute(i) + 59_999 + 1_500, first_poll)
+        if attempt_backfill(now):
             r.restored.poll(now)
+
+
+def deliver_backlog(
+    service: PaperTradingService,
+    bars: Sequence[Bar],
+    now_ms: int,
+    delivery: Delivery,
+    after_poll: Callable[[int], object] = lambda now: None,
+) -> None:
+    """Hand a queued backlog (`bars`, in subscription order) to `service` at wall time `now_ms`,
+    as the consumer does (`reconnect`): ``"per_update"`` offers one bar per poll, ``"drained"``
+    offers them all before one poll. `after_poll` runs after each poll (the runtime's backfill
+    attempt); a last poll follows the backlog (the consumer's next `get` finds the queue empty)."""
+    if delivery == "per_update":
+        steps = [[b] for b in bars]
+    elif delivery == "drained":
+        steps = [list(bars)] if bars else []
+    else:
+        raise ValueError(f"unknown delivery {delivery!r}")
+    for step in steps:
+        for b in step:
+            service.on_update(BarClosed(b))
+        service.poll(now_ms)
+        after_poll(now_ms)
+    service.poll(now_ms)
 
 
 def check_restore_equivalence(seed: int, fail_batch: int, restart_delay_ms: int = 0) -> list[str]:
@@ -309,6 +390,36 @@ def check_restore_equivalence(seed: int, fail_batch: int, restart_delay_ms: int 
             down_from_ms=r.crash_ms,
         )
         problems += recovery_outcome(r)
+    return problems
+
+
+def check_backlog_delivery(
+    seed: int,
+    fail_batch: int,
+    restart_delay_ms: int,
+    startup_wait_ms: int,
+    delivery: Delivery = "drained",
+) -> list[str]:
+    """Restart after downtime whose first poll comes `startup_wait_ms` after the restart, the
+    queued backlog handed over as `delivery` (`reconnect`). No bar the new subscription delivered
+    may be late: each one is released, or still buffered while the service awaits its backfill.
+    Holds for ``"drained"`` (M3-PB.3); ``"per_update"`` loses the second bar of every queued minute
+    already past its settle deadline once the first one has been polled."""
+    r = restore_after_crash(seed, fail_batch, restart_delay_ms)
+    if isinstance(r, str):
+        return [r]
+    reconnect(r, delivery=delivery, startup_wait_ms=startup_wait_ms)
+    clock = r.restored.clock
+    problems = []
+    if r.restored.fault is not None:
+        problems.append(f"restored service faulted: {r.restored.fault}")
+    if clock.late:
+        problems.append(f"late bars: {[order_key(b) for b in clock.late][:5]}")
+    buffered = sum(len(slot) for slot in clock._buffer.values())
+    if clock.stats.offered != clock.stats.released + buffered:
+        problems.append(
+            f"offered {clock.stats.offered}, released {clock.stats.released}, buffered {buffered}"
+        )
     return problems
 
 
@@ -471,7 +582,9 @@ def recovery_outcome(r: Restart, store: BarStore | None = None) -> list[str]:
     read = store or bar_store(r)
     if svc.state is ServiceState.FAULTED:
         return [f"restored service faulted: {svc.fault}"]
-    anchor = observation_anchor_ms(r.restart_ms, 0, 0)
+    # the runtime fixes the anchor at its first poll: the restart, or after a startup wait
+    first_poll = r.restart_ms if r.first_poll_ms is None else r.first_poll_ms
+    anchor = observation_anchor_ms(first_poll, 0, 0)
     if svc.observing_from_ms != anchor:
         problems.append(f"observing from {svc.observing_from_ms}, not from the anchor {anchor}")
     after = _processed(r.journal.batches()[r.durable :])

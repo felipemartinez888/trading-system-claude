@@ -1075,11 +1075,33 @@ class PaperTradingService:
         stop: asyncio.Event,
         *,
         poll_s: float = 1.0,
+        drain_max: int = 1000,
     ) -> None:
-        """Consume a market-data `Subscription` until `stop` is set (or the service faults)."""
+        """Consume a market-data `Subscription` until `stop` is set (or the service faults).
+
+        Each iteration offers the awaited update and then every update already queued (up to
+        `drain_max`, through `get_nowait` when the subscription has it), then snapshots and polls
+        once, so a poll decides on every bar that had arrived by then: with a backlog, one update
+        per poll would release a minute past its deadline with only its first bar and make the
+        rest of that minute late (M3-PB.3). When the bound is reached older updates may still be
+        queued, so that iteration neither snapshots nor polls (no minute is released incomplete
+        because of the batch limit); it yields and continues."""
+        if drain_max < 1:
+            raise ValueError("drain_max must be > 0")
+        get_nowait = getattr(subscription, "get_nowait", None)
         while not stop.is_set() and self.state is not ServiceState.FAULTED:
             update = await subscription.get(timeout=poll_s)
             if update is not None:
                 self.on_update(update)
+            drained = 0
+            while get_nowait is not None and drained < drain_max:
+                queued = get_nowait()
+                if queued is None:
+                    break
+                self.on_update(queued)
+                drained += 1
+            if drained >= drain_max:
+                await asyncio.sleep(0)
+                continue
             self.on_snapshot(snapshot())
             self.poll(now_ms())

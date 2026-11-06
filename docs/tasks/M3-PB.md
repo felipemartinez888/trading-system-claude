@@ -437,7 +437,9 @@ CONDITIONAL PASS / CONDITIONAL PASS; local checkpoint pending hardening, not unc
   - **N-2:** the observation state and why no anchor exists are not visible in the API or as a problem.
   - Also N-4, N-5 and nits ([devlog](../devlog/2026-11-03-m3-p1-observation-anchor.md#independent-review-2026-11-03)).
 
-  The startup backlog defect predates P-1. It loses a late bar of an exposed instrument and changes exit timing
+  The startup backlog defect predates P-1. **M3-PB.3** (2026-11-05, uncommitted, reviews PASS / APPROVE WITH NITS, 0
+  blocking; [devlog](../devlog/2026-11-05-m3-pb3-startup-backlog.md)) drains queued updates before each poll.
+  It loses a late bar of an exposed instrument and changes exit timing
   (non-blocking for P-1, blocking for Part B).
 - **Not accepted:** P-1 unconditionally (pending hardening), the delayed property, full Part B, the M3 gate.
 

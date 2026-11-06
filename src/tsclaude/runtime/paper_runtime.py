@@ -21,7 +21,9 @@ again. A new paper session is an explicit, token-protected operator action with 
 At start the runtime waits for the market-data service's own startup backfill (`wait_backfill`,
 bounded by `backfill_wait_s`) before it opens the session, seeds the risk tracker or attempts its
 own backfill, so it never reads a half-filled bar store. Updates arriving meanwhile stay queued in
-its subscription; any dropped update stops paper (`STOPPED_OVERFLOW`).
+its subscription; any dropped update stops paper (`STOPPED_OVERFLOW`). Before each poll the
+consumer offers every update already queued (bounded by `drain_max`; a bounded iteration defers its
+poll), so a backlog minute is never released with only its first bar (M3-PB.3).
 
 Observation (P-1; L-02 as the owner clarified it for paper). The service is gated: a bar counts as
 observed only if it is a live WebSocket bar that opens at or after the observation anchor, the
@@ -177,6 +179,11 @@ class SubscriptionLike(Protocol):
 
     async def get(self, timeout: float | None = None) -> BarClosed | Event | None: ...
 
+    def get_nowait(self) -> BarClosed | Event | None:
+        """The oldest queued update without awaiting, or None (empty, or the close sentinel is
+        next: it stays queued for `get`)."""
+        ...
+
 
 type BarReader = Callable[[Market, str, int, int], Sequence[Bar]]
 
@@ -206,6 +213,9 @@ class PaperSettings:
     #: doubling per consecutive failure up to `resync_retry_max_s`
     resync_retry_s: float = 15.0
     resync_retry_max_s: float = 240.0
+    #: M3-PB.3: most updates taken without awaiting (`get_nowait`) per consumer iteration; when
+    #: reached, that iteration does not poll (older updates may still be queued)
+    drain_max: int = 1000
     source: str = "defaults"
 
     def __post_init__(self) -> None:
@@ -227,6 +237,8 @@ class PaperSettings:
             )
         if self.starting_equity <= 0:
             raise ValueError("starting_equity must be positive")
+        if isinstance(self.drain_max, bool) or self.drain_max < 1:
+            raise ValueError("drain_max must be > 0")
 
     @classmethod
     def load(cls, path: Path) -> PaperSettings:
@@ -253,6 +265,7 @@ class PaperSettings:
             "resync_timeout_s",
             "resync_retry_s",
             "resync_retry_max_s",
+            "drain_max",
         }
         unknown = sorted(set(raw) - known)
         if unknown:
@@ -276,6 +289,7 @@ class PaperSettings:
             resync_timeout_s=float(raw.get("resync_timeout_s", 30.0)),
             resync_retry_s=float(raw.get("resync_retry_s", 15.0)),
             resync_retry_max_s=float(raw.get("resync_retry_max_s", 240.0)),
+            drain_max=int(raw.get("drain_max", 1000)),
             source=str(path),
         )
 
@@ -601,6 +615,11 @@ class PaperRuntime:
         self._observation_code: str | None = None
         self.backfill: dict[str, Any] | None = None
         self.dropped_updates = 0
+        #: M3-PB.3 consumer counters of this run: updates taken by the drain (`get_nowait`), the
+        #: largest drain of one iteration, iterations whose poll was deferred by `drain_max`
+        self._drained_updates = 0
+        self._largest_drain = 0
+        self._drain_deferrals = 0
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._sub: SubscriptionLike | None = None
@@ -660,6 +679,9 @@ class PaperRuntime:
         self.opened_at_ms = None
         self.backfill = None
         self.dropped_updates = 0
+        self._drained_updates = 0
+        self._largest_drain = 0
+        self._drain_deferrals = 0
         self._snapshot = snapshot
         self._market_running = market_running
         self._resync = resync_clock
@@ -764,11 +786,20 @@ class PaperRuntime:
 
     # ------------------------------------------------------------------ consumer
     async def _run(self) -> None:
+        """Consume until stopped or halted. Each iteration awaits one update (or `poll_s`), then
+        offers every update already queued (`_drain`, at most `drain_max`) before it snapshots,
+        anchors and polls once, so a poll decides on every bar that had arrived by then (M3-PB.3:
+        one update per poll released a backlog minute past its deadline with only its first bar
+        and made the rest of it late). When the bound is reached older updates may still be
+        queued: that iteration neither snapshots, anchors nor polls (no minute is released
+        incomplete because of the bound); it records a deferral, yields and continues. The stop,
+        fault, overflow and silence checks run every iteration."""
         service, sub = self.service, self._sub
         if service is None or sub is None:  # start() sets both before creating the task
             return
         loop = asyncio.get_running_loop()
         last_update = loop.time()  # monotonic: independent of the (possibly manual) wall clock
+        drain_max = self.settings.drain_max
         try:
             while not self._stop.is_set():
                 if service.state is ServiceState.FAULTED:
@@ -788,15 +819,38 @@ class PaperRuntime:
                         "market data stopped while paper was consuming (subscription closed)",
                     )
                     return
-                if update is None and loop.time() - last_update > self.settings.silence_s:
+                if update is not None:
+                    last_update = loop.time()
+                    service.on_update(update)
+                # Updates already queued (also after a timeout). Stops at the close sentinel,
+                # which stays queued: the next get() returns None and is decided above. A stream
+                # failure raised here propagates (CONSUMER_DIED), as from get().
+                drained = self._drain(service, sub, drain_max)
+                if drained:
+                    last_update = loop.time()
+                if self._overflowed(sub):
+                    return
+                if (
+                    update is None
+                    and not drained
+                    and loop.time() - last_update > self.settings.silence_s
+                ):
                     self._halt(
                         PaperState.SUBSCRIPTION_LOST,
                         f"no market-data update for more than {self.settings.silence_s:g} s",
                     )
                     return
-                if update is not None:
-                    last_update = loop.time()
-                    service.on_update(update)
+                if drained >= drain_max:
+                    self._drain_deferrals += 1
+                    log.info(
+                        "paper poll deferred: %d queued update(s) drained (drain_max %d); older "
+                        "updates may still be queued",
+                        drained,
+                        drain_max,
+                        extra={"drained": drained, "deferrals": self._drain_deferrals},
+                    )
+                    await asyncio.sleep(0)
+                    continue
                 snap = self._snapshot()
                 if snap is not None:
                     service.on_snapshot(snap)
@@ -814,6 +868,19 @@ class PaperRuntime:
         except Exception as exc:
             log.exception("paper consumer died")
             self._halt(PaperState.CONSUMER_DIED, f"{type(exc).__name__}: {exc}")
+
+    def _drain(self, service: PaperTradingService, sub: SubscriptionLike, limit: int) -> int:
+        """Offer up to `limit` already queued updates, in queue order, without awaiting."""
+        n = 0
+        while n < limit:
+            queued = sub.get_nowait()
+            if queued is None:  # empty, or the close sentinel is next (left for get())
+                break
+            service.on_update(queued)
+            n += 1
+        self._drained_updates += n
+        self._largest_drain = max(self._largest_drain, n)
+        return n
 
     def _overflowed(self, sub: SubscriptionLike) -> bool:
         dropped = int(getattr(sub, "dropped", 0))  # fresh subscription per run: any drop counts
@@ -1364,6 +1431,12 @@ class PaperRuntime:
             "previous_run": self.previous_run,
             "audit_log": audit,
             "dropped_updates": self.dropped_updates,
+            "consumer": {
+                "drain_max": self.settings.drain_max,
+                "drained_updates": self._drained_updates,
+                "largest_drain": self._largest_drain,
+                "deferrals": self._drain_deferrals,
+            },
             "backfill": self.backfill,
             "limitations": list(LIMITATIONS),
             "reference": self.reference.describe() if self.reference is not None else None,

@@ -64,6 +64,8 @@ class SubscriptionLike(Protocol):
 
     async def get(self, timeout: float | None = None) -> BarClosed | Event | None: ...
 
+    def get_nowait(self) -> BarClosed | Event | None: ...  # the paper consumer's drain (M3-PB.3)
+
 
 class MarketDataLike(Protocol):
     """The subset of `MarketDataService` the supervisor uses (a fake implements it in tests)."""

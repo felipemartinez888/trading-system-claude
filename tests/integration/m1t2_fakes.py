@@ -7,6 +7,7 @@ make `start()` fail. Also importable from child processes (lifecycle tests).
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 from dataclasses import dataclass, field
 from typing import Any
@@ -64,14 +65,37 @@ def make_bar(
     )
 
 
+type _Item = BarClosed | Event | Exception | None
+
+
+class _PeekQueue(asyncio.Queue[_Item]):
+    """`asyncio.Queue` whose head can be inspected (stock deque storage, as the real service's)."""
+
+    def _init(self, maxsize: int) -> None:
+        self._queue: collections.deque[_Item] = collections.deque()
+
+    def head_is_close_sentinel(self) -> bool:
+        return bool(self._queue) and self._queue[0] is None
+
+
 class FakeSubscription:
+    """Mirrors `marketdata.service.Subscription`: `get`, `get_nowait`, `close`, `closed`.
+
+    Test-only extension: an `Exception` queued by a test is a stream failure; whichever read
+    reaches it (`get` or `get_nowait`) removes and raises it, so a consumer never decides after
+    the failure as if the queue were merely empty."""
+
     def __init__(self, owner: FakeMarketData) -> None:
         self._owner = owner
-        self.queue: asyncio.Queue[BarClosed | Event | Exception | None] = asyncio.Queue()
-        self.closed = False
+        self.queue: _PeekQueue = _PeekQueue()
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def close(self) -> None:
-        self.closed = True
+        self._closed = True
         self._owner.subscriptions.discard(self)
         with contextlib.suppress(asyncio.QueueFull):
             self.queue.put_nowait(None)
@@ -81,6 +105,17 @@ class FakeSubscription:
             item = await asyncio.wait_for(self.queue.get(), timeout)
         except TimeoutError:
             return None
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def get_nowait(self) -> BarClosed | Event | None:
+        """Like `Subscription.get_nowait`: the oldest queued update (FIFO), None when empty; the
+        close sentinel stays queued (None is returned) so the next `get()` reports the closure.
+        Never awaits."""
+        if self.queue.empty() or self.queue.head_is_close_sentinel():
+            return None
+        item = self.queue.get_nowait()
         if isinstance(item, Exception):
             raise item
         return item
