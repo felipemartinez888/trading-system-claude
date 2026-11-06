@@ -22,8 +22,10 @@ strategy and does not compare against bars from the lake;
 bars (no entries for unobserved minutes) and resumes live. The input entry of the last bar the
 live clock released for a minute carries ``minute_closed: true`` (in the same atomic batch), so a
 restore can tell an instrument the clock released the minute without (a gap the session passed)
-from one whose bar was not processed yet; journals without the mark restore as before, treating
-every key after the last processed one as possible downtime.
+from one whose bar was not processed yet. A downtime backfill marks the last bar of each minute
+it resolves the same way, since the clock then skips past those minutes (M3-PB.4). Journals
+without the mark restore as before, treating every key after the last processed one as possible
+downtime.
 
 Sessions and configuration changes: a journal belongs to one session (`session_id`, the aggregate
 id of its input entries) and records the configuration hash in its first batch. A restore with a
@@ -353,8 +355,9 @@ class PaperSession:
         )
         self._cursor = 0
         self.batches = 0
-        #: every minute before this one was closed by the live clock (journaled ``minute_closed``
-        #: marks); None if no step recorded a close, e.g. a journal written before the mark existed
+        #: every minute before this one was closed by the session (journaled ``minute_closed``
+        #: marks: a live clock release, or a downtime backfill the clock skipped past); None if no
+        #: step recorded a close, e.g. a journal written before the mark existed
         self.closed_through_ms: int | None = None
 
     # ------------------------------------------------------------ wiring
@@ -411,10 +414,12 @@ class PaperSession:
         """`released_at_ms`: wall time the live clock released the bar (None if unknown); with
         the bar close it gives the decision latency, journaled as ``release_latency_ms``.
 
-        `minute_closed`: the live clock released this bar as the last one of its minute, so the
-        minute is closed (complete, or past its deadline with the missing instruments a gap) and
-        no other bar of it will be processed. Journaled as ``minute_closed: true`` only when set,
-        so batches without it keep their recorded form."""
+        `minute_closed`: the session closed this bar's minute with it -- the live clock released
+        it as the last one of its minute (complete, or past its deadline with the missing
+        instruments a gap), or it is the last bar of a minute of a downtime backfill that the
+        clock then skipped past (`resume_after_downtime`) -- so no other bar of that minute will
+        be processed. Journaled as ``minute_closed: true`` only when set, so batches without it
+        keep their recorded form."""
         if self.closed_through_ms is not None and bar.open_time_ms < self.closed_through_ms:
             raise ValueError(f"bar {order_key(bar)} is in a minute already closed")
         self.source.begin(recorded, recorded_errors)
@@ -979,6 +984,10 @@ class PaperTradingService:
         of one symbol cannot be added later behind another symbol's (clock order) -- the service
         stays AWAITING_BACKFILL, `awaiting_missing` names the symbols and minutes, and the
         return value is 0.
+
+        The last bar of each backfilled minute is journaled ``minute_closed`` (the clock skips
+        past these minutes, so a later bar of one is late): a restore after the backfill starts
+        after them, as the running service does.
         """
         last = self.session.sim.last_key
         through = self.session.closed_through_ms
@@ -1007,9 +1016,19 @@ class PaperTradingService:
                 self.awaiting_missing = missing
                 return 0
         done = 0
-        for bar in todo:
+        for i, bar in enumerate(todo):
             self.tracker.observe_bar(bar)  # backfilled bars are data for the lookback checks
-            step = partial(self.session.step_bar, bar, observed=False, released_at_ms=now_ms)
+            # The clock skips past every backfilled minute below (`skip_to`): the last bar of each
+            # one closes it, journaled as for a live release (`poll`), so a restore after this
+            # backfill does not reopen the minute (M3-PB.4). Still unobserved: no entry from it.
+            closes = i + 1 == len(todo) or todo[i + 1].open_time_ms != bar.open_time_ms
+            step = partial(
+                self.session.step_bar,
+                bar,
+                observed=False,
+                released_at_ms=now_ms,
+                minute_closed=closes,
+            )
             if not self._process(step):
                 break
             done += 1

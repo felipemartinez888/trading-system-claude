@@ -449,9 +449,15 @@ CONDITIONAL PASS / CONDITIONAL PASS; local checkpoint pending hardening, not unc
 2. **Seed 13073 criterion.** It passes under the M3-PB.2 harness; it cannot pass under the harness up to `da42955`.
 3. **Empty minute.** A minute released with no bar leaves no entry to mark (seed 130741648, fail_batch 8). Covering it
    needs a new input kind, which is a journal-format decision.
+   **Decided (OD-1, 2026-11-05):** journal format kept, no new kind, no `PAPER_VERSION` change. A new kind would only
+   move the single failing crash point to the marker write. The limitation is not eliminated; it is characterised
+   (130741648 fails only at batch 8, 50553820 only at batch 63) in `tests/unit/sim/test_paper_backfill_close.py`
+   ([M3-PB.4 devlog](../devlog/2026-11-05-m3-pb4-backfill-close.md)).
 4. **Closes made by a backfill** (`skip_to` after `resume_after_downtime`) are not journaled (reviewer N-5, audit N2):
    after a crash that follows a backfill, a late bar of an instrument the backfill did not include could be processed.
    That is causal, but not equivalent.
+   **Fixed in M3-PB.4 (OD-3, uncommitted):** the last bar of each backfilled minute carries the existing
+   `minute_closed` key; red then green, causality-auditor PASS and reviewer APPROVE WITH NITS (0 blocking).
 5. **Cross-platform CI.** This work has no CI run and no Linux run. The pinned hashes are labelled as recorded on
    Linux and need re-confirming there. Pushing needs owner approval (D-07).
 6. **Pinning the property examples.** Done in M3-PB.2: both examples run on every property run, independent of the
@@ -460,6 +466,9 @@ CONDITIONAL PASS / CONDITIONAL PASS; local checkpoint pending hardening, not unc
    `AWAITING_BACKFILL`, so a random empty-minute case fails the property even when the ledgers happen to be equal
    (for example 50553820 / 135, which the previous check passed). This is the open empty-minute limitation, not a harness
    defect; the property can fail on it in CI until item 3 is decided.
+   **OD-2 (2026-11-05):** the criterion is unchanged and the counterexamples stay failures (fail-closed, not
+   recovered). Whether the formal criterion should separate recoverable sessions from sessions with insufficient
+   persisted evidence is still an owner decision; no change has been made.
 8. **P-1.** Decided by the owner on 2026-11-03 (D-19, D-20); implemented, independent review CONDITIONAL PASS /
    CONDITIONAL PASS, local checkpoint pending hardening ([P-1 implementation](#p-1-implementation)). The text below is the state before that decision.
    Production fills a resting entry in a minute the downtime overlaps. Needs a contract-based decision and a

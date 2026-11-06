@@ -316,7 +316,13 @@ def test_a_backfilled_bar_of_a_closed_minute_is_late() -> None:
         ("BTCUSDT", 27),
         ("ETHUSDT", 27),
     ]
-    assert all(h["observed"] is False and "minute_closed" not in h for h in heads[-4:])
+    # M3-PB.4: the last backfilled bar of each minute closes it (the clock skips past them)
+    assert [(h["observed"], h.get("minute_closed")) for h in heads[-4:]] == [
+        (False, None),
+        (False, True),
+        (False, None),
+        (False, True),
+    ]
     assert restored.poll(minute(29) + 1_500) >= 1
     assert restored.state is ServiceState.RUNNING
 
