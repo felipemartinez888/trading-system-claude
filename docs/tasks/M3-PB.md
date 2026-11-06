@@ -469,6 +469,13 @@ CONDITIONAL PASS / CONDITIONAL PASS; local checkpoint pending hardening, not unc
    **OD-2 (2026-11-05):** the criterion is unchanged and the counterexamples stay failures (fail-closed, not
    recovered). Whether the formal criterion should separate recoverable sessions from sessions with insufficient
    persisted evidence is still an owner decision; no change has been made.
+   **OD-2 decided and implemented (2026-11-05, tests only, uncommitted):** three outcomes, `RECOVERED` (the existing
+   strict and causal checks, unchanged), `SAFE_BLOCK` (blocked, an independent oracle proves from the harness ground
+   truth that no store holds the evidence a resume needs, and safety invariants S1-S7 hold) and `FAIL` (anything
+   else, including a resume without that evidence and a block although the evidence exists). A `SAFE_BLOCK` is not
+   recovery, equivalence or availability. Design, invariants and evidence:
+   [OD-2 devlog](../devlog/2026-11-05-m3-od2-recovery-outcomes.md). M3 availability and autonomous recovery remain
+   unaccepted product requirements.
 8. **P-1.** Decided by the owner on 2026-11-03 (D-19, D-20); implemented, independent review CONDITIONAL PASS /
    CONDITIONAL PASS, local checkpoint pending hardening ([P-1 implementation](#p-1-implementation)). The text below is the state before that decision.
    Production fills a resting entry in a minute the downtime overlaps. Needs a contract-based decision and a

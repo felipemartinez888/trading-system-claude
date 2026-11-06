@@ -4,6 +4,7 @@ offline) and the hypothesis properties (`tests/property/sim/test_paper_propertie
 from __future__ import annotations
 
 import random
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal as D
@@ -714,3 +715,349 @@ def check_risk_engine_fail_closed(seed: int) -> list[str]:
 
 def seeds(n: int) -> Sequence[int]:
     return list(range(n))
+
+
+# ---------------------------------------------------------------- recovery outcomes (OD-2)
+# Three mutually exclusive outcomes of a restart (owner decision OD-2, docs/tasks/M3-PB.md):
+#
+# - RECOVERED: the existing requirements pass, unchanged (`check_restore_equivalence`: strict
+#   journal and ledger equality for an instant restart; causality and `recovery_outcome` after
+#   downtime), and the independent oracle finds the evidence a resume needs.
+# - SAFE_BLOCK: the service is blocked in AWAITING_BACKFILL, the oracle proves from the harness
+#   ground truth that no store could have held the evidence a resume needs (insufficient
+#   evidence: E), and every safety invariant S1-S7 holds. A safe block is NOT a successful
+#   recovery, NOT replay equivalence and NOT availability: the session stays stopped.
+# - FAIL: anything else (an unsafe continuation, a divergence, a journal mutation while blocked,
+#   a block although the evidence exists, a fault, a failed invariant).
+#
+# The oracle never calls production's missing-data logic (`missing_before`, `_contiguous`,
+# `awaiting_missing`, `_attempt_backfill`, `validate_backfill`): it derives the evidence a resume
+# needs from the durable journal's own records (bars, `minute_closed` marks, book events) and from
+# the harness ground truth (every bar that existed, the restart instant).
+
+RECOVERED = "RECOVERED"
+SAFE_BLOCK = "SAFE_BLOCK"
+FAIL = "FAIL"
+#: SAFE_BLOCK reasons: a required minute where no instrument has a bar (a genuinely empty minute,
+#: which nothing persisted can tell from lost data), or a required bar of one exposed instrument
+#: that never existed while another instrument has a bar in that minute
+EMPTY_MINUTE = "EMPTY_MINUTE"
+INSTRUMENT_GAP = "INSTRUMENT_GAP"
+#: the only reasons a backfill refusal may give for a safe block (completeness, not validity)
+_COMPLETENESS_REFUSALS = ("minute(s) missing from the backfill", "minute before the first live")
+#: extra polls after the recovery, to check that a block is stable (S7)
+_STABILITY_POLLS_MS = (60_000, 600_000, 86_400_000)
+
+
+@dataclass(frozen=True)
+class RecoveryEvidence:
+    """What the oracle derives for a restart, independently of production's missing-data logic.
+
+    `required`: (minute open, symbol) bars a resume needs; symbol None means "a bar of any
+    instrument" (the minute before the first live minute). `absent`: the required items with no
+    bar in the ground truth. `feasible`: nothing required is absent."""
+
+    last_minute_ms: int | None  # the last minute with a bar in the durable journal
+    closed_through_ms: int | None  # from the journal's `minute_closed` marks
+    clock_start_ms: int | None  # the first minute the restored service may still process
+    first_live_ms: int | None  # the first minute the restarted feed delivers a processable bar
+    exposed: frozenset[tuple[Market, str]]  # from the journal's book events
+    required: frozenset[tuple[int, str | None]]
+    absent: frozenset[tuple[int, str | None]]
+
+    @property
+    def feasible(self) -> bool:
+        return not self.absent
+
+
+@dataclass(frozen=True)
+class RestartOutcome:
+    kind: str  # RECOVERED, SAFE_BLOCK or FAIL
+    reason: str | None  # SAFE_BLOCK: EMPTY_MINUTE or INSTRUMENT_GAP
+    problems: tuple[str, ...]
+    evidence: RecoveryEvidence
+
+
+#: outcomes of the gate cases (the restart properties and the delayed census) by group, printed at
+#: the end of the test run and written as JSON to $TSC_RESTART_REPORT if set (tests/conftest.py)
+OUTCOME_REPORT: dict[str, Counter[str]] = {}
+
+
+def report_outcome(group: str, out: RestartOutcome) -> None:
+    key = out.kind if out.reason is None else f"{out.kind} {out.reason}"
+    OUTCOME_REPORT.setdefault(group, Counter())[key] += 1
+
+
+def journal_exposure(batches: Sequence[Sequence[JournalEntry]]) -> set[tuple[Market, str]]:
+    """Instruments with an open position or a resting entry in any book after `batches`, from the
+    journaled book events only (submitted entry orders until filled, cancelled, expired or
+    rejected; opened positions until closed)."""
+    pending: dict[str, tuple[str, Market, str]] = {}
+    positions: set[tuple[str, Market, str]] = set()
+    for batch in batches:
+        for e in batch[1:]:
+            p = e.payload
+            if e.type == "sim_order_submitted" and p.get("role") == "entry":
+                pending[p["order_id"]] = (p["book"], Market(p["market"]), p["request"]["symbol"])
+            elif e.type in (
+                "sim_order_filled",
+                "sim_order_cancelled",
+                "sim_order_expired",
+                "sim_order_rejected",
+            ):
+                pending.pop(p["order_id"], None)
+            elif e.type == "sim_position_opened":
+                positions.add((p["book"], Market(p["market"]), p["symbol"]))
+            elif e.type == "sim_position_closed":
+                positions.discard((p["book"], Market(p["market"]), p["symbol"]))
+    return {(m, s) for _b, m, s in [*pending.values(), *positions]}
+
+
+def _journal_bars(batches: Sequence[Sequence[JournalEntry]]) -> list[tuple[Bar, bool]]:
+    return [
+        (Bar.model_validate(b[0].payload["bar"]), bool(b[0].payload.get("minute_closed")))
+        for b in batches
+        if b[0].payload.get("kind") == "bar"
+    ]
+
+
+def _index(ms: int) -> int:
+    return (ms - minute(0)) // 60_000
+
+
+def recovery_evidence(r: Restart, *, live_from_ms: int | None = None) -> RecoveryEvidence:
+    """The evidence a resume of `r` needs, and what of it never existed (the oracle E).
+
+    From the durable journal: the last minute with a bar, the last key, each instrument's last
+    processed minute, the minutes closed by `minute_closed` marks, the exposure (book events).
+    From the ground truth: which bars existed (`r.bars` without `r.missing`) and, after downtime
+    (`live_from_ms`, the restart), which the new subscription delivers (those closing at or after
+    the restart). The contract the oracle states (SIMULATION §7, M3-PB):
+
+    - A minute closed before the crash stays closed; the restored service may process minutes
+      from the one after the last closed minute (else from the last journaled minute, for the
+      instruments not processed in it).
+    - The first live minute is the first minute from there with a delivered bar not yet journaled.
+    - A resume needs, for every exposed instrument, its bar for each minute before the first live
+      one after its last processed minute, the last key and the closed minutes (this includes the
+      rest of an unclosed last minute). If minutes lie between the last journaled minute and the
+      first live one, it also needs a bar of some instrument in the minute just before the first
+      live minute (the backfill must reach the live feed).
+
+    The oracle restates these rules from the contract; it is independent of production's code,
+    not of the contract: an error shared by the contract and production would not be seen."""
+    durable = r.journal.batches()[: r.durable]
+    done_bars = _journal_bars(durable)
+    exposed = frozenset(journal_exposure(durable))
+    if not done_bars:
+        return RecoveryEvidence(None, None, None, None, exposed, frozenset(), frozenset())
+    last_key = max(order_key(b) for b, _ in done_bars)
+    last = last_key[0]
+    marks = [b.open_time_ms + 60_000 for b, closed in done_bars if closed]
+    closed_through = max(marks) if marks else None
+    clock_start = last + 60_000 if closed_through == last + 60_000 else last
+    done_last = {(b.market, b.symbol) for b, _ in done_bars if b.open_time_ms == last}
+    last_open: dict[tuple[Market, str], int] = {}
+    for b, _ in done_bars:
+        k = (b.market, b.symbol)
+        last_open[k] = max(last_open.get(k, b.open_time_ms), b.open_time_ms)
+
+    def exists(i: int, key: tuple[Market, str]) -> bool:
+        return 0 <= i < len(r.bars[key]) and (i, key[1]) not in r.missing
+
+    first_live = None
+    for i in range(_index(clock_start), len(r.bars[SYMBOLS[0]])):
+        delivered = [
+            k
+            for k in SYMBOLS
+            if exists(i, k)
+            and (live_from_ms is None or r.bars[k][i].close_time_ms >= live_from_ms)
+            and not (minute(i) == last and k in done_last)
+        ]
+        if delivered:
+            first_live = minute(i)
+            break
+    required: set[tuple[int, str | None]] = set()
+    if first_live is not None:
+        for key in sorted(exposed, key=lambda k: (str(k[0]), k[1])):
+            start = last_open[key] + 60_000 if key in last_open else first_live
+            for m in range(start, first_live, 60_000):
+                if (m, str(key[0]), key[1]) > last_key and (
+                    closed_through is None or m >= closed_through
+                ):
+                    required.add((m, key[1]))
+        if first_live > last + 60_000:
+            required.add((first_live - 60_000, None))
+    by_symbol = {k[1]: k for k in SYMBOLS}
+    absent = {
+        (m, s)
+        for m, s in required
+        if not (
+            any(exists(_index(m), k) for k in SYMBOLS)
+            if s is None
+            else exists(_index(m), by_symbol[s])
+        )
+    }
+    return RecoveryEvidence(
+        last,
+        closed_through,
+        clock_start,
+        first_live,
+        exposed,
+        frozenset(required),
+        frozenset(absent),
+    )
+
+
+def _block_reason(r: Restart, ev: RecoveryEvidence) -> str:
+    empty = any(all((_index(m), k[1]) in r.missing for k in SYMBOLS) for m, _ in ev.absent)
+    return EMPTY_MINUTE if empty else INSTRUMENT_GAP
+
+
+def classify_restart(
+    r: Restart,
+    strict: Sequence[str],
+    *,
+    instant: bool,
+    stability: Sequence[tuple[int, int, bool]] = (),
+) -> RestartOutcome:
+    """Classify a recovered restart (`r`, after its re-delivery or reconnection, the runtime's
+    backfill attempt and the stability polls). `strict`: what the existing check reported for the
+    same case (`check_restore_equivalence`, unchanged). `stability`: (batches, strategy calls,
+    blocked) after the recovery and after each stability poll."""
+    ev = recovery_evidence(r, live_from_ms=None if instant else r.restart_ms)
+    svc = r.restored
+    batches = r.journal.batches()
+    problems: list[str] = []
+    if svc.state is ServiceState.FAULTED:
+        return RestartOutcome(FAIL, None, (f"restored service faulted: {svc.fault}",), ev)
+    if _canonical(batches[: r.durable]) != _canonical(r.ref_journal.batches()[: r.durable]):
+        problems.append("the durable prefix is not the uninterrupted journal's prefix")
+    if instant:
+        problems += restart_causality(batches, r.durable, r.restart_ms, r.closed_through_ms)
+    else:
+        problems += restart_causality(
+            batches,
+            r.durable,
+            r.restart_ms,
+            r.closed_through_ms,
+            live_from_ms=r.restart_ms,
+            down_from_ms=r.crash_ms,
+        )
+    if svc.state is not ServiceState.AWAITING_BACKFILL:
+        problems += strict
+        if not ev.feasible:
+            problems.append(
+                f"resumed without the evidence a resume needs: {sorted(ev.absent, key=str)}"
+            )
+        return RestartOutcome(RECOVERED if not problems else FAIL, None, tuple(problems), ev)
+    # AWAITING_BACKFILL: a safe block only with E and S1-S7
+    if not instant:
+        problems += strict  # the existing causal requirements after downtime still apply
+    if ev.feasible:
+        problems.append("E: blocked although the ground truth holds every bar a resume needs")
+    if len(batches) != r.durable:
+        problems.append(f"S1: {len(batches) - r.durable} batches journaled after the prefix")
+    if len(r.strategy.calls) != r.calls_at_restore:
+        problems.append("S2: the strategy was called after the restore")
+    if svc.session.batches != r.durable:
+        problems.append("S3: the session stepped past the durable prefix")
+    if svc.ledger_hashes() != replay(config(), batches[: r.durable]).ledger_hashes():
+        problems.append("S4: the ledgers are not the durable prefix's")
+    if not svc.awaiting_missing:
+        problems.append("S5: blocked without naming a missing minute")
+    elif ev.last_minute_ms is not None and ev.first_live_ms is not None:
+        assert ev.clock_start_ms is not None
+        for key, minutes in svc.awaiting_missing.items():
+            lo = ev.last_minute_ms + 60_000 if key == "*" else ev.clock_start_ms
+            if any(not lo <= m < ev.first_live_ms for m in minutes):
+                problems.append(f"S5: {key} names a minute outside the downtime: {minutes}")
+        named = {m for minutes in svc.awaiting_missing.values() for m in minutes}
+        if unnamed := sorted({m for m, _ in ev.absent} - named):
+            problems.append(f"S5: the missing minutes {unnamed} are not named")
+    bf = r.backfill
+    if bf is None or bf.get("ok") or bf.get("processed"):
+        problems.append(f"S6: no refused backfill attempt: {bf}")
+    elif not bf.get("problems") or any(
+        not any(c in p for c in _COMPLETENESS_REFUSALS) for p in bf["problems"]
+    ):
+        problems.append(f"S6: backfill refused for another reason: {bf.get('problems')}")
+    if not stability:
+        problems.append("S7: no stability polls")
+    for n, calls, blocked in stability:
+        if n != r.durable or calls != r.calls_at_restore or not blocked:
+            problems.append(f"S7: the block was not stable ({n} batches, {calls} calls)")
+            break
+    if problems:
+        return RestartOutcome(FAIL, None, tuple(problems), ev)
+    return RestartOutcome(SAFE_BLOCK, _block_reason(r, ev), (), ev)
+
+
+def runtime_backfill(r: Restart, now_ms: int, store: BarStore | None = None) -> None:
+    """The paper runtime's one backfill attempt per start (`PaperRuntime._attempt_backfill`), as
+    `reconnect` makes it, for an instant restart that blocked; then the poll that follows."""
+    if r.restored.state is not ServiceState.AWAITING_BACKFILL or r.backfill is not None:
+        return
+    runtime = SimpleNamespace(
+        settings=SimpleNamespace(backfill_from_live_bars=True),
+        _bars=store or bar_store(r),
+        backfill=None,
+    )
+    PaperRuntime._attempt_backfill(runtime, r.restored, now_ms)  # type: ignore[arg-type]
+    r.backfill = runtime.backfill
+    r.restored.poll(now_ms)
+
+
+def _state(r: Restart) -> tuple[int, int, bool]:
+    return (
+        len(r.journal.batches()),
+        len(r.strategy.calls),
+        r.restored.state is ServiceState.AWAITING_BACKFILL,
+    )
+
+
+def stability_polls(r: Restart) -> list[tuple[int, int, bool]]:
+    """Poll the recovered service later (S7): (batches, strategy calls, blocked) before and after
+    each poll."""
+    end = max(r.restart_ms, minute(40) + 1_500)
+    out = [_state(r)]
+    for dt in _STABILITY_POLLS_MS:
+        r.restored.poll(end + dt)
+        out.append(_state(r))
+    return out
+
+
+def restart_outcome(
+    seed: int, fail_batch: int, restart_delay_ms: int = 0, store: BarStore | None = None
+) -> RestartOutcome:
+    """The OD-2 outcome of the restart `check_restore_equivalence` checks (same case, same
+    production path), plus the runtime's backfill attempt after an instant restart that blocks
+    (production makes one per start), and the stability polls. `store`: the live bar store the
+    runtime backfills from (default: every bar that existed). After downtime with another store,
+    the existing checks run against the store the runtime read (`recovery_outcome(r, store)`)."""
+    r = restore_after_crash(seed, fail_batch, restart_delay_ms)
+    if isinstance(r, str):
+        raise AssertionError(r)
+    if restart_delay_ms == 0:
+        strict = check_restore_equivalence(seed, fail_batch)
+        redeliver(r)
+        runtime_backfill(r, minute(40) + 1_500, store)
+        return classify_restart(r, strict, instant=True, stability=stability_polls(r))
+    if store is None:
+        return outcome_after_downtime(
+            r, strict=check_restore_equivalence(seed, fail_batch, restart_delay_ms)
+        )
+    return outcome_after_downtime(r, store)
+
+
+def outcome_after_downtime(
+    r: Restart, store: BarStore | None = None, *, strict: Sequence[str] | None = None
+) -> RestartOutcome:
+    """Reconnect `r` after its downtime (`reconnect`, the production path), then classify it.
+    `strict`: the existing checks' report if already computed for the same case; by default they
+    run on `r` itself (`recovery_outcome` against the store the runtime read; the classifier adds
+    `restart_causality`), so a test may change the ground truth of `r` (`r.missing`) first."""
+    reconnect(r, store)
+    if strict is None:
+        strict = recovery_outcome(r, store)
+    return classify_restart(r, strict, instant=False, stability=stability_polls(r))
