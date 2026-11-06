@@ -58,6 +58,59 @@ jobs:
           name: uv-lock
           path: uv.lock
 
+  m2-cross-os:
+    # Focused, verbose evidence for the M2 gate "cross-OS reproducibility hash". It runs the same two
+    # existing tests (four pinned outputs) on the same commit on Windows and Linux. It does NOT replace
+    # or filter the full-suite `python` job above, and it changes no constant or test.
+    name: m2 cross-os gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python 3.13
+        run: uv python install 3.13
+      - name: Lock (only while uv.lock is not committed yet)
+        if: hashFiles('uv.lock') == ''
+        shell: bash
+        run: uv lock
+      - name: Sync
+        shell: bash
+        run: uv sync --all-groups
+      - name: Provenance (commit, platform, versions, lockfile, pinned constants)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### m2 cross-os provenance (${{ matrix.os }})"
+            echo "- commit: ${GITHUB_SHA}"
+            echo "- uv: $(uv --version)"
+            uv run python -I -c "import sys,platform,importlib.metadata as m; print('- python:', sys.version.split()[0], platform.platform()); print('- deps:', ', '.join(f'{n}=={m.version(n)}' for n in ('numpy','pyarrow','duckdb','pyyaml','pydantic','pytest','hypothesis')))"
+            echo "- uv.lock sha256 (generated in CI, not committed): $(sha256sum uv.lock | cut -d' ' -f1)"
+            echo "- test files sha256: $(sha256sum tests/unit/sim/test_sim_determinism.py tests/unit/backtest/test_bt_runner.py | cut -d' ' -f1 | paste -sd' ' -)"
+            echo "- pinned constants in source:"
+            grep -hE '^(PINNED_FINGERPRINT_SEED0|GOLDEN_MANIFEST|GOLDEN_METRICS|GOLDEN_TRADES) = ' tests/unit/sim/test_sim_determinism.py tests/unit/backtest/test_bt_runner.py | sed 's/^/    /'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: M2 cross-OS pinned outputs (verbose, both tests required)
+        shell: bash
+        run: |
+          set -uo pipefail
+          t1='tests/unit/sim/test_sim_determinism.py::test_golden_fingerprint_is_pinned'
+          t2='tests/unit/backtest/test_bt_runner.py::test_golden_hashes_identical_across_platforms'
+          uv run pytest -v -p no:cacheprovider "$t1" "$t2" 2>&1 | tee m2-cross-os.log
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "::error::pytest exit $rc"; exit 1; }
+          for t in "$t1" "$t2"; do
+            grep -F "$t PASSED" m2-cross-os.log >/dev/null || { echo "::error::not collected or not passed: $t"; exit 1; }
+          done
+          [ "$(grep -c ' PASSED' m2-cross-os.log)" -eq 2 ] || { echo "::error::expected exactly 2 passed tests"; exit 1; }
+          { echo "### m2 cross-os result (${{ matrix.os }})"; grep -E ' (PASSED|FAILED|ERROR)|passed|failed' m2-cross-os.log; } >> "$GITHUB_STEP_SUMMARY"
+
   frontend:
     name: frontend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
