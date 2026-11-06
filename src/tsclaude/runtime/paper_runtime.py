@@ -88,6 +88,7 @@ from tsclaude.contracts.timeutil import MS_PER_MINUTE, WallClock, to_iso
 from tsclaude.marketdata.bars import BarClosed
 from tsclaude.marketdata.models import MarketSnapshot
 from tsclaude.risk.market import MarketStateTracker
+from tsclaude.runtime.session_evidence import capture_session_end
 from tsclaude.sim.clock import order_key
 from tsclaude.sim.engine import SimView
 from tsclaude.sim.live import DEFAULT_SETTLE_MS
@@ -600,6 +601,9 @@ class PaperRuntime:
         self._clock = clock
         self._config_factory = config_factory
         self._log = SessionLog(audit_path)
+        self._data_dir = audit_path.parent
+        #: path of the session-end evidence written by the last stop, or why none was
+        self.session_end_evidence: str | None = None
         self._bars = bars
         self._strategy_factory = strategy_factory
         self.on_problem: Callable[[str, str], None] | None = None
@@ -717,6 +721,7 @@ class PaperRuntime:
 
     def _open(self) -> bool:
         """Open or restore the session from its journal; False (UNAVAILABLE) on any failure."""
+        self.session_end_evidence = None
         try:
             config = self._config_factory()
             session_id = self._resolve_session()
@@ -768,6 +773,7 @@ class PaperRuntime:
             self._publish()
             return
         service = self.service
+        self._capture_session_end(service)
         self.previous_run = {
             "state": str(self.state),
             "reason": self.reason,
@@ -783,6 +789,27 @@ class PaperRuntime:
             )
         else:  # a failure state stays as it is: a stop never erases it
             self._publish()
+
+    def _capture_session_end(self, service: PaperTradingService | None) -> None:
+        """Write the live ledger hashes for the replay gate (`session_evidence`); never raises."""
+        if service is None or self.session_id is None:
+            return
+        try:
+            path = capture_session_end(
+                self._data_dir,
+                config=self._config_factory(),
+                session_id=self.session_id,
+                ledger_hashes=service.ledger_hashes(),
+                fingerprint=service.session.fingerprint(),
+                batches=service.journal.batches(),
+                state=str(self.state),
+                written_at_ms=self._clock.now_ms(),
+            )
+            self.session_end_evidence = str(path)
+        except Exception as exc:
+            self.session_end_evidence = f"not written: {type(exc).__name__}: {exc}"
+            self._problem("Session-end evidence not written", self.session_end_evidence)
+            log.exception("session-end evidence could not be written")
 
     # ------------------------------------------------------------------ consumer
     async def _run(self) -> None:

@@ -533,3 +533,26 @@ def test_drop_while_waiting_for_the_backfill_stops_paper(tmp_path: Path) -> None
         await rig.supervisor.close()
 
     run(scenario())
+
+
+# ---------------------------------------------------------------------- replay gate evidence
+def test_a_clean_stop_writes_session_end_evidence_that_replays(tmp_path: Path) -> None:
+    """The runtime's stop captures the live ledger hashes; the verifier replays the journal and
+    reaches PASS on them (synthetic session: not the real recorded-session acceptance gate)."""
+    from tsclaude.runtime.session_evidence import PASS, verify_recorded_session
+
+    async def scenario() -> None:
+        rig = Rig(tmp_path)
+        await rig.supervisor.start("S1")
+        for i in range(3):
+            await rig.minute(i)
+        live = rig.runtime.service.ledger_hashes()  # type: ignore[union-attr]
+        await rig.supervisor.stop()
+        assert rig.runtime.session_end_evidence is not None
+        assert (tmp_path / "session_end").is_dir()
+        report = verify_recorded_session(tmp_path, paper_config())
+        assert report.verdict == PASS, report.reasons
+        assert report.details["replayed_ledger_hashes"] == live
+        await rig.supervisor.close()
+
+    run(scenario())

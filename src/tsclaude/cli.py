@@ -1,6 +1,6 @@
 """Command-line entry point.
 
-Commands: `tsclaude app | data | research | backtest | verify-chain | version`.
+Commands: `tsclaude app | data | research | backtest | verify-chain | verify-replay | version`.
 """
 
 from __future__ import annotations
@@ -32,6 +32,31 @@ def _cmd_verify_chain(_: argparse.Namespace) -> int:
     return 0 if report.ok else 2
 
 
+def _cmd_verify_replay(args: argparse.Namespace) -> int:
+    """Replay a recorded paper session and compare it with its session-end evidence (M3 gate)."""
+    from pathlib import Path
+
+    from tsclaude.runtime.paper_runtime import PaperSettings, build_paper_config
+    from tsclaude.runtime.session_evidence import verify_recorded_session
+    from tsclaude.runtime.supervisor import config_dir
+
+    base = Path(args.config_dir) if args.config_dir else config_dir()
+    try:
+        config = build_paper_config(PaperSettings.load(base / "paper.yaml"), base)
+    except Exception as exc:
+        print(json.dumps({"verdict": "INCONCLUSIVE", "reasons": [f"configuration: {exc}"]}))
+        return 2
+    try:
+        report = verify_recorded_session(
+            Path(args.data_dir), config, evidence=Path(args.evidence) if args.evidence else None
+        )
+    except Exception as exc:  # an unexpected error is "not proven", never a FAIL traceback
+        print(json.dumps({"verdict": "INCONCLUSIVE", "reasons": [f"{type(exc).__name__}: {exc}"]}))
+        return 2
+    print(report.to_json())
+    return report.exit_code
+
+
 def _cmd_app(args: argparse.Namespace) -> int:
     # Imported lazily: the API pulls heavier dependencies than the other commands need.
     server = importlib.import_module("tsclaude.api.server")
@@ -60,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     importlib.import_module("tsclaude.store.holdout_cli").register(sub)
     # Backtests with run manifests and certified reports (M2-T4); heavy imports are lazy.
     importlib.import_module("tsclaude.research.backtest_cli").register(sub)
+
+    vr = sub.add_parser(
+        "verify-replay",
+        help="replay a recorded paper session and compare it with its session-end evidence",
+    )
+    vr.add_argument("--data-dir", required=True, help="the recorded session's data directory")
+    vr.add_argument("--config-dir", default=None, help="configs used by the session")
+    vr.add_argument("--evidence", default=None, help="a session_end/*.json (default: the latest)")
+    vr.set_defaults(func=_cmd_verify_replay)
 
     verify = sub.add_parser("verify-chain", help="verify the hash chain of the event store")
     verify.set_defaults(func=_cmd_verify_chain)
