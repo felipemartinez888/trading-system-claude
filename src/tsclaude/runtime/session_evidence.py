@@ -268,4 +268,33 @@ def verify_recorded_session(
         return rep
     rep.verdict = PASS
     rep.reasons.append(f"{n} batches replayed; every ledger hash equals the live session's")
+    # Activity is read from the REPLAYED ledgers by memo ("capital" is the starting deposit;
+    # "entry:" / "exit:" are simulated fills), never from the evidence file.
+    books = session.sim.books
+    fills = {
+        name: {
+            "entries": sum(1 for t in b.ledger.entries if t.memo.startswith("entry:")),
+            "exits": sum(1 for t in b.ledger.entries if t.memo.startswith("exit:")),
+        }
+        for name, b in books.items()
+    }
+    observed = sum(1 for b in batches[:n] if b[0].payload.get("observed") is True)
+    strategy_entries = sum(fills.get(k, {"entries": 0})["entries"] for k in ("baseline", "shadow"))
+    rep.details.update(
+        ledger_entries={name: len(b.ledger.entries) for name, b in books.items()},
+        simulated_fills=fills,
+        observed_bars=observed,
+        trading_exercised=observed > 0 and any(f["entries"] > 0 for f in fills.values()),
+        strategy_books_exercised=observed > 0 and strategy_entries > 0,
+    )
+    if not rep.details["trading_exercised"]:
+        rep.reasons.append(
+            f"NO TRADING EXERCISED ({observed} observed bars, fills {fills}): this PASS is "
+            "a recording/replay reproducibility smoke test, not a validation of strategy execution"
+        )
+    elif not rep.details["strategy_books_exercised"]:
+        rep.reasons.append(
+            "only the benchmark book traded: baseline and shadow (the strategy books) made no "
+            "simulated entry, so strategy execution is not demonstrated"
+        )
     return rep

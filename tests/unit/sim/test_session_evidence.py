@@ -227,3 +227,71 @@ def test_an_unexpected_error_in_the_command_is_inconclusive(
     monkeypatch.setattr("tsclaude.runtime.paper_runtime.build_paper_config", lambda *_a, **_k: CFG)
     assert main(["verify-replay", "--data-dir", str(tmp_path)]) == 2
     assert json.loads(capsys.readouterr().out)["verdict"] == INCONCLUSIVE
+
+
+def test_a_pass_without_observed_bars_or_fills_says_that_no_trading_was_exercised(
+    tmp_path: Path,
+) -> None:
+    """Nothing is observed in this session: the replay reproduces, but nothing traded."""
+    bars = two_symbol_bars(14)
+    with EventStore(tmp_path / "state.db") as store:
+        svc = PaperTradingService.open(
+            CFG, store, session_id=SESSION, strategy=ScriptedStrategy({}), observation_gated=True
+        )
+        drive(svc, bars, list(range(4)))
+        capture_session_end(
+            tmp_path,
+            config=CFG,
+            session_id=SESSION,
+            ledger_hashes=svc.ledger_hashes(),
+            fingerprint=svc.session.fingerprint(),
+            batches=svc.journal.batches(),
+            state="RUNNING",
+            written_at_ms=1_000,
+        )
+    rep = verify_recorded_session(tmp_path, CFG)
+    assert rep.verdict == PASS
+    assert rep.details["trading_exercised"] is False
+    assert rep.details["strategy_books_exercised"] is False
+    assert all(f["entries"] == 0 for f in rep.details["simulated_fills"].values())
+    assert "NO TRADING EXERCISED" in " ".join(rep.reasons)
+
+
+def test_a_pass_with_strategy_entries_reports_strategy_books_exercised(tmp_path: Path) -> None:
+    _record(tmp_path)
+    rep = verify_recorded_session(tmp_path, CFG)
+    assert rep.verdict == PASS
+    fills = rep.details["simulated_fills"]
+    assert fills["baseline"]["entries"] > 0
+    assert rep.details["observed_bars"] > 0
+    assert rep.details["trading_exercised"] is True
+    assert rep.details["strategy_books_exercised"] is True
+
+
+def test_benchmark_only_fills_do_not_count_as_strategy_execution(tmp_path: Path) -> None:
+    """No strategy script: only the benchmark book may fill (if the bars were observed)."""
+    bars = two_symbol_bars(14)
+    with EventStore(tmp_path / "state.db") as store:
+        svc = PaperTradingService.open(
+            CFG, store, session_id=SESSION, strategy=ScriptedStrategy({})
+        )
+        drive(svc, bars, list(range(8)))
+        capture_session_end(
+            tmp_path,
+            config=CFG,
+            session_id=SESSION,
+            ledger_hashes=svc.ledger_hashes(),
+            fingerprint=svc.session.fingerprint(),
+            batches=svc.journal.batches(),
+            state="RUNNING",
+            written_at_ms=1_000,
+        )
+    rep = verify_recorded_session(tmp_path, CFG)
+    assert rep.verdict == PASS
+    fills = rep.details["simulated_fills"]
+    assert fills["baseline"]["entries"] == 0
+    assert fills["shadow"]["entries"] == 0
+    assert rep.details["strategy_books_exercised"] is False
+    assert fills["benchmark"]["entries"] > 0
+    assert rep.details["trading_exercised"] is True
+    assert "only the benchmark book traded" in " ".join(rep.reasons)
