@@ -2,10 +2,15 @@
 
 Worktree `tsc-m2-closure`, detached at `928aeb7`. Nothing committed. "Run" = executed on current bytes in this session.
 
+**Update 2026-11-06 (later the same day):** S2 was decided (repair) and S5–S6 executed; this file's gate table,
+C-1 section and sequence are updated below in place, each change marked with the date. See
+[DECISIONS_PENDING D-17](DECISIONS_PENDING.md) and [the D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md)
+for the full evidence. **Still not formal M2 acceptance** (S3/S4/S7 remain open).
+
 ## Approved scope (owner, 2026-11-06)
 M2 data scope = Binance **Spot 1m** for **BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT, XRPUSDT**, **2022-01 to 2025-12**.
 The 2026 holdout is out of M2 scope and stays sealed. This approval does **not** accept any dataset and does **not** pass M2.
-Out of M2 under this scope (moved to M4 prerequisites): BNB, ADA, AVAX, TRX, HBAR, USD-M, mark price, funding (O-9), B01–B12 acceptance (D-15), promotion of batches (D-17).
+Out of M2 under this scope (moved to M4 prerequisites): BNB, ADA, AVAX, TRX, HBAR, USD-M, mark price, funding (O-9), B01–B12 acceptance (D-15), promotion of the B01–B12 batches (D-17 remains deferred for those). **Update 2026-11-06:** D-17 was separately authorized and executed, but only for the C-1 repair (SOL 2022-12, XRP 2025-04) — two months of symbols already in this five-symbol scope, not a batch promotion. See the C-1 section below.
 
 ## Literal gate (ROADMAP, M2 section)
 "look-ahead canaries, golden trades, ledger property tests, window-parity test, cross-OS reproducibility hash — all green; Causality Auditor sign-off."
@@ -14,17 +19,26 @@ Out of M2 under this scope (moved to M4 prerequisites): BNB, ADA, AVAX, TRX, HBA
 |---|---|---|---|---|---|
 | 1 | Look-ahead canaries | `tests/unit/features/test_feat_parity_canaries.py`, `tests/unit/sim/test_sim_causality.py`, `tests/unit/backtest/test_m2t4_causality_audit.py` | PASS (run: 258 passed incl. items 2, 4) | `uv run pytest -q tests/unit/sim/test_sim_golden.py tests/unit/sim/test_sim_causality.py tests/unit/sim/test_sim_determinism.py tests/unit/features/test_feat_parity_canaries.py tests/unit/backtest tests/unit/archive/test_arc_import_integrity.py` | none |
 | 2 | Golden trades | `tests/unit/sim/test_sim_golden.py` | PASS (run) | as above | none |
-| 3 | Ledger property tests | `tests/property/sim/` | PASS (run: 10 passed; restart property delayed 25 cases / instant 24 cases, FAIL 0, 2+2 SAFE_BLOCK = fail-closed stops, not recovery) | `uv run pytest -q tests/property/sim` | reword roadmap row (a) and validation-plan blocker 7 (stale) |
+| 3 | Ledger property tests | `tests/property/sim/` | PASS (run: 10 passed; restart property delayed 25 cases / instant 24 cases, FAIL 0, 2+2 SAFE_BLOCK = fail-closed stops, not recovery) | `uv run pytest -q tests/property/sim` | **done 2026-11-06:** roadmap row (a) reworded and validation-plan blocker 7 marked resolved (stale) — `test_sim_property_regressions.py -k 13073`: 8 passed; full property suite 79 passed |
 | 4 | Window-parity | `test_bt_runner.py`, `test_feat_parity_canaries.py` | PASS (run, inside the 258) | as item 1 | none |
-| 5 | Cross-OS reproducibility hash | see "Cross-OS" below | Windows PASS (run); Linux NOT VERIFIED | CI on `ubuntu-latest` | push of one `task/**` branch (D-07) |
-| 6 | Causality Auditor sign-off (global M2) | see "Auditor package" below | NOT VERIFIED | `causality-auditor` agent | after C-1 verdict and CI |
+| 5 | Cross-OS reproducibility hash | see "Cross-OS" below | **Updated 2026-11-06:** both OS PASS, CI `42275943593` on `b1da844` (pushed under D-07) | CI on `ubuntu-latest` | the D-17 implementation commit `60f5ce4` (`task/m2-closure`) has not itself been pushed/CI'd; its diff does not touch `src/`, and the two pinned-hash tests were re-run locally on `60f5ce4` (2 passed), but no Linux run covers that exact commit |
+| 6 | Causality Auditor sign-off (global M2) | see "Auditor package" below | **Updated 2026-11-06: CONDITIONAL PASS** ([D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md)) | `causality-auditor` agent | open conditions are governance/traceability only (this record; whether CI must cover `60f5ce4`), not causality |
 
 ## C-1 (two real rows missing in canonical; in scope because both symbols are in scope)
 Current bytes (run, read-only, tool `tests/owner_checks/c1_verify.py` against canonical):
 - XRP 2025-04: source 43,200 rows, canonical 43,199; the only difference is `2025-04-03T17:24:00Z`; SHA-256 of the zip equals its CHECKSUM; all 43,199 common rows equal in all 9 value fields.
 - SOL 2022-12: source 44,640 rows, canonical 44,639; the only difference is `2022-12-21T15:23:00Z`; same checks pass.
 - SOL 2023-02-14 16:39 (C-2) is absent from the source itself: genuine gap, class M, stays grade X. Not part of C-1.
-Canonical is **not** modified by anything below. Repair/promotion needs D-17 and is a separate step (S5 of the sequence).
+Canonical was **not** modified by anything below this line; D-17 (S2/S5) is documented separately.
+
+**Update 2026-11-06: C-1 repaired.** The owner decided S2 = repair and the D-17 tool executed it once against
+the real canonical lake (op id `45d9e72abf9c43458370a0b0a7e9e647`, `COMPLETE`/`accepted: true`): SOL 2022-12
+44,639→44,640 rows, XRP 2025-04 43,199→43,200 rows; exactly 4 canonical objects added, 0 modified/deleted. Full
+evidence: [DECISIONS_PENDING D-17](DECISIONS_PENDING.md), [D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md).
+**`c1_verify` must not be rerun on the canonical lake now**, as the D-17 promotion plan already warns: it reads
+every Parquet file in the month folder, so the old and new parts together would be reported as duplicate rows.
+Post-repair verification instead used a fresh `LakeReader` (unpinned and pinned to both the new and the old
+dataset id), independently of the D-17 tool's own postcondition check; see the devlog for the exact results.
 
 ### Owner procedure: fresh-destination re-import of the two months (NORMAL, no administrator)
 Bounded: 2 months, about 90,000 rows, seconds. Reads sources only from the batch caches (`data_batches/b08...`, `data_batches/b06...`), never from `data\`. Writes only `C:\Users\felip\Projects\data_c1_check`. Offline (`--cross-check-months 0`); no network use is expected, and if the importer tries to download, stop and report.
@@ -84,11 +98,11 @@ The auditor does not need the Parquet data except the `c1_verify` reports.
 ## Shortest closure sequence (genuine blockers only)
 | Step | Action | Who | Blocker? |
 |---|---|---|---|
-| S1 | Run the C-1 procedure above; read the exits and the XRP `content_hash` comparison | owner (NORMAL) | no, seconds |
-| S2 | D-17 minimal decision: repair canonical months by replacing the two parts with the verified ones (via a logged, non-overwriting step, old manifest kept), **or** accept C-1 as documented grade X on those minutes | owner | **yes**: nothing may modify canonical without it |
-| S3 | Approve a push of one branch `task/m2-closure` (D-07) so CI runs both OS | owner | **yes** for gate item 5 |
-| S4 | Commit the checklist, `c1_verify.py` and the roadmap/validation-plan rewording; CI green on both OS | Claude after approval | follows S3 |
-| S5 | If S2 = repair: do it, rerun `c1_verify` on canonical, expect exit 0 | Claude/owner | conditional |
-| S6 | Global `causality-auditor` run on the package above | Claude | after S4/S5 |
-| S7 | Owner sign-off of M2 with the five-symbol scope | owner | final |
+| S1 | Run the C-1 procedure above; read the exits and the XRP `content_hash` comparison | owner (NORMAL) | no, seconds — **done** |
+| S2 | D-17 minimal decision: repair canonical months by replacing the two parts with the verified ones (via a logged, non-overwriting step, old manifest kept), **or** accept C-1 as documented grade X on those minutes | owner | **done 2026-11-06: repair**, authorized in writing and executed (op id `45d9e72a…`) |
+| S3 | Approve a push of one branch `task/m2-closure` (D-07) so CI runs both OS | owner | **partially done:** that branch was already pushed and CI `42275943593` is green on both OS, but on `b1da844` — **the D-17 commit `60f5ce4` added since then has not been pushed**; still a blocker for CI evidence of the exact implementation commit |
+| S4 | Commit the checklist, `c1_verify.py`, the roadmap/validation-plan rewording, the D-17 tool and this reconciliation; CI green on both OS for the commit that carries all of it | Claude after approval | **still open**: proposed, not committed (owner approval requested) |
+| S5 | If S2 = repair: do it; verify independently (not `c1_verify`, which would double-count the old and new parts — see above) | Claude/owner | **done 2026-11-06:** executed; verified with a fresh `LakeReader`, unpinned and both pins, 0 duplicates/missing/conflicts, old pin unchanged |
+| S6 | Global `causality-auditor` run on the package above | Claude | **done 2026-11-06: CONDITIONAL PASS** — see the D-17 devlog |
+| S7 | Owner sign-off of M2 with the five-symbol scope | owner | final — **still open** |
 Not blockers under the approved scope: Top 10, USD-M, funding, B01–B12, QA v2 for other batches, E-4(b), O-5/O-6 (a parity re-import of 108 months is optional hardening; a data-quality caveat in the sign-off covers it, unless the owner wants it as a gate).

@@ -7,19 +7,23 @@
   hardware diagnostics. Exit code 0 is never QA acceptance, and an expected result is a hypothesis, never a target.
 
 ## Acceptance blockers
+**Update 2026-11-06:** blockers 1, 6, 7 and 9 are resolved; see each row and
+[DECISIONS_PENDING D-17](../DECISIONS_PENDING.md) / [the D-17 devlog](../devlog/2026-11-06-m2-d17-canonical-promotion.md)
+for full evidence. Blockers 2–5, 8 (partially), 10 and 11 are unchanged.
+
 | # | Blocker | Cleared by | State |
 |---|---|---|---|
-| 1 | C-1: canonical XRP 2025-04 and SOL 2022-12 each lack one real row | Steps 1–4 | Open, unrepaired |
-| 2 | Canonical values not independently verified: BTC 2025; ETH, SOL, DOGE, XRP 2022–2023 | Steps 1–3 | Open |
-| 3 | B01–B12 not formally accepted (D-15) | Steps 5–6 | Deferred |
-| 4 | Nine batches have only QA version 1 reports, with no class A check | Step 5 | Open |
-| 5 | Cross-checks cover 2 of 24 months per batch | Step 5 | Open |
-| 6 | Promotion procedure missing (E-5, D-17) | Step 4 | Not designed, deferred |
-| 7 | Simulator restore property fails on two classes (partial fix `904b84c`; seed 13073 reproduced) | Separate fix | Open |
-| 8 | No CI run covers the integrated work, so the cross-OS reproducibility gate has no current evidence | Push decision (D-07), then CI | Open |
-| 9 | No overall Causality Auditor sign-off for M2 is recorded | Review after blockers 1 and 7 | Open |
-| 10 | No backtest run is recorded locally | First recorded run, once data is ready | Open |
-| 11 | Top 10, USD-M and funding coverage (O-9) | Owner scope decision below | Open |
+| 1 | C-1: canonical XRP 2025-04 and SOL 2022-12 each lack one real row | Steps 1–4 | **Resolved 2026-11-06**: D-17 `apply`, op id `45d9e72abf9c43458370a0b0a7e9e647`, `COMPLETE`/`accepted: true`; both rows added, independently re-verified with `LakeReader` |
+| 2 | Canonical values not independently verified: BTC 2025; ETH, SOL, DOGE, XRP 2022–2023 | Steps 1–3 | Open (unchanged; D-17 covered only the two C-1 months, not a parity re-import of the rest) |
+| 3 | B01–B12 not formally accepted (D-15) | Steps 5–6 | Deferred (unchanged) |
+| 4 | Nine batches have only QA version 1 reports, with no class A check | Step 5 | Open (unchanged) |
+| 5 | Cross-checks cover 2 of 24 months per batch | Step 5 | Open (unchanged) |
+| 6 | Promotion procedure missing (E-5, D-17) | Step 4 | **Resolved 2026-11-06**: the D-17 tool was designed, reviewed five times and executed once against the real lake, scoped to C-1 only; batch promotion (B01–B12) under D-17 stays deferred |
+| 7 | Simulator restore property fails on two classes (partial fix `904b84c`; seed 13073 reproduced) | Separate fix | **Resolved, stale entry corrected 2026-11-06**: this branch's HEAD already includes the completing fixes (`0435116`, `e87fe59`, `d1e280a`); `-k 13073`: 8 passed; full property suite (`test_sim_property_regressions.py` + `test_paper_properties.py`): 79 passed, 0 failed. A documented residual (≈0.05%, 3/6,000 random cases, absent an explicit `start_ms`) is unchanged and already pinned by its own test; it was never part of this blocker's "two classes" |
+| 8 | No CI run covers the integrated work, so the cross-OS reproducibility gate has no current evidence | Push decision (D-07), then CI | **Partially resolved**: `task/m2-closure` was pushed and CI `42275943593` is green on both OS — but on commit `b1da844`, before D-17. The D-17 implementation commit `60f5ce4` (diff limited to `tests/owner_checks/` and docs/evidence, no `src/` change) has not itself been pushed or run through CI |
+| 9 | No overall Causality Auditor sign-off for M2 is recorded | Review after blockers 1 and 7 | **Resolved 2026-11-06: CONDITIONAL PASS** ([D-17 devlog](../devlog/2026-11-06-m2-d17-canonical-promotion.md)); all five literal roadmap gate items independently verified green, open conditions are governance/traceability only |
+| 10 | No backtest run is recorded locally | First recorded run, once data is ready | Open (unchanged) |
+| 11 | Top 10, USD-M and funding coverage (O-9) | Owner scope decision below | Open (unchanged) |
 
 **Owner scope decision needed.** The roadmap's M2 gate lists tests and a sign-off, while its status row also counts data
 coverage as a blocker. My recommendation is to define M2 data acceptance as spot on the five complete symbols, and to

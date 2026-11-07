@@ -1,10 +1,17 @@
-# M2 D-17: minimal, additive repair of canonical XRP 2025-04 and SOL 2022-12 (proposal)
+# M2 D-17: minimal, additive repair of canonical XRP 2025-04 and SOL 2022-12
 
-- **Status:** proposal (2026-11-06). **Not executed. No canonical byte has been written.** Applying or rolling back on
-  the real lake needs explicit written owner authorization (D-17 is still deferred).
+- **Status (updated 2026-11-06): executed.** The owner authorized, in writing, exactly this repair, and the tool
+  applied it once against the real canonical lake: op id `45d9e72abf9c43458370a0b0a7e9e647`, `COMPLETE`,
+  `accepted: true`. See [DECISIONS_PENDING D-17](../DECISIONS_PENDING.md) and
+  [the execution and audit devlog](../devlog/2026-11-06-m2-d17-canonical-promotion.md) for the full result,
+  independent post-apply verification and the M2 Causality Auditor's CONDITIONAL PASS. Everything below this line
+  describes the plan as reviewed before that apply; it is kept for the record and because it still describes the
+  tool's behaviour accurately. Rolling back, or running the tool again for any other symbol or month, still needs a
+  separate, explicit written owner authorization.
 - **Tool:** `tests/owner_checks/d17_promote.py`, regression tests `tests/owner_checks/test_d17_promote.py` (synthetic
-  lakes only; 79 tests, run together with the 3 tests of `tests/unit/archive/test_arc_import_guard.py`: 82). No promotion mechanism existed (E-5 was never designed); this is the smallest one. It uses the existing
-  `Lake`, `LakeReader` and `InstanceLock` APIs; no product code changed.
+  lakes only; 80 tests, run together with the 3 tests of `tests/unit/archive/test_arc_import_guard.py`: 83). No
+  promotion mechanism existed (E-5 was never designed); this is the smallest one. It uses the existing `Lake`,
+  `LakeReader` and `InstanceLock` APIs; no product code changed.
 - **History:** the first version was BLOCKED by an adversarial review (B1 no crash recovery, B2 unsafe rollback,
   B3 no instance lock, M1 premature publication). The second version addressed all four. A fresh review gave it a
   CONDITIONAL PASS with conditions F1-F8: power-loss durability, ownership-proof tests, the no-catalog path, debris,
@@ -17,7 +24,11 @@
   report COMPLETE / accepted while one symbol was already unrepaired), and low items N8-N10 (manifest visibility
   wording, recovery sources, a non-UTF-8 journal tail) plus a nuance of N6. This version fixes N7 with its
   regression tests and documents N6 and N8-N10. A fifth, narrow review confirmed the N7 fix and its tests and asked
-  for six text corrections, applied here.
+  for six text corrections, applied here. The owner then authorized and the tool executed the single real apply
+  described in the "Status" line above; a sixth, fresh-context review (the M2 global Causality Auditor) covered it
+  as part of the full M2 acceptance gate and gave CONDITIONAL PASS, finding no causality or data-safety defect and
+  one test-coverage gap (the existing sealed/2026-source rejection had no direct regression test), closed the same
+  day with one new synthetic test; see the devlog above.
 
 ## Evidence checked on current bytes (read-only)
 | Item | XRPUSDT 2025-04 | SOLUSDT 2022-12 |
@@ -208,6 +219,14 @@ lock.
   reports it as missing.
 - The composite carries no `qa_summary` (stated in the manifest); QA for the replaced month is the source dataset's
   QA v2 (in the evidence). A full-range QA would read the sealed 2026 range and is not proposed.
+- **The composite manifest's inherited `gaps` list is not authoritative for the repaired minute (confirmed on the real
+  apply, 2026-11-06).** It is carried over from the superseded dataset and is not recomputed
+  (`qa_summary_note: "not recomputed for the composite; see supersedes and the source dataset QA"`); on the real lake
+  both new manifests still list the just-repaired minute as a gap even though the embedded part now has it. `LakeReader`
+  is unaffected — it recomputes `missing` from the actual parts, not from this field (verified: 0 missing on the
+  repaired minute, both unpinned and composite-pinned). **Any M4 code must therefore use `LakeReader` with an explicit
+  composite dataset pin for these two months, never read a composite manifest's `gaps` field as ground truth.** The
+  genuine SOL gap (2023-02-14 16:39, C-2) is unaffected and correctly remains a gap in both the manifest and the reader.
 
 ## Owner commands (NORMAL; NOT run; each needs the stated approval)
 Preconditions (operator preflight, checked just before `apply`, in PowerShell after
@@ -270,6 +289,9 @@ The tool's own postconditions read through `LakeReader` (unpinned and composite-
     fourth review listed them. Their behaviour was checked by inspection and probes.
 
 ## Decisions needed
-1. Written D-17 authorization for exactly these two additive repairs (B01–B12 untouched).
-2. Acceptance of limitations 1-12 and of the operator preconditions above.
-3. Composite ids as the M4 canonical pins for XRP and SOL (the other three symbols keep theirs).
+1. **Done 2026-11-06:** written D-17 authorization for exactly these two additive repairs (B01–B12 untouched) —
+   given, and executed; see the "Status" line above.
+2. Acceptance of limitations 1-12 and of the operator preconditions above (now historical: they describe the apply
+   that already happened).
+3. Composite ids as the M4 canonical pins for XRP and SOL (the other three symbols keep theirs) — recorded as a
+   recommendation in the 2026-11-06 devlog; still needs the owner's or M4's explicit confirmation when M4 starts.

@@ -2,7 +2,10 @@
 
 No real data, no network; the synthetic 2026-01 part lives in lake_sealed and is never decoded by the
 tool (only stat()-ed and referenced by path). Covers the first adversarial review (B1-B3, M1), the
-conditions F1-F8 of the second review, N1-N5 of the third one and N7 of the fourth one.
+conditions F1-F8 of the second review, N1-N5 of the third one and N7 of the fourth one. The real apply
+against the canonical lake (op_id 45d9e72abf9c43458370a0b0a7e9e647, 2026-11-06) is recorded in
+docs/DECISIONS_PENDING.md and docs/devlog/, not here; the governance reconciliation that followed it
+added the source-sealed-rejection test below, the only coverage gap the fifth review found.
 """
 
 # ruff: noqa: E501
@@ -201,6 +204,30 @@ def test_apply_complete_preserves_everything_and_publishes_no_monthly_dataset(
         assert m["supersedes"]["dataset_id"] == old
         assert m["sealed_parts"] == 1
         assert "qa_summary" not in m
+
+
+# --------------------------------------------------------------------------------- source guards
+def test_source_part_from_the_sealed_holdout_period_is_rejected(tmp_path: Path) -> None:
+    """D-17 must never promote a replacement from the sealed 2026 holdout (owner governance
+    reconciliation, 2026-11-06, after the real apply). `_src_monthly` rejects a part with
+    `part.year >= 2026` before `Lake.verify()` reads any of its bytes. This builds its own small
+    lakes (not the `lakes` fixture) so the only "2026" rows here are freshly generated in-memory
+    data, never real archive content; nothing sealed is opened or decoded."""
+    canon, src = tmp_path / "canon", tmp_path / "src"
+    sym = "SOLUSDT"
+    with Lake(canon).begin() as st:
+        st.write_parts("spot", LakeKind.BARS_1M, sym, rows(FEB, 100))
+        assert st.commit(meta(sym), {"summary": {}}) is not None
+    with Lake(src).begin() as st:
+        st.write_parts("spot", LakeKind.BARS_1M, sym, rows(JAN26, 50))
+        assert st.commit(meta(sym), {"summary": {"classification_ok": True}}) is not None
+    add_cache(canon, sym)
+    add_cache(src, sym)
+    pre = d17.inventory(canon)
+    with pytest.raises(d17.Refused, match="sealed holdout period"):
+        d17.do_plan(canon, src, tmp_path / "e")
+    assert d17.inventory(canon) == pre  # read-only: the canonical lake is untouched
+    assert not (tmp_path / "e" / "plan.json").exists()  # refused before any evidence was written
 
 
 # ------------------------------------------------------------------------ visibility and recovery
