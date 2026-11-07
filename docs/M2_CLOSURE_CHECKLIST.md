@@ -7,6 +7,15 @@ C-1 section and sequence are updated below in place, each change marked with the
 [DECISIONS_PENDING D-17](DECISIONS_PENDING.md) and [the D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md)
 for the full evidence. **Still not formal M2 acceptance** (S3/S4/S7 remain open).
 
+**Update 2026-11-06 (publication and CI):**
+- **Publication.** The D-17 implementation and governance commits were rebuilt before their first push, to
+  withhold 45 sealed-holdout metadata entries from two evidence inventories. They were published as `b24f41e`
+  (local `60f5ce4`, never published) and `9f908d9` (local `f18eb9f`, never published).
+- **CI.** Run `42322235295` on headSha `9f908d996cbc4b496adbf0869628a9b5f0b02130` is green on all 7 jobs, Ubuntu
+  and Windows.
+- **Status of the closure steps.** S3 and S4 are done. **S7, the owner sign-off, is the only open step.** The
+  limited-scope sign-off package is [M2_ACCEPTANCE_RECORD](M2_ACCEPTANCE_RECORD.md).
+
 ## Approved scope (owner, 2026-11-06)
 M2 data scope = Binance **Spot 1m** for **BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT, XRPUSDT**, **2022-01 to 2025-12**.
 The 2026 holdout is out of M2 scope and stays sealed. This approval does **not** accept any dataset and does **not** pass M2.
@@ -21,8 +30,8 @@ Out of M2 under this scope (moved to M4 prerequisites): BNB, ADA, AVAX, TRX, HBA
 | 2 | Golden trades | `tests/unit/sim/test_sim_golden.py` | PASS (run) | as above | none |
 | 3 | Ledger property tests | `tests/property/sim/` | PASS (run: 10 passed; restart property delayed 25 cases / instant 24 cases, FAIL 0, 2+2 SAFE_BLOCK = fail-closed stops, not recovery) | `uv run pytest -q tests/property/sim` | **done 2026-11-06:** roadmap row (a) reworded and validation-plan blocker 7 marked resolved (stale) — `test_sim_property_regressions.py -k 13073`: 8 passed; full property suite 79 passed |
 | 4 | Window-parity | `test_bt_runner.py`, `test_feat_parity_canaries.py` | PASS (run, inside the 258) | as item 1 | none |
-| 5 | Cross-OS reproducibility hash | see "Cross-OS" below | **Updated 2026-11-06:** both OS PASS, CI `42275943593` on `b1da844` (pushed under D-07) | CI on `ubuntu-latest` | the D-17 implementation commit `60f5ce4` (`task/m2-closure`) has not itself been pushed/CI'd; its diff does not touch `src/`, and the two pinned-hash tests were re-run locally on `60f5ce4` (2 passed), but no Linux run covers that exact commit |
-| 6 | Causality Auditor sign-off (global M2) | see "Auditor package" below | **Updated 2026-11-06: CONDITIONAL PASS** ([D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md)) | `causality-auditor` agent | open conditions are governance/traceability only (this record; whether CI must cover `60f5ce4`), not causality |
+| 5 | Cross-OS reproducibility hash | see "Cross-OS" below | **Updated 2026-11-06 (publication):** both OS PASS on the published HEAD `9f908d9`, CI `42322235295` (`m2 cross-os gate` on ubuntu and windows: both pinned-hash tests PASSED; full suite: ubuntu 1,729 passed, windows 1,727 passed). Earlier run `42275943593` on `b1da844` kept as history | CI on `ubuntu-latest` | none. The D-17 implementation is published as `b24f41e` (local `60f5ce4`, never published) and is an ancestor of the CI-covered HEAD |
+| 6 | Causality Auditor sign-off (global M2) | see "Auditor package" below | **Updated 2026-11-06: CONDITIONAL PASS** ([D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md)) | `causality-auditor` agent | the verdict stands as issued (history). Its three conditions were satisfied afterwards: the governance record (`9f908d9`); CI on the implementation (`42322235295`, a descendant of `b24f41e`); the sealed-source guard test. The auditor has not re-issued a verdict; see [M2_ACCEPTANCE_RECORD §3](M2_ACCEPTANCE_RECORD.md) |
 
 ## C-1 (two real rows missing in canonical; in scope because both symbols are in scope)
 Current bytes (run, read-only, tool `tests/owner_checks/c1_verify.py` against canonical):
@@ -100,9 +109,9 @@ The auditor does not need the Parquet data except the `c1_verify` reports.
 |---|---|---|---|
 | S1 | Run the C-1 procedure above; read the exits and the XRP `content_hash` comparison | owner (NORMAL) | no, seconds — **done** |
 | S2 | D-17 minimal decision: repair canonical months by replacing the two parts with the verified ones (via a logged, non-overwriting step, old manifest kept), **or** accept C-1 as documented grade X on those minutes | owner | **done 2026-11-06: repair**, authorized in writing and executed (op id `45d9e72a…`) |
-| S3 | Approve a push of one branch `task/m2-closure` (D-07) so CI runs both OS | owner | **partially done:** that branch was already pushed and CI `42275943593` is green on both OS, but on `b1da844` — **the D-17 commit `60f5ce4` added since then has not been pushed**; still a blocker for CI evidence of the exact implementation commit |
-| S4 | Commit the checklist, `c1_verify.py`, the roadmap/validation-plan rewording, the D-17 tool and this reconciliation; CI green on both OS for the commit that carries all of it | Claude after approval | **still open**: proposed, not committed (owner approval requested) |
+| S3 | Approve a push of one branch `task/m2-closure` (D-07) so CI runs both OS | owner | **done 2026-11-06:** normal fast-forward push `b1da844..9f908d9` to `origin/task/m2-closure`, owner-authorized; the local unredacted commits `60f5ce4`/`f18eb9f` were not published |
+| S4 | Commit the checklist, `c1_verify.py`, the roadmap/validation-plan rewording, the D-17 tool and this reconciliation; CI green on both OS for the commit that carries all of it | Claude after approval | **done 2026-11-06:** `a4e4f9e`, `b1da844`, `b24f41e`, `9f908d9`; CI `42322235295` 7/7 green on `9f908d9` |
 | S5 | If S2 = repair: do it; verify independently (not `c1_verify`, which would double-count the old and new parts — see above) | Claude/owner | **done 2026-11-06:** executed; verified with a fresh `LakeReader`, unpinned and both pins, 0 duplicates/missing/conflicts, old pin unchanged |
 | S6 | Global `causality-auditor` run on the package above | Claude | **done 2026-11-06: CONDITIONAL PASS** — see the D-17 devlog |
-| S7 | Owner sign-off of M2 with the five-symbol scope | owner | final — **still open** |
+| S7 | Owner sign-off of M2 with the five-symbol scope | owner | final — **still open**; proposed text and caveats in [M2_ACCEPTANCE_RECORD](M2_ACCEPTANCE_RECORD.md) |
 Not blockers under the approved scope: Top 10, USD-M, funding, B01–B12, QA v2 for other batches, E-4(b), O-5/O-6 (a parity re-import of 108 months is optional hardening; a data-quality caveat in the sign-off covers it, unless the owner wants it as a gate).

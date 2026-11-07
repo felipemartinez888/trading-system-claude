@@ -114,3 +114,28 @@ holdout data is read.
 
 This entry, the `DECISIONS_PENDING.md`/`M2_CLOSURE_CHECKLIST.md`/roadmap/validation-plan edits, and the
 new regression test are the proposed commit scope for this reconciliation. Nothing has been committed.
+
+## Addendum, later 2026-11-06: publication and CI
+The text above is kept as written when it was produced. The SHAs it cites (`60f5ce4`, and the reconciliation
+commit made later from this entry) are **local and never published**.
+
+- **Why the history was rebuilt.** Before the first push, a scan found that the two inventory JSONs carried 45
+  `SEALED:` entries: path, size and modification time of sealed-holdout parts. These are metadata only; no
+  holdout content was ever read. On the owner's authorization, the two commits were rebuilt from `b1da844`.
+  - The inventories became redacted derivatives, 1,940 → 1,895 entries
+    ([redaction note](../tasks/M2-D17-evidence/inventory_real/README.md)).
+  - The original evidence is kept privately, outside Git, with hashes.
+- **Commit mapping.**
+  - Local `60f5ce4` is published as `b24f41ea679f0b9900163999156b0d5037aff7ab`; `d17_promote.py` is
+    byte-identical.
+  - The local reconciliation commit is published as `9f908d996cbc4b496adbf0869628a9b5f0b02130`.
+- **Push.** Normal fast-forward, `b1da844..9f908d9` to `origin/task/m2-closure`. No force push; the original
+  local branch was not pushed.
+- **CI `42322235295`** (push, headSha `9f908d9…`): 7/7 jobs `success`.
+  - `python` ubuntu 1,729 passed and windows 1,727 passed, 2 `live` deselected each; ruff, format and mypy clean.
+  - `m2 cross-os gate` on both OS: both pinned-hash tests PASSED.
+  - `frontend` on both OS and `safety guards`.
+- **Open conditions 1 and 2 above are satisfied.** The governance record is committed and published, and CI
+  covers a descendant of the D-17 implementation commit on both OS. The Causality Auditor's CONDITIONAL PASS
+  stays the recorded verdict and was not re-issued. M2 is still not accepted: owner sign-off S7 is pending,
+  see [M2_ACCEPTANCE_RECORD](../M2_ACCEPTANCE_RECORD.md).

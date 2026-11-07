@@ -11,6 +11,12 @@
 [DECISIONS_PENDING D-17](../DECISIONS_PENDING.md) / [the D-17 devlog](../devlog/2026-11-06-m2-d17-canonical-promotion.md)
 for full evidence. Blockers 2–5, 8 (partially), 10 and 11 are unchanged.
 
+**Update 2026-11-06 (publication):**
+- Blocker 8 is resolved: CI `42322235295` covers the published D-17 work.
+- Under the owner's five-symbol scope, blockers 2–5 and 10–11 are stated caveats or M4 prerequisites, not M2
+  gate items. See [M2_ACCEPTANCE_RECORD](../M2_ACCEPTANCE_RECORD.md) §4–§5.
+- M2 is not accepted until the owner signs S7.
+
 | # | Blocker | Cleared by | State |
 |---|---|---|---|
 | 1 | C-1: canonical XRP 2025-04 and SOL 2022-12 each lack one real row | Steps 1–4 | **Resolved 2026-11-06**: D-17 `apply`, op id `45d9e72abf9c43458370a0b0a7e9e647`, `COMPLETE`/`accepted: true`; both rows added, independently re-verified with `LakeReader` |
@@ -20,7 +26,7 @@ for full evidence. Blockers 2–5, 8 (partially), 10 and 11 are unchanged.
 | 5 | Cross-checks cover 2 of 24 months per batch | Step 5 | Open (unchanged) |
 | 6 | Promotion procedure missing (E-5, D-17) | Step 4 | **Resolved 2026-11-06**: the D-17 tool was designed, reviewed five times and executed once against the real lake, scoped to C-1 only; batch promotion (B01–B12) under D-17 stays deferred |
 | 7 | Simulator restore property fails on two classes (partial fix `904b84c`; seed 13073 reproduced) | Separate fix | **Resolved, stale entry corrected 2026-11-06**: this branch's HEAD already includes the completing fixes (`0435116`, `e87fe59`, `d1e280a`); `-k 13073`: 8 passed; full property suite (`test_sim_property_regressions.py` + `test_paper_properties.py`): 79 passed, 0 failed. A documented residual (≈0.05%, 3/6,000 random cases, absent an explicit `start_ms`) is unchanged and already pinned by its own test; it was never part of this blocker's "two classes" |
-| 8 | No CI run covers the integrated work, so the cross-OS reproducibility gate has no current evidence | Push decision (D-07), then CI | **Partially resolved**: `task/m2-closure` was pushed and CI `42275943593` is green on both OS — but on commit `b1da844`, before D-17. The D-17 implementation commit `60f5ce4` (diff limited to `tests/owner_checks/` and docs/evidence, no `src/` change) has not itself been pushed or run through CI |
+| 8 | No CI run covers the integrated work, so the cross-OS reproducibility gate has no current evidence | Push decision (D-07), then CI | **Resolved 2026-11-06**: the D-17 work was published as `b24f41e` + `9f908d9` (rebuilt from the local `60f5ce4`/`f18eb9f`, never published, to withhold sealed-holdout metadata); CI `42322235295` on `9f908d9` is green on all 7 jobs, Ubuntu and Windows, including the M2 cross-OS gate. The earlier run `42275943593` on `b1da844` is kept as history |
 | 9 | No overall Causality Auditor sign-off for M2 is recorded | Review after blockers 1 and 7 | **Resolved 2026-11-06: CONDITIONAL PASS** ([D-17 devlog](../devlog/2026-11-06-m2-d17-canonical-promotion.md)); all five literal roadmap gate items independently verified green, open conditions are governance/traceability only |
 | 10 | No backtest run is recorded locally | First recorded run, once data is ready | Open (unchanged) |
 | 11 | Top 10, USD-M and funding coverage (O-9) | Owner scope decision below | Open (unchanged) |
