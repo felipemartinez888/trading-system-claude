@@ -5,7 +5,7 @@ Worktree `tsc-m2-closure`, detached at `928aeb7`. Nothing committed. "Run" = exe
 **Update 2026-11-06 (later the same day):** S2 was decided (repair) and S5–S6 executed; this file's gate table,
 C-1 section and sequence are updated below in place, each change marked with the date. See
 [DECISIONS_PENDING D-17](DECISIONS_PENDING.md) and [the D-17 devlog](devlog/2026-11-06-m2-d17-canonical-promotion.md)
-for the full evidence. **Still not formal M2 acceptance** (S3/S4/S7 remain open).
+for the full evidence. *(Superseded by the S7 update below: M2 is formally accepted, limited scope.)*
 
 **Update 2026-11-06 (publication and CI):**
 - **Publication.** The D-17 implementation and governance commits were rebuilt before their first push, to
@@ -13,7 +13,11 @@ for the full evidence. **Still not formal M2 acceptance** (S3/S4/S7 remain open)
   (local `60f5ce4`, never published) and `9f908d9` (local `f18eb9f`, never published).
 - **CI.** Run `42322235295` on headSha `9f908d996cbc4b496adbf0869628a9b5f0b02130` is green on all 7 jobs, Ubuntu
   and Windows.
-- **Status of the closure steps.** S3 and S4 are done. **S7, the owner sign-off, is the only open step.** The
+- **Status of the closure steps.** S3 and S4 are done. **S7 is done (2026-11-07T02:37:00Z): the owner accepted M2,
+  limited scope** ([D-22](DECISIONS_PENDING.md), [acceptance record](M2_ACCEPTANCE_RECORD.md)); all steps S1–S7 are
+  closed. Accepted scope and caveats are exactly those of the record; it is not M3 acceptance, a research claim, an
+  additional dataset or holdout access.
+- **Former wording, kept for history:** "S7, the owner sign-off, is the only open step." The
   limited-scope sign-off package is [M2_ACCEPTANCE_RECORD](M2_ACCEPTANCE_RECORD.md).
 
 ## Approved scope (owner, 2026-11-06)
@@ -113,5 +117,5 @@ The auditor does not need the Parquet data except the `c1_verify` reports.
 | S4 | Commit the checklist, `c1_verify.py`, the roadmap/validation-plan rewording, the D-17 tool and this reconciliation; CI green on both OS for the commit that carries all of it | Claude after approval | **done 2026-11-06:** `a4e4f9e`, `b1da844`, `b24f41e`, `9f908d9`; CI `42322235295` 7/7 green on `9f908d9` |
 | S5 | If S2 = repair: do it; verify independently (not `c1_verify`, which would double-count the old and new parts — see above) | Claude/owner | **done 2026-11-06:** executed; verified with a fresh `LakeReader`, unpinned and both pins, 0 duplicates/missing/conflicts, old pin unchanged |
 | S6 | Global `causality-auditor` run on the package above | Claude | **done 2026-11-06: CONDITIONAL PASS** — see the D-17 devlog |
-| S7 | Owner sign-off of M2 with the five-symbol scope | owner | final — **still open**; proposed text and caveats in [M2_ACCEPTANCE_RECORD](M2_ACCEPTANCE_RECORD.md) |
+| S7 | Owner sign-off of M2 with the five-symbol scope | owner | final — **done 2026-11-07T02:37:00Z: approved, limited scope** ([D-22](DECISIONS_PENDING.md); wording, caveats and sign-off log in [M2_ACCEPTANCE_RECORD](M2_ACCEPTANCE_RECORD.md)) |
 Not blockers under the approved scope: Top 10, USD-M, funding, B01–B12, QA v2 for other batches, E-4(b), O-5/O-6 (a parity re-import of 108 months is optional hardening; a data-quality caveat in the sign-off covers it, unless the owner wants it as a gate).

@@ -137,5 +137,21 @@ commit made later from this entry) are **local and never published**.
   - `frontend` on both OS and `safety guards`.
 - **Open conditions 1 and 2 above are satisfied.** The governance record is committed and published, and CI
   covers a descendant of the D-17 implementation commit on both OS. The Causality Auditor's CONDITIONAL PASS
-  stays the recorded verdict and was not re-issued. M2 is still not accepted: owner sign-off S7 is pending,
-  see [M2_ACCEPTANCE_RECORD](../M2_ACCEPTANCE_RECORD.md).
+  stays the recorded verdict and was not re-issued. At the time of this addendum M2 was not yet accepted; see the
+  next addendum for the sign-off.
+
+## Addendum, 2026-11-07: M2 limited acceptance (S7) and CI of the later documentation commit
+- **S7 approved**, 2026-11-07T02:37:00Z (the owner's written instruction in the session, recorded by Claude):
+  M2 accepted **limited to** Spot 1m BTC, ETH, SOL, DOGE and XRP, 2022-01-01 → 2025-12-31, code at
+  `9f908d996cbc4b496adbf0869628a9b5f0b02130`, CI `42322235295` 7/7. Wording, caveats and the sign-off log:
+  [M2_ACCEPTANCE_RECORD](../M2_ACCEPTANCE_RECORD.md); decision [D-22](../DECISIONS_PENDING.md). Not authorized: any
+  research or profitability claim, M3 acceptance, other datasets, holdout access.
+- **Causality Auditor.** The CONDITIONAL PASS above is unchanged and historically accurate; its conditions were
+  satisfied by the published commits and CI, per the record's §3.
+- **CI of `9cf9a11`** (documentation only), run `42326431882`: the first attempt failed one Windows test
+  (`test_p1_observation_anchor.py::test_minutes_queued_during_the_startup_wait_are_processed_unobserved`, 1,726
+  passed); the re-run of that job passed (1,727) and all seven jobs are green. Both facts stand. The root cause is
+  **not proven**: a 0.1 s real-time `asyncio.sleep` in the test is suspected, the failure did not reproduce locally
+  (6/6 passed), and no production clock or risk behavior is to be changed for it. A deterministic timing-test
+  hardening is approved for the backlog after the Target A demonstration, unless the failure becomes a
+  reproducible blocker.

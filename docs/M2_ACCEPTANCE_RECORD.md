@@ -1,9 +1,11 @@
 # M2 acceptance record (limited scope)
 
-- **Status: PROPOSED and UNSIGNED — awaiting the owner's S7 sign-off.** This file does not accept M2. Acceptance
-  takes effect only when the owner signs §6 in writing, and the sign-off is recorded in
-  [DECISIONS_PENDING](DECISIONS_PENDING.md). On 2026-11-06 the owner stated support for the limited scope in §1 but
-  did **not** grant S7, and asked that the exact wording and caveats (§6 and §4) be presented first.
+- **Status: ACCEPTED, LIMITED SCOPE — owner sign-off S7 recorded 2026-11-07T02:37:00Z (see §6 and §7).** The
+  acceptance covers exactly the scope in §1 and carries every caveat in §4 and every deferred item in §5. It is
+  **not** M3 acceptance, not acceptance of any other dataset, not a research or profitability claim, and not
+  authorization to open the 2026 holdout. History: on 2026-11-06 the owner stated support for the scope but did
+  not grant S7 and asked to see the exact wording first; the wording below was presented and then approved
+  unchanged.
 - **Prepared:** 2026-11-06 by the Lead, from the published branch `task/m2-closure` at
   `9f908d996cbc4b496adbf0869628a9b5f0b02130`.
 - **Basis:** the [closure checklist](M2_CLOSURE_CHECKLIST.md), [D-17](DECISIONS_PENDING.md), the
@@ -45,6 +47,19 @@
 - **Collection difference:** ubuntu collects 2 more tests than windows. No test failed or was skipped, and the
   cause was not investigated.
 - **Scope of the suite:** `testpaths = ["tests"]` includes `tests/owner_checks/`, so the D-17 tool's tests ran on both OS.
+
+### Later CI, not part of the accepted evidence: run `42326431882` on `9cf9a11`
+- **Commit:** `9cf9a11b3040fe92c514bcfd1dc02137b84da2f3`, documentation only (no change in `src/` or `tests/`
+  relative to the accepted `9f908d9`).
+- **First attempt: failure.** `python (windows-latest)` failed one test, 1,726 passed:
+  `tests/integration/test_p1_observation_anchor.py::test_minutes_queued_during_the_startup_wait_are_processed_unobserved`
+  (`assert None == T0 + 4*M`). The other six jobs passed.
+- **Second attempt (re-run of the failed job only): success**, 1,727 passed; all seven jobs `success`.
+- **Cause not proven.** The test waits `asyncio.sleep(POLL * 10)`, 0.1 s of real time, and a dependence on that wait
+  is suspected. The failure was not reproduced (6 of 6 local runs passed), so it is not classified as
+  environmental or as a defect. A narrowly scoped, deterministic timing-test hardening is on the backlog; it must
+  not change production clock or risk behavior.
+- **Effect on this acceptance:** none. The accepted commit and CI run remain `9f908d9` / `42322235295`.
 
 ## 3. Causality Auditor CONDITIONAL PASS: historical verdict and later status of its conditions
 - **The verdict stands as issued.** The global review of 2026-11-06 gave CONDITIONAL PASS. It found no causality,
@@ -109,7 +124,10 @@ metadata from two evidence inventories. Earlier records cite the local, never-pu
 | Recompute or annotate composite `gaps` metadata | M4 hygiene |
 | Committing `uv.lock` | separate decision (pinned reproducibility) |
 
-## 6. Proposed owner sign-off text (S7)
+## 6. Owner sign-off text (S7), as approved
+The wording below was proposed on 2026-11-06 and approved without change on 2026-11-07. The signature line is the
+owner's written instruction in the session transcript, recorded by Claude, not a cryptographic signature.
+
 > I, the owner, accept milestone M2 (Historical data + backtest core) of Trading System Claude, **limited to**
 > Binance Spot 1m canonical data for BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT and XRPUSDT from 2022-01-01 to
 > 2025-12-31, and to the M2 code at commit `9f908d996cbc4b496adbf0869628a9b5f0b02130` (CI run `42322235295`,
@@ -128,9 +146,18 @@ metadata from two evidence inventories. Earlier records cite the local, never-pu
 > It authorizes M4 research only on pinned dataset ids within this scope, and only after M4's own prerequisites
 > are met.
 >
-> Signed: ____________  Date (UTC): ____________
+> Signed: the owner, by written instruction in the session transcript (recorded by Claude).
+> Date (UTC): 2026-11-07T02:37:00Z
 
 ## 7. Sign-off log
-| Date | By | Decision | Reference |
+| Date (UTC) | By | Decision | Reference |
 |---|---|---|---|
-| — | — | not yet signed | — |
+| 2026-11-07T02:37:00Z | owner (written instruction in the session; recorded by Claude) | **S7 approved: limited M2 accepted** under §1 and §4–§5, at commit `9f908d9` with CI `42322235295` | [DECISIONS_PENDING D-22](DECISIONS_PENDING.md) |
+
+**Not authorized by this sign-off** (stated by the owner):
+- any research claim or strategy profitability claim;
+- M3 acceptance;
+- acceptance of any additional dataset;
+- access to the 2026 holdout.
+
+The Causality Auditor's CONDITIONAL PASS stays recorded as issued; its three conditions are satisfied per §3.

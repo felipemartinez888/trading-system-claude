@@ -15,7 +15,9 @@ for full evidence. Blockers 2–5, 8 (partially), 10 and 11 are unchanged.
 - Blocker 8 is resolved: CI `42322235295` covers the published D-17 work.
 - Under the owner's five-symbol scope, blockers 2–5 and 10–11 are stated caveats or M4 prerequisites, not M2
   gate items. See [M2_ACCEPTANCE_RECORD](../M2_ACCEPTANCE_RECORD.md) §4–§5.
-- M2 is not accepted until the owner signs S7.
+- M2 was formally accepted, limited scope, by the owner on 2026-11-07 ([D-22](../DECISIONS_PENDING.md),
+  [record](../M2_ACCEPTANCE_RECORD.md)). That acceptance carries blockers 2–5 and 10–11 as stated caveats and
+  deferred items; it does not resolve them.
 
 | # | Blocker | Cleared by | State |
 |---|---|---|---|

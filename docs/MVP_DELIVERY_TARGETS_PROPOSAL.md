@@ -45,8 +45,7 @@
   - Seven ledger postings are not seven trades: three are simulated entries.
 
 **Missing (evidence, not features):**
-1. **M2 sign-off S7** (the owner; text in the acceptance record). The owner supports the limited scope; S7 is not
-   granted.
+1. ~~**M2 sign-off S7**~~ **Done 2026-11-07T02:37:00Z** (limited scope, [D-22](DECISIONS_PENDING.md)).
 2. **Strategy execution in a real session.** The 1 h session shows the live-to-replay pipeline with real observed
    bars and a nonempty benchmark ledger. Whether `bracket_reference` produces a CONFIRMED signal in a short window is
    **not controllable**: compression plus breakout plus volume is rare by construction, which is why the
@@ -81,8 +80,8 @@ evidence, not a gate. No percentages: there is no defensible measurement basis f
 |---|---|---|---|---|
 | M0 Foundations | Not accepted | CI 7/7 both OS; launcher run by the owner (2026-10-28) | Owner Windows check and spike write-up | Owner records acceptance, or lists what is missing |
 | M1 Live tape | Not accepted | Live tape and dashboard; replay E2E in CI | The 2-hour `verify_live` run | **Deferred**: not needed for Target A unless the owner wants the gate |
-| **M2 Data + backtest core** | **All six gate items evidenced; S7 pending** | CI cross-OS hash green; C-1 repaired and verified | Owner S7 sign-off | Owner signs or amends the proposed text |
-| M3 Paper + risk | Not accepted: real replays PASS (30 min with empty ledgers; 1 h with a nonempty benchmark ledger), strategy books never exercised in a real session, fault-injection gate not formally accepted | Paper runtime, risk, books, replay tooling; fault-injection tests green in CI | Strategy and risk execution shown by deterministic tests; acceptance of the literal fault-injection gate; independent review of the session evidence | Separately authorized deterministic end-to-end test (Target A) |
+| **M2 Data + backtest core** | **Accepted, limited scope (S7, 2026-11-07, D-22)** | CI cross-OS hash green; C-1 repaired and verified | Owner S7 sign-off | Owner signs or amends the proposed text |
+| M3 Paper + risk | Not accepted: real replays PASS (30 min with empty ledgers; 1 h with a nonempty benchmark ledger), strategy books never exercised in a real session, fault-injection gate not formally accepted | Paper runtime, risk, books, replay tooling; fault-injection tests green in CI | Strategy and risk execution shown by deterministic tests; acceptance of the literal fault-injection gate; independent review of the session evidence | Target A deterministic end-to-end test: implemented locally (2 test files, 13 tests, reviewer APPROVE WITH NOTES, causality auditor PASS at closure; [devlog](devlog/2026-11-07-target-a-e2e-test.md)), uncommitted, no CI yet; then commit/push approval |
 | M4 Research | Not started | Stats library, preregistration, trials, runner, holdout guard and unlock CLI | Walk-forward, random-entry controls, hypotheses, grade wiring, Research pages, real-data run | After Target A |
 | M5 Agents | Not started (no `agents/` package) | — | The whole milestone | After Target B |
 | M6 Analytics + export | Not started | — | Export, schemas, scorer | After Target B |
@@ -97,7 +96,7 @@ evidence, not a gate. No percentages: there is no defensible measurement basis f
 | C, full roadmap MVP | Farthest | No M5 code, no M6 export, AC-08 depends on research results |
 
 **Changes since the previous update:** the D-17 repair is published and CI-verified (7/7); M2's literal gate is
-fully evidenced and awaits S7; M3's tests are now on the remote and ran on Ubuntu and Windows; the sealed-holdout
+fully evidenced and was then accepted by the owner (S7, 2026-11-07, limited scope); M3's tests are now on the remote and ran on Ubuntu and Windows; the sealed-holdout
 metadata leak was caught and kept out of the public history; a 1 h real session (348 observed bars, nonempty
 benchmark ledger, all hashes matching) was re-verified from its artifacts; the owner decided the Target A
 gate-wording question and approved the deterministic end-to-end test as the next separate task.
@@ -141,7 +140,7 @@ Units are working days or weeks of effort, with owner-run waiting time separated
 ## 6. Owner decisions
 | # | Decision | State (2026-11-06) |
 |---|---|---|
-| 1 | **S7:** sign, amend or decline the M2 text in the [acceptance record](M2_ACCEPTANCE_RECORD.md) | **Open.** The owner supports the limited scope; formal sign-off is not granted, and the wording and caveats must be presented first |
+| 1 | **S7:** sign, amend or decline the M2 text in the [acceptance record](M2_ACCEPTANCE_RECORD.md) | **Granted 2026-11-07T02:37:00Z**, wording unchanged, limited scope ([D-22](DECISIONS_PENDING.md)); no research claim, M3 acceptance, extra dataset or holdout access is authorized |
 | 2 | M3 gate wording for Target A | **Decided:** a real observed-bar replay with a nonempty benchmark ledger and matching hashes is acceptable evidence of the live-to-replay pipeline; it does not replace the deterministic strategy and risk tests or the literal fault-injection gate |
 | 3 | The Target A deterministic end-to-end test (§2 item 3) | **Approved** as the next focused implementation task, authorized separately; not part of the documentation checkpoint |
 | 4 | Commit and push of these documents (D-07) | **Authorized**: one documentation-only commit, one normal fast-forward push to `origin/task/m2-closure` |
