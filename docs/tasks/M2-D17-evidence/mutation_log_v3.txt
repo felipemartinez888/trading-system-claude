@@ -1,0 +1,33 @@
+D-17 mutation run (scratch copies; each mutant applied to a copy of tests/owner_checks, suite must fail)
+date_utc: 2026-11-06T20:59:59Z  base_commit: b1da844e1c16b3678bf7309433a54c77a02767c9
+0a7c9aeeca426780b89f64f3ef4826bd529e2f9180f98913d3f434de9dbcde5c *tests/owner_checks/d17_promote.py
+dae13bdde52eeaa70143974b97dd6a19eb1b5eef1f2ffa2da20c5e81dda5e6d2 *tests/owner_checks/test_d17_promote.py
+python 3.13.2
+a_rmdir_to_rmtree: KILLED (1x) 1 failed, 48 passed in 17.88s
+b_composite_intent: KILLED (1x) 1 failed, 43 passed in 16.55s
+c_done_sha: KILLED (1x) 1 failed, 45 passed in 16.70s
+d_op_id: KILLED (1x) 1 failed, 44 passed in 16.39s
+e_part_in_pre: KILLED (1x) 1 failed, 46 passed in 16.11s
+f_part_intent: KILLED (1x) 1 failed, 42 passed in 14.70s
+g_composite_in_pre: KILLED (1x) 1 failed, 47 passed in 16.52s
+h_incomplete_part_any_mismatch: KILLED (1x) 1 failed, 41 passed in 14.65s
+i_incomplete_part_never: KILLED (1x) 1 failed, 37 passed in 13.24s
+j_incomplete_composite_never: KILLED (1x) 1 failed, 39 passed in 13.84s
+k_always_build_catalog: KILLED (1x) 1 failed, 5 passed in 4.03s
+l_no_debris_cleanup: KILLED (1x) 1 failed, 39 passed in 14.22s
+m_no_rollback_preserved_precheck: KILLED (1x) 1 failed, 59 passed in 20.34s
+n_no_staging_root_cleanup: KILLED (2x) 1 failed, 4 passed in 3.23s
+o_no_shared_refs: KILLED (1x) 1 failed, 53 passed in 18.35s
+p_no_runs_check: KILLED (1x) 1 failed, 70 passed in 25.76s
+q_no_catalog_owner_check: KILLED (1x) 1 failed, 71 passed in 25.08s
+r_no_lock: KILLED (1x) 1 failed, 73 passed in 26.51s
+s_no_postconditions: KILLED (1x) 1 failed, 49 passed in 16.76s
+t_no_part_fsync: KILLED (1x) 1 failed, 50 passed in 17.79s
+u_comp_incomplete_ignores_done: KILLED (1x) 1 failed, 55 passed in 19.48s
+v_comp_dataset_id: KILLED (1x) 1 failed, 56 passed in 19.50s
+w_recover_incomplete_shared: KILLED (1x) 1 failed, 53 passed in 18.26s
+x_shared_unreadable_skipped: KILLED (1x) 1 failed, 54 passed in 18.70s
+y_recover_during_rolling_back: KILLED (1x) 1 failed, 57 passed in 19.65s
+n1_inventory_not_durable: KILLED (1x) 1 failed, 50 passed in 17.49s
+n1_raw_inventory_load: KILLED (1x) 1 failed, 51 passed in 17.74s
+z_rollback_touches_foreign_catalog: KILLED (1x) 1 failed, 58 passed in 20.06s  [pattern adjusted to the ruff-formatted line; run separately]

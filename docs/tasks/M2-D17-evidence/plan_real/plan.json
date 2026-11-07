@@ -1,0 +1,83 @@
+{
+  "created_utc": "2026-11-06T21:00:25Z",
+  "items": [
+    {
+      "symbol": "SOLUSDT",
+      "month": "2022-12",
+      "source_dataset": "217c29379adb75305b2ad9dad774ffed1d3d8578fa9680b89ad2f68c5dc89f4f",
+      "source_part": {
+        "market": "spot",
+        "kind": "bars_1m",
+        "symbol": "SOLUSDT",
+        "year": 2022,
+        "month": 12,
+        "path": "lake/market=spot/kind=bars_1m/symbol=SOLUSDT/year=2022/month=12/part-7bd1ab63950443c89af44fb199a70479.parquet",
+        "content_hash": "7bd1ab63950443c89af44fb199a704794802c48bb42efa00d40ad1ab3932c149",
+        "file_sha256": "84b034b7d54c9e8d49b322e473ff62d63c711a3a13d10e27ef7ad35655604d6e",
+        "rows": 44640,
+        "first_time_ms": 1669852800000,
+        "last_time_ms": 1672531140000
+      },
+      "canonical_dataset": "fff8e3f6138ef64cc4a50b63329011d890809b5fe039e5a70092a8257ddf78f0",
+      "old_part": {
+        "market": "spot",
+        "kind": "bars_1m",
+        "symbol": "SOLUSDT",
+        "year": 2022,
+        "month": 12,
+        "path": "lake/market=spot/kind=bars_1m/symbol=SOLUSDT/year=2022/month=12/part-cea7758d61dcb1df9e9c20e931a6a8c1.parquet",
+        "content_hash": "cea7758d61dcb1df9e9c20e931a6a8c13f1413c0060201f999904aabd87cb402",
+        "file_sha256": "d2f48000bc0cf44bc1269a03ecc0086a585c998eece6e1626814a6229a781361",
+        "rows": 44639,
+        "first_time_ms": 1669852800000,
+        "last_time_ms": 1672531140000
+      },
+      "added_minutes_ms": [
+        1671636180000
+      ],
+      "old_rows": 44639,
+      "new_rows": 44640,
+      "composite_dataset_id": "3e2f33e9e04627acb6dbc903546ff84faf648c8ac844f6146ecdb01ceea34f8a",
+      "sealed_parts_in_composite": 9
+    },
+    {
+      "symbol": "XRPUSDT",
+      "month": "2025-04",
+      "source_dataset": "4d3f2a8d0fef177760c13b1960ecffd62745cb3d4ba42ebbd51f39c7ead46dd4",
+      "source_part": {
+        "market": "spot",
+        "kind": "bars_1m",
+        "symbol": "XRPUSDT",
+        "year": 2025,
+        "month": 4,
+        "path": "lake/market=spot/kind=bars_1m/symbol=XRPUSDT/year=2025/month=04/part-5301f963dafd9aa900d99b41e9effeca.parquet",
+        "content_hash": "5301f963dafd9aa900d99b41e9effecaff8fca5a5d0b09740e636a8d90600c70",
+        "file_sha256": "8ea7e07d047e4586b931e8e7d3ce363ad3745d7f481abdb8eb668abf2a5102c8",
+        "rows": 43200,
+        "first_time_ms": 1743465600000,
+        "last_time_ms": 1746057540000
+      },
+      "canonical_dataset": "629c732853c8ba90fbb3bc2f083f46f490bc29fe202dc72f4491ccd0f6c9f9f5",
+      "old_part": {
+        "market": "spot",
+        "kind": "bars_1m",
+        "symbol": "XRPUSDT",
+        "year": 2025,
+        "month": 4,
+        "path": "lake/market=spot/kind=bars_1m/symbol=XRPUSDT/year=2025/month=04/part-25ee3d07b044c7e3c21bbddbb12e390d.parquet",
+        "content_hash": "25ee3d07b044c7e3c21bbddbb12e390d9287f6f6383a293a411452e4c34db4ab",
+        "file_sha256": "00004d8ad827efc2b3d2b301ad849916eaf796fbf761614bbe59b746a3bfc763",
+        "rows": 43199,
+        "first_time_ms": 1743465600000,
+        "last_time_ms": 1746057540000
+      },
+      "added_minutes_ms": [
+        1743701040000
+      ],
+      "old_rows": 43199,
+      "new_rows": 43200,
+      "composite_dataset_id": "cf1f67e941c0eb8b7ec7e99b11608667ff650fcf1982eff101963030a1159acc",
+      "sealed_parts_in_composite": 9
+    }
+  ]
+}
