@@ -1,6 +1,6 @@
 # 2026-11-09 — Start stability: bounded, resumable, safely stoppable ingestion
 
-**Status: implemented locally on `feat/ingestion-bounded` (5 commits after `1acd38a`), not pushed, no CI run.**
+**Status: on `origin/feat/ingestion-bounded` (owner-approved push 2026-11-09), CI green on `1dec031` (see "CI and equivalence gate"); not merged.**
 Owner approval of the plan (decisions D-A…D-F, see [DECISIONS_PENDING](../DECISIONS_PENDING.md)). Application
 architecture only: nothing here concerns the operating system or hardware. Operator guide:
 [RUNBOOK_INGESTION](../RUNBOOK_INGESTION.md).
@@ -81,3 +81,35 @@ and the property tests. They need a CI run. The glue tests cover the same servic
 3. Budgets and pauses are starting points, not measurements on the owner's machine.
 4. A stuck writer leaves the connection open until process exit (by design); the daemon thread cannot block interpreter exit.
 5. Production dashboards do not yet render `/api/ingestion` (API only).
+
+## CI and equivalence gate (2026-11-09, after the owner-approved push)
+`ci.yml` triggers on `main`, `task/**` and pull requests, so a push to `feat/**` starts nothing; CI was started with
+`workflow_dispatch` on the branch (no workflow file changed).
+
+| Run | Commit | Result |
+|---|---|---|
+| 42659715119 attempt 1 | `954c7c6` | Ubuntu: 1 failed, 1797 passed (`test_p1_observation_anchor::test_minutes_queued_during_the_startup_wait…`, known timing flake); Windows green |
+| same, attempt 2 (rerun of the failed job) | `954c7c6` | all jobs green, Ubuntu 1798 passed |
+| 42664528270 attempt 1 / 2 | `1dec031` | Windows red: `test_mvp2_paper::test_p4_incomplete_backfill…` / three clock-round tests; Ubuntu green |
+| same, attempt 3 | `1dec031` | **all 7 jobs green**: Ubuntu 1809 passed, Windows 1807 passed, mypy strict, ruff, m2 cross-os, frontend, safety guards |
+
+- **Integration tests unavailable locally now ran green**: `test_mdi_service`, `test_mvp3_reference_paper` (config guard and 9-day end to end),
+  `test_m1t2_market_api` (incl. the new `/api/ingestion` test), paper/restart/replay suites.
+- **Pre-existing flakes (not introduced here):** the failures above are real-time `asyncio.sleep` timing tests on a loaded runner, none of which
+  runs any changed code (they use `FakeMarketData`; the supervisor hook is skipped because the fake has no `require_history`). The baseline `1acd38a`
+  shows the same class: run 42332811215 attempt 1 (Windows: `test_p4_incomplete_backfill…`, `test_d21_fresh_clock_round…`,
+  `test_paper_waits_for_the_market_data_backfill…`) and run 42669526845 today (Windows: `test_mvp3_reference_paper::test_bracket_reference_is_warmed_up…`),
+  each green on rerun. The deterministic-hardening of these tests stays on the existing backlog (not expanded here).
+- **mypy:** the extra local error was `untyped-decorator` for the new route because `fastapi` was not installed in the local sandbox; strict mypy with
+  the real dependencies is green on both OS in CI. No code change.
+- **Quant Equivalence Gate** (`tests/unit/marketdata/test_quant_equivalence_gate.py`, 9 tests, plus frozen copies `legacy_*_1acd38a.py` of the previous
+  `backfill.py` / `livebars.py`): six scenarios (fresh store with holes; downtime after stored bars, partly observed; source-finality conflicts; invalid
+  REST row; last stored bar older than `max_backfill`; idempotent second run) give identical stored rows (every column and the observed-session tag),
+  counters, gap/conflict events and `BACKFILL_COMPLETED` payloads (new keys additive only); the real `BracketReference` live adapter fed from either store
+  gives identical intents (9 confirmed signals), warm-up progress, history breaks and stats; an interrupted or bounded load is never ready and emits no
+  intent, and the completed history matches. A mutation (dropping the "not returned by REST" gap registration) fails four gate tests.
+  Quantitative layers are untouched: `git diff 1acd38a..HEAD` over `sim/ risk/ signals/ strategies/ research/ features/ backtest/ contracts/ quality/` and
+  `configs/{risk,paper,universe}.yaml` is empty, so indicators, thresholds, risk decisions and paper behavior are byte-identical code on identical bars.
+- **Stop with an active transaction** (`test_md_ingest_coordinator.py`): Stop waits (>= 0.25 s) for an open BEGIN IMMEDIATE transaction to commit before the
+  writer is joined and the connection closes; rows and checkpoint land together; a transaction that fails before COMMIT rolls back whole and the next run
+  recovers.
