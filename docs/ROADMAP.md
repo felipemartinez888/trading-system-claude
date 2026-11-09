@@ -18,10 +18,11 @@ sizes are relative (S/M/L).
 | M6 — Performance analytics + evaluation export | ⏳ | — |
 | M7 — Forward trial + hardening | ⏳ | — |
 
-**Start stability (2026-11-09, owner-approved plan D-23; local branch `feat/ingestion-bounded`, commits `fe21a16` … `c3224ad`, not pushed, no CI):** the Start
+**Start stability (2026-11-09, owner-approved plan D-23; branch `feat/ingestion-bounded`, pushed, head `d649d95`; not merged):** the Start
 ingestion is bounded (24 h catch-up, history on demand, one transaction per REST page, single writer thread joined on Stop, resumable
-checkpoints, read-only `GET /api/ingestion`). Focused synthetic tests: 235 passed; integration tests that need `fastapi`/`httpx` were not run
-locally. This is **not** milestone acceptance and does not claim the earlier unresponsiveness is fixed: that awaits the owner's manual
+checkpoints, read-only `GET /api/ingestion`). CI (dispatched manually) green on `1dec031`, all 7 jobs on attempt 3, including the integration tests;
+a Quant Equivalence Gate against the frozen previous implementation passes; red earlier attempts were pre-existing timing flakes also seen on `1acd38a`.
+This is **not** milestone acceptance and does not claim the earlier unresponsiveness is fixed: that awaits the owner's manual
 validation ([RUNBOOK_INGESTION](RUNBOOK_INGESTION.md), [devlog](devlog/2026-11-09-start-stability-bounded-ingestion.md)).
 
 ### Shortest-safe-path MVP track (owner direction, 2026-10-27; local branches, not pushed)
