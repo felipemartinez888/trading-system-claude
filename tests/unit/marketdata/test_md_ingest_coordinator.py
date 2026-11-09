@@ -278,3 +278,81 @@ def test_status_is_json_ready_and_shows_progress(tmp_path: Path) -> None:
             await co.stop()
 
     asyncio.run(scenario())
+
+
+class _OpenTxnStore(LiveBarStore):
+    """Holds the batch transaction OPEN (rows inserted, not committed) until released."""
+
+    def __init__(self, path: Path, *, fail_after_gate: bool = False) -> None:
+        super().__init__(path)
+        self.gate = threading.Event()
+        self.in_txn = threading.Event()
+        self.fail_after_gate = fail_after_gate
+        self.first = True
+
+    def _put_checkpoint(self, checkpoint: Any) -> None:
+        if self.first:
+            self.first = False
+            self.in_txn.set()  # BEGIN IMMEDIATE done, every row of the batch inserted
+            self.gate.wait(30)
+            if self.fail_after_gate:
+                raise RuntimeError("disk error before COMMIT")
+        super()._put_checkpoint(checkpoint)
+
+
+def _release_later(gate: threading.Event, delay: float = 0.3) -> threading.Timer:
+    timer = threading.Timer(delay, gate.set)
+    timer.start()
+    return timer
+
+
+def test_stop_with_an_active_transaction_waits_for_the_commit_before_anything_closes(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = _OpenTxnStore(tmp_path / "s.db")
+        co = _coordinator(store, _cfg(catchup=None, history="off"), _fetcher())
+        co.start(END)
+        await asyncio.wait_for(asyncio.to_thread(store.in_txn.wait, 5), 6)
+        timer = _release_later(store.gate)  # the commit happens 0.3 s after Stop was requested
+        began = time.monotonic()
+        assert await co.stop() is True
+        assert time.monotonic() - began >= 0.25  # Stop really waited for the transaction
+        timer.join()
+        assert not co._writer.alive  # type: ignore[union-attr]
+        assert co.safe_to_close()
+        store.close()  # only now
+        with LiveBarStore(tmp_path / "s.db") as reopened:
+            cp = reopened.get_checkpoint(CATCHUP, M, SYM)
+            assert cp is not None  # rows and checkpoint committed together, no later batch started
+            assert reopened.count() == 500
+            assert cp.cursor_ms == END - 500 * MIN
+            assert cp.status == "cancelled"
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_active_transaction_rolls_back_whole_and_the_next_run_recovers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = _OpenTxnStore(tmp_path / "s.db", fail_after_gate=True)
+        co = _coordinator(store, _cfg(catchup=None, history="off"), _fetcher())
+        co.start(END)
+        await asyncio.wait_for(asyncio.to_thread(store.in_txn.wait, 5), 6)
+        _release_later(store.gate, 0.1)
+        assert await co.stop() is True
+        store.close()
+        with LiveBarStore(tmp_path / "s.db") as reopened:
+            assert reopened.count() == 0  # all-or-nothing: no row of the failed batch survived
+            cp = reopened.get_checkpoint(CATCHUP, M, SYM)  # the terminal note records no progress
+            assert cp is not None
+            assert (cp.rows_written, cp.chunks_done, cp.cursor_ms) == (0, 0, END)
+            co2 = _coordinator(reopened, _cfg(catchup=None, history="off"), _fetcher())
+            co2.start(END)
+            await co2.wait_catchup(10)
+            assert co2.catchup_complete()
+            assert reopened.count() == DAY
+            await co2.stop()
+
+    asyncio.run(scenario())
