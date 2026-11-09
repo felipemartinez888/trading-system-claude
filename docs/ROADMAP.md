@@ -24,6 +24,7 @@ checkpoints, read-only `GET /api/ingestion`). CI (dispatched manually) green on 
 a Quant Equivalence Gate against the frozen previous implementation passes; red earlier attempts were pre-existing timing flakes also seen on `1acd38a`.
 This is **not** milestone acceptance and does not claim the earlier unresponsiveness is fixed: that awaits the owner's manual
 validation ([RUNBOOK_INGESTION](RUNBOOK_INGESTION.md), [devlog](devlog/2026-11-09-start-stability-bounded-ingestion.md)).
+**Owner manual validation of the development profile: PASS (owner-reported, 2026-11-09, head `d649d95`):** BTCUSDT spot, `history: off`, 3 bars inserted, 0 errors, checkpoint ok, writer not stuck, Stop clean, `safe_to_close_store: true`, dashboard responsive. This covers the dev profile only: production-profile stability, a RUNNING paper session (O-1) and end-to-end MVP acceptance have **no evidence yet**.
 
 ### Shortest-safe-path MVP track (owner direction, 2026-10-27; local branches, not pushed)
 A demonstrable local Windows app, strictly paper-only, built in small approved steps. Every step is **MVP

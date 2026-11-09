@@ -113,3 +113,31 @@ and the property tests. They need a CI run. The glue tests cover the same servic
 - **Stop with an active transaction** (`test_md_ingest_coordinator.py`): Stop waits (>= 0.25 s) for an open BEGIN IMMEDIATE transaction to commit before the
   writer is joined and the connection closes; rows and checkpoint land together; a transaction that fails before COMMIT rolls back whole and the next run
   recovers.
+
+## Owner manual validation, dev profile (2026-11-09) — PASS
+Reported by the owner from the Windows machine at branch head `d649d95` (`TSC_INGEST_PROFILE=dev`, normal PowerShell, no Administrator). Recorded as
+reported; the raw `/api/ingestion` output was not attached to the session.
+
+| Item | Owner-reported result |
+|---|---|
+| Scope | BTCUSDT Spot only, dev profile, `history: off` |
+| Catch-up | incremental catch-up completed; 3 requested bars processed and inserted (a recent store needs few bars) |
+| Errors / checkpoint | 0 ingestion errors; checkpoint verdict `ok` |
+| Writer | not stuck; thread terminated after Stop |
+| Stop | completed; `safe_to_close_store: true` |
+| Dashboard | stayed responsive throughout |
+
+**What this is, and is not.** It shows the Start/Stop/checkpoint/writer lifecycle on the real app, one pair, a tiny catch-up window. It is **not**
+production-profile stability (6 pairs, 24 h catch-up, USD-M pairs, 9-day on-demand history are untested on the real machine), **not** evidence about the
+original unresponsiveness under a heavy load, **not** a paper RUNNING session, and **not** MVP acceptance. Next bounded steps:
+[RUNBOOK_INGESTION, production-profile test and Paper O-1](../RUNBOOK_INGESTION.md#production-profile-bounded-test-and-paper-o-1).
+
+## Dependency lock files (review; not committed)
+Three untracked files exist in the owner's worktree (`uv.lock`, `frontend/pnpm-lock.yaml`, `frontend/pnpm-workspace.yaml`). They are outside this
+session's reach (folder access was not granted), so their contents were **not reviewed**. Repository facts that bear on the decision:
+- Committing `uv.lock` is recorded as a **separate decision** (M2 acceptance record §4.7 and §5; CI regenerates it when absent and uploads it as an artifact). NFR-06
+  asks for both lock files eventually. Adding one silently would change what every CI job resolves, so it is not part of this checkpoint.
+- CI installs the frontend with `pnpm install --no-frozen-lockfile`, so a committed `pnpm-lock.yaml` would not yet be enforced.
+- `frontend/package.json` already carries `pnpm.onlyBuiltDependencies: [esbuild]`; a generated `pnpm-workspace.yaml` is probably redundant with it
+  (not verified).
+Recommendation: leave all three untracked and uncommitted; decide `uv.lock` / `pnpm-lock.yaml` separately (owner review commands in the runbook).
