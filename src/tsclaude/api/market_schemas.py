@@ -98,6 +98,66 @@ class GapOut(_Model):
     resolved_at: str | None
 
 
+class IngestionPairOut(_Model):
+    job: str
+    market: str
+    symbol: str
+    state: str
+    window_from_ms: int
+    window_to_ms: int
+    cursor_ms: int
+    chunks_done: int
+    chunks_total: int
+    requested_minutes: int
+    rows_processed: int
+    inserted: int
+    errors: int
+    last_error: str | None = None
+    checkpoint: str
+    detail: str | None = None
+    started_ms: int | None = None
+    updated_ms: int | None = None
+
+
+class IngestionHistoryOut(_Model):
+    policy: str
+    state: str
+    complete: bool
+
+
+class IngestionWriterOut(_Model):
+    alive: bool
+    busy: bool
+    write_slow: int
+    stuck: bool
+
+
+class IngestionLimitsOut(_Model):
+    chunk_minutes: int
+    pair_budget_s: float
+    run_budget_s: float
+
+
+class IngestionResponse(_Model):
+    """Progress of the bounded startup ingestion (the app's own record, read-only).
+
+    `monitoring_running` False means this is the last run's final state, not live progress.
+    `phase`: idle | running | stopping | stopped | stuck (a writer thread did not finish on Stop:
+    the live bar store was left open on purpose)."""
+
+    generated_at: str
+    monitoring_running: bool
+    phase: str
+    catchup_done: bool
+    history_required: bool
+    history: IngestionHistoryOut
+    writer: IngestionWriterOut
+    limits: IngestionLimitsOut
+    safe_to_close_store: bool
+    pairs: list[IngestionPairOut]
+    notes: list[str]
+
+
 class GapsResponse(_Model):
     generated_at: str
     gaps: Sourced[list[GapOut]]

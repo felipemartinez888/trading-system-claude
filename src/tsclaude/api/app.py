@@ -7,6 +7,7 @@ Endpoints (all JSON, ISO-8601 `Z` timestamps, metric-like values as `Sourced`):
 | GET  | `/api/health` | liveness for the launcher (no metrics) |
 | GET  | `/api/status` | session, monitoring, chain integrity, previous session, streams |
 | GET  | `/api/coverage` | observation intervals and the unobserved gaps between them |
+| GET  | `/api/ingestion` | read-only ingestion progress (catch-up, history, writer) |
 | GET  | `/api/events?after_seq=&limit=` | event page (newest page if `after_seq` is omitted) |
 | GET  | `/api/backtests`, `/api/backtests/{run_id}` | recorded backtest runs (`BACKTEST`) |
 | POST | `/api/monitoring/start` | token; 409 invalid transition; 423 chain failed / no session |
@@ -43,6 +44,7 @@ from tsclaude.api.live import LiveMessage
 from tsclaude.api.market_schemas import (
     BarsResponse,
     GapsResponse,
+    IngestionResponse,
     MarketsResponse,
     NotificationsResponse,
     SignalsResponse,
@@ -53,6 +55,7 @@ from tsclaude.api.market_views import (
     bars_response,
     gap_registry,
     gaps_response,
+    ingestion_response,
     markets_response,
     notifications_response,
     signals_response,
@@ -251,6 +254,10 @@ def create_app(
         now = context.clock.now_ms()
         registry = await asyncio.to_thread(gap_registry, context.store, now)
         return gaps_response(registry, now, limit)
+
+    @app.get("/api/ingestion", response_model=IngestionResponse)
+    async def get_ingestion() -> IngestionResponse:
+        return ingestion_response(context.supervisor, context.clock.now_ms())
 
     @app.get("/api/bars", response_model=BarsResponse, responses=_BAD_REQUEST)
     async def get_bars(

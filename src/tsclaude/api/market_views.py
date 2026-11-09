@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 from tsclaude.api.market_schemas import (
     BarOut,
@@ -16,6 +17,11 @@ from tsclaude.api.market_schemas import (
     DemoSignalOut,
     GapOut,
     GapsResponse,
+    IngestionHistoryOut,
+    IngestionLimitsOut,
+    IngestionPairOut,
+    IngestionResponse,
+    IngestionWriterOut,
     MarketRow,
     MarketsResponse,
     NotificationOut,
@@ -450,4 +456,38 @@ def notifications_response(
             value=items, provenance=Provenance.SYSTEM, as_of_ms=now_ms
         ),
         head_seq=head_seq,
+    )
+
+
+def ingestion_response(supervisor: MonitoringSupervisor | None, now_ms: int) -> IngestionResponse:
+    """`/api/ingestion`: read-only progress; an idle/never-started app reports `phase=idle`."""
+    raw: dict[str, Any] = supervisor.ingestion_status() if supervisor is not None else {}
+    history = raw.get("history", {})
+    writer = raw.get("writer", {})
+    limits = raw.get("limits", {})
+    return IngestionResponse(
+        generated_at=to_iso(now_ms),
+        monitoring_running=bool(supervisor is not None and supervisor.running),
+        phase=str(raw.get("phase", "idle")),
+        catchup_done=bool(raw.get("catchup_done", False)),
+        history_required=bool(raw.get("history_required", False)),
+        history=IngestionHistoryOut(
+            policy=str(history.get("policy", "unknown")),
+            state=str(history.get("state", "not_requested")),
+            complete=bool(history.get("complete", False)),
+        ),
+        writer=IngestionWriterOut(
+            alive=bool(writer.get("alive", False)),
+            busy=bool(writer.get("busy", False)),
+            write_slow=int(writer.get("write_slow", 0)),
+            stuck=bool(writer.get("stuck", False)),
+        ),
+        limits=IngestionLimitsOut(
+            chunk_minutes=int(limits.get("chunk_minutes", 0)),
+            pair_budget_s=float(limits.get("pair_budget_s", 0.0)),
+            run_budget_s=float(limits.get("run_budget_s", 0.0)),
+        ),
+        safe_to_close_store=bool(raw.get("safe_to_close_store", True)),
+        pairs=[IngestionPairOut(**p) for p in raw.get("pairs", [])],
+        notes=[str(n) for n in raw.get("notes", [])],
     )

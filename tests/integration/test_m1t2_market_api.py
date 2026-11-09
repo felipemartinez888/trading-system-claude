@@ -548,3 +548,15 @@ def test_demo_needs_healthy_streams_in_both_markets(h: Harness) -> None:
         _wait(lambda: h.supervisor.detector.stats.bars_seen == 1)
         assert c.get("/api/signals").json()["signals"]["value"] == []
         assert "usdm:mark_price=STALE" in (h.supervisor.detector.stats.last_skip_reason or "")
+
+
+def test_ingestion_is_read_only_and_idle_without_a_running_ingestion(h: Harness) -> None:
+    with h.client() as c:
+        body = c.get("/api/ingestion").json()
+        assert body["phase"] == "idle"
+        assert body["monitoring_running"] is False
+        assert body["pairs"] == []
+        assert body["safe_to_close_store"] is True
+        # strictly read-only: no mutating verb exists on the path (D-D)
+        for verb in (c.post, c.put, c.delete):
+            assert verb("/api/ingestion", headers=AUTH).status_code in (404, 405)

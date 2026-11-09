@@ -31,7 +31,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from tsclaude.contracts.events import Event
 from tsclaude.contracts.market import Market, StreamState
@@ -254,6 +254,11 @@ class MonitoringSupervisor:
     @property
     def service(self) -> MarketDataLike | None:
         return self._service
+
+    def ingestion_status(self) -> dict[str, Any]:
+        """Ingestion progress of the current/last run ({} for a service without it)."""
+        fn = getattr(self._service, "ingestion_status", None)
+        return dict(fn()) if callable(fn) else {}
 
     async def start(self, session_id: str) -> None:
         """Start ingestion; raises `StartFailed` (with the reason) if anything goes wrong."""
