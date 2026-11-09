@@ -396,6 +396,28 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return 0 if result["ok"] else 2
 
 
+def _cmd_backfill_plan(args: argparse.Namespace) -> int:
+    """Read-only: what the next Start (catch-up) and the history run would fetch."""
+    import os
+
+    from tsclaude.marketdata.config import apply_dev_profile, load_config, load_dev_profile
+    from tsclaude.marketdata.ingest_plan import plan
+    from tsclaude.runtime.settings import Settings
+    from tsclaude.runtime.supervisor import config_dir
+
+    base = config_dir()
+    config = load_config(base / "universe.yaml", base / "data_quality.yaml")
+    profile = args.profile or os.environ.get("TSC_INGEST_PROFILE", "")
+    if profile.strip().lower() == "dev":
+        config = apply_dev_profile(config, load_dev_profile(base / "ingest_dev.yaml"))
+    settings = Settings.from_env()
+    db = Path(args.state_db) if args.state_db else settings.state_db_path
+    end_ms = SystemClock().now_ms()
+    pairs = [(str(m), s) for m, s in config.universe.pairs()]
+    _emit(plan(db, config.quality.backfill, pairs, end_ms), args.summary)
+    return 0
+
+
 def _cmd_catalog(args: argparse.Namespace) -> int:
     data_dir = _data_dir(args)
     catalog = lake_admin.build_catalog(data_dir)
@@ -460,6 +482,14 @@ def register(sub: Any) -> None:
     ver.add_argument("dataset_id", nargs="?", default=None)
     ver.add_argument("--all", action="store_true", help="verify every dataset in the lake")
     ver.set_defaults(func=_cmd_verify)
+
+    bp = data_sub.add_parser(
+        "backfill-plan", help="read-only: what a Start / history run would fetch (no network)"
+    )
+    bp.add_argument("--state-db", default=None, help="default: <data dir>/state.db")
+    bp.add_argument("--profile", default=None, help="dev = conservative dev profile")
+    bp.add_argument("--summary", default=None, help="also write the JSON summary here")
+    bp.set_defaults(func=_cmd_backfill_plan)
 
     cat = data_sub.add_parser("catalog", help="rebuild catalog.duckdb from the manifests")
     common(cat)
