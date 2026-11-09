@@ -85,6 +85,25 @@ computed over the intersection of both systems' observation coverage (see EVALUA
 `data_gaps` records `{market, symbol, interval, from, to, cause (downtime | disconnect | exchange | unknown),
 detected_at, resolution (recovered | unrecoverable | pending), resolved_at}`.
 
+### Startup ingestion (bounded, resumable)
+
+What a monitoring Start loads is bounded and separated from the larger history (operator guide:
+[RUNBOOK_INGESTION](RUNBOOK_INGESTION.md)):
+
+- **Catch-up** (every Start): downtime since the last stored bar, capped (`startup.catchup_max_minutes`,
+  production 24 h), newest first. Older downtime is registered as a gap and left to the **history** run.
+- **History** (`lookback_days`, 9 days): loaded on demand (paper with a warm-up strategy) or in the
+  background per `startup.history`. Required history that is not `complete` makes the consumer fail
+  closed; a partial history never counts as warmed up.
+- Work is chunked by REST page; each page is one SQLite transaction written with its checkpoint
+  (`ingest_checkpoints`, same file as `bars_1m`, outside the hash chain) by one dedicated writer thread.
+  The stored bars stay authoritative: a checkpoint is validated against them on resume and only
+  informs. Newest-first keeps stored data a contiguous recent suffix, so an interrupted first load
+  leaves its remainder before the first stored bar (an initial load, not a gap).
+- Unchanged: source-finality (a backfill never replaces a stored bar; `ws_live` replaces non-WS rows
+  only), `bar_conflict` events, `REST_RECOVERED` vs `REST_BACKFILL` tagging, one `BACKFILL_COMPLETED`
+  per pair per run (additive payload keys only).
+
 ## 5. Storage layout
 
 ```

@@ -74,6 +74,13 @@ Evidence: [M2 acceptance record](M2_ACCEPTANCE_RECORD.md), [closure checklist](M
 |---|---|---|---|
 | **D-22** | Formal acceptance of milestone M2, limited scope (S7) | ✅ Approved (owner, written instruction in the session, recorded 2026-11-07T02:37:00Z) | The owner accepted M2 **limited to** Binance Spot 1m for BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT and XRPUSDT, 2022-01-01 → 2025-12-31, the M2 implementation at commit `9f908d996cbc4b496adbf0869628a9b5f0b02130`, and CI run `42322235295` (7/7 jobs green, Ubuntu and Windows). The wording approved is the one in §6 of the record, unchanged. Every data-quality caveat in §4 and every deferred item in §5 of the record is preserved (C-2, the 2023-03-24 halt, no O-5/O-6 parity, the C-1 composite-id pinning and inherited `gaps` metadata, B01–B12 and D-15 deferred, no real-data backtest run, `uv.lock` uncommitted, WHEA open). The independent Causality Auditor's CONDITIONAL PASS stays recorded as issued; its three conditions are satisfied by later evidence (§3 of the record). **Not authorized by this decision:** any research claim or strategy profitability claim, M3 acceptance, acceptance of any additional dataset, access to the 2026 holdout. The later documentation-only commit `9cf9a11` has its own CI run `42326431882`: first attempt failed one Windows test (`test_p1_observation_anchor.py::test_minutes_queued_during_the_startup_wait_are_processed_unobserved`), the re-run of that job passed and all seven jobs are green; the cause is not proven (a real-time `asyncio.sleep` is suspected) and a deterministic timing-test hardening is on the backlog, after the Target A demonstration unless the failure becomes a reproducible blocker. That CI result is not part of the accepted evidence |
 
+### 2026-11-09: Start stability (bounded ingestion)
+Evidence: [devlog](devlog/2026-11-09-start-stability-bounded-ingestion.md), [RUNBOOK_INGESTION](RUNBOOK_INGESTION.md).
+
+| ID | Decision | Status | Resolution |
+|---|---|---|---|
+| **D-23** | Start-stability plan, decisions A–F | ✅ Approved (owner, session instruction 2026-11-09) | **A** on-demand history (no automatic 9-day load on Start; required warm-up preserved, fails closed). **B** newest-first ingestion. **C** bounded batch writes on a dedicated single-worker thread. **D** read-only `GET /api/ingestion`. **E** M2 Parquet-lake integration deferred. **F** indicator cache deferred. Implemented locally (not pushed, no CI); production defaults changed only by the approved history policy (`catchup_max_minutes: 1440`, `history: on_demand`). Not accepted as fixing the freeze: that link is unproven pending the owner's manual validation |
+
 ## Lead decisions (technical, within approved scope)
 
 | ID | Date | Decision | Context |
