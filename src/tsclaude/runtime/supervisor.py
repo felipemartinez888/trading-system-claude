@@ -110,6 +110,12 @@ def default_service_factory(directory: Path | None = None) -> ServiceFactory:
 
         base = directory if directory is not None else config_dir()
         config = load_config(base / "universe.yaml", base / "data_quality.yaml")
+        if os.environ.get("TSC_INGEST_PROFILE", "").strip().lower() == "dev":
+            # opt-in, conservative: one pair, small catch-up and batches (ingest_dev.yaml)
+            from tsclaude.marketdata.config import apply_dev_profile, load_dev_profile
+
+            config = apply_dev_profile(config, load_dev_profile(base / "ingest_dev.yaml"))
+            log.warning("ingestion profile: dev (reduced universe and workload)")
         # the monotonic clock lets paper bound exchange time across wall-clock steps (P-1, F-1)
         service: MarketDataLike = MarketDataService(
             config, store, clock, monotonic=MonotonicClock()
@@ -272,6 +278,11 @@ class MonitoringSupervisor:
         # paper gets its own subscription, also before start, so no closed bar is missed
         paper = self.paper if self.paper is not None and self.paper.enabled else None
         paper_subscription = service.subscribe() if paper is not None else None
+        # A paper strategy that warms up on stored bars needs the whole history window: the
+        # service then loads it on demand and `wait_backfill` fails closed if it is incomplete.
+        require_history = getattr(service, "require_history", None)
+        if callable(require_history):
+            require_history(paper is not None and paper.settings.strategy != "none")
         try:
             await service.start(session_id=session_id)
         except asyncio.CancelledError:

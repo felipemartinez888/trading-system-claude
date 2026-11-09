@@ -30,16 +30,15 @@ from typing import TYPE_CHECKING, Any
 from tsclaude.contracts.events import Event, EventType, NewEvent
 from tsclaude.contracts.market import Bar, BarSource, Market, StreamState
 from tsclaude.contracts.provenance import Provenance, Sourced
-from tsclaude.contracts.timeutil import MS_PER_DAY, WallClock
+from tsclaude.contracts.timeutil import WallClock
 from tsclaude.marketdata.backfill import (
-    Backfiller,
     BackfillResult,
-    BackfillSettings,
     live_watch_from,
 )
 from tsclaude.marketdata.bars import BarBuilder, BarClosed, SymbolBarBuilder
 from tsclaude.marketdata.binance.ws import WsConnect, WsManager, plan_groups
 from tsclaude.marketdata.config import MarketDataConfig
+from tsclaude.marketdata.ingest import HistoryIncomplete, IngestionCoordinator
 from tsclaude.marketdata.models import (
     BookTop,
     ClockContinuity,
@@ -195,6 +194,10 @@ class MarketDataService:
         self._subscribers: set[Subscription] = set()
         self._running = False
         self._closed = False
+        #: a consumer (paper with a warm-up strategy) needs the full history window before it
+        #: opens; set by the supervisor, kept across Stop/Start
+        self._history_required = False
+        self._store_left_open = False
         self._reset_run_state()
 
     def _reset_run_state(self) -> None:
@@ -215,8 +218,7 @@ class MarketDataService:
         self._status: dict[tuple[Market, str], str] = {}
         self._status_as_of: dict[Market, int] = {}
         self._watch_from: int | None = None
-        self.backfill_results: list[BackfillResult] = []
-        self._backfill_done = asyncio.Event()
+        self._ingest: IngestionCoordinator | None = None
         self._last_gap_retry_ms = 0
 
     # ------------------------------------------------------------------ events
@@ -380,8 +382,20 @@ class MarketDataService:
             "service start: WebSocket manager started, launching periodic tasks",
             extra={"groups": len(groups)},
         )
+        self._ingest = IngestionCoordinator(
+            bars=self._bars,
+            gaps=self.gaps,
+            fetch=self._fetch_klines,
+            emit=self._emit,
+            now_ms=self._clock.now_ms,
+            config=q.backfill,
+            pairs=lambda: list(universe.pairs()),
+            intervals=lambda: observation_intervals(self._store),
+        )
+        self._ingest.start(watch_from)  # background: bounded catch-up, then history per policy
+        if self._history_required:
+            self._ingest.request_history()
         self._tasks = [
-            asyncio.create_task(self._backfill(watch_from), name="md-backfill"),
             asyncio.create_task(
                 self._loop(q.freshness.tick_interval_s, self._tick_freshness), name="md-freshness"
             ),
@@ -404,6 +418,11 @@ class MarketDataService:
     async def _shutdown(self) -> None:
         """Stop tasks, WebSockets and REST clients. Safe on a partially started service."""
         self._running = False
+        # first: the ingestion run finishes its chunk, then its writer thread is joined, so no
+        # SQLite write can outlive the connection and no REST client is closed under a fetch
+        if self._ingest is not None and not await self._ingest.stop():
+            self._store_left_open = True
+            log.error("ingestion writer is stuck; the live bar store will not be closed")
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -421,11 +440,55 @@ class MarketDataService:
         if self._running:
             raise RuntimeError("stop() the service before close()")
         if self._own_bars and not self._closed:
-            self._bars.close()
+            if self._store_left_open or (
+                self._ingest is not None and not self._ingest.safe_to_close()
+            ):
+                log.error("live bar store left open: a bar writer thread has not finished")
+            else:
+                self._bars.close()
         self._closed = True
 
+    # ------------------------------------------------------------------ ingestion
+    @property
+    def backfill_results(self) -> list[BackfillResult]:
+        return self._ingest.results if self._ingest is not None else []
+
+    def require_history(self, required: bool = True) -> None:
+        """A consumer needs the whole `lookback_days` window loaded before it opens (paper with a
+        warm-up strategy). `wait_backfill` then fails closed unless that window is complete."""
+        self._history_required = required
+
+    def request_history(self) -> str:
+        """Load the history window on demand (idempotent); see `IngestionCoordinator`."""
+        return self._ingest.request_history() if self._ingest is not None else "refused"
+
+    def ingestion_status(self) -> dict[str, Any]:
+        if self._ingest is None:
+            return {"phase": "idle", "history_required": self._history_required, "pairs": []}
+        return self._ingest.status() | {"history_required": self._history_required}
+
     async def wait_backfill(self, timeout: float | None = None) -> None:
-        await asyncio.wait_for(self._backfill_done.wait(), timeout)
+        """Wait until the startup catch-up is over and, if a consumer requires it, the history
+        window is complete. Raises `HistoryIncomplete` when a required window is not (fail closed:
+        a partial history never counts as warmed up)."""
+        await asyncio.wait_for(self._wait_ready(), timeout)
+
+    async def _wait_ready(self) -> None:
+        ing = self._ingest
+        if ing is None:
+            raise RuntimeError("market data service is not started")
+        await ing.wait_catchup()
+        if not self._history_required or ing.history_complete():
+            return
+        outcome = ing.request_history()
+        if outcome in ("refused", "not_needed"):
+            raise HistoryIncomplete(
+                f"the required history window is not complete (history request: {outcome})"
+            )
+        await ing.wait_history()
+        if not ing.history_complete():
+            state = ing.status()["history"]["state"]
+            raise HistoryIncomplete(f"the required history window is not complete (state: {state})")
 
     # ------------------------------------------------------------------ periodic work
     async def _loop(
@@ -485,30 +548,6 @@ class MarketDataService:
         self, market: Market, symbol: str, start_ms: int, end_ms: int
     ) -> list[RestKline]:
         return await self._rest[market].klines(symbol, start_ms, end_ms)
-
-    async def _backfill(self, end_ms: int) -> None:
-        q = self._cfg.quality.backfill
-        settings = BackfillSettings(
-            lookback_ms=int(q.lookback_days * MS_PER_DAY),
-            max_backfill_ms=int(q.max_backfill_days * MS_PER_DAY),
-        )
-        backfiller = Backfiller(
-            self._bars, self.gaps, self._fetch_klines, self._emit, self._clock.now_ms, settings
-        )
-        intervals = observation_intervals(self._store)
-        try:
-            for market, symbol in self._cfg.universe.pairs():
-                try:
-                    res = await backfiller.run(market, symbol, end_ms, intervals)
-                    self.backfill_results.append(res)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception(
-                        "backfill failed", extra={"market": str(market), "symbol": symbol}
-                    )
-        finally:
-            self._backfill_done.set()
 
     async def _load_premium_index(self, symbol: str) -> None:
         try:
