@@ -1,0 +1,27 @@
+# Conservative DEVELOPMENT ingestion profile. Activated only by TSC_INGEST_PROFILE=dev; production
+# runs (no variable) ignore this file. One spot pair, a small catch-up window, small chunks and
+# a slow cadence so a run can be watched on GET /api/ingestion and stopped at any point.
+#
+# - The pair must exist in configs/universe.yaml (the profile narrows, never widens).
+# - Keep paper disabled with this profile (paper instruments come from configs/backtest.yaml).
+# - It replaces the whole `backfill` section, including the REST/WS-independent run limits.
+version: 0
+description: "dev: one spot pair, 60-minute catch-up, 100-minute chunks, history off"
+spot: [BTCUSDT]
+usdm: []
+backfill:
+  lookback_days: 1
+  max_backfill_days: 2
+  startup:
+    catchup_max_minutes: 60
+    history: "off"
+  run:
+    chunk_minutes: 100
+    inter_chunk_pause_ms: 250
+    chunk_timeout_s: 20
+    write_timeout_s: 15
+    write_join_timeout_s: 45
+    pair_budget_s: 60
+    run_budget_s: 120
+    max_consecutive_chunk_errors: 2
+    stop_grace_s: 5

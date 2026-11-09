@@ -45,7 +45,25 @@ CREATE TABLE IF NOT EXISTS bars_1m (
     observed_session_id    TEXT,
     PRIMARY KEY (market, symbol, open_time_ms)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS ingest_checkpoints (
+    job            TEXT    NOT NULL,
+    market         TEXT    NOT NULL,
+    symbol         TEXT    NOT NULL,
+    schema_version INTEGER NOT NULL,
+    window_from_ms INTEGER NOT NULL,
+    window_to_ms   INTEGER NOT NULL,
+    cursor_ms      INTEGER NOT NULL,
+    rows_written   INTEGER NOT NULL,
+    chunks_done    INTEGER NOT NULL,
+    status         TEXT    NOT NULL,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (job, market, symbol)
+) WITHOUT ROWID;
 """
+
+#: Version of the `ingest_checkpoints` row layout; a checkpoint of another version is ignored.
+CHECKPOINT_SCHEMA = 1
 
 _COLUMNS = (
     "market, symbol, open_time_ms, close_time_ms, open, high, low, close, volume, quote_volume,"
@@ -85,8 +103,36 @@ class WriteResult:
     existing: StoredBar | None = None  # set for DUPLICATE, CONFLICT and REPLACED
 
 
+@dataclass(frozen=True, slots=True)
+class Checkpoint:
+    """Progress of one ingestion job for one (market, symbol).
+
+    `cursor_ms` is the open time below which the job has not processed anything yet: every wanted
+    minute in `[cursor_ms, window_to_ms)` was fetched and stored (or registered as a gap when the
+    source did not return it). Ingestion runs newest first, so the cursor only moves down. It is
+    written in the same transaction as the rows it describes (`write_many`), so it can never be
+    ahead of the stored data. It is advisory: the stored bars stay the source of truth.
+    """
+
+    job: str
+    market: Market
+    symbol: str
+    window_from_ms: int
+    window_to_ms: int
+    cursor_ms: int
+    rows_written: int
+    chunks_done: int
+    status: str
+    updated_at_ms: int
+    schema_version: int = CHECKPOINT_SCHEMA
+
+
 def same_market_data(a: Bar, b: Bar) -> bool:
     return all(getattr(a, f) == getattr(b, f) for f in _MARKET_FIELDS)
+
+
+class StoreClosed(RuntimeError):
+    """The store was closed; no further reads or writes are possible."""
 
 
 class LiveBarStore:
@@ -94,6 +140,7 @@ class LiveBarStore:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._closed = False
         self._conn = sqlite3.connect(
             self._path, check_same_thread=False, isolation_level=None, timeout=30.0
         )
@@ -102,8 +149,16 @@ class LiveBarStore:
         self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
+        """Close the connection. Takes the store lock, so a write in flight on another thread
+        finishes (commit or rollback) first; later calls raise `StoreClosed`. Idempotent."""
         with self._lock:
-            self._conn.close()
+            if not self._closed:
+                self._closed = True
+                self._conn.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def __enter__(self) -> LiveBarStore:
         return self
@@ -113,49 +168,121 @@ class LiveBarStore:
 
     # ------------------------------------------------------------------ writes
     def write(self, bar: Bar, observed_session_id: str | None = None) -> WriteResult:
-        if bar.interval is not Interval.M1:
-            raise ValueError("bars_1m only stores 1m bars")
-        if bar.source is BarSource.DERIVED:
-            raise ValueError("derived bars are not canonical 1m bars")
+        return self.write_many([bar], observed_session_id)[0]
+
+    def write_many(
+        self,
+        bars: Sequence[Bar],
+        observed_session_id: str | None = None,
+        *,
+        checkpoint: Checkpoint | None = None,
+    ) -> list[WriteResult]:
+        """Write `bars` in order inside **one** transaction (one durable commit), with the same
+        per-bar outcome rules as `write`, and upsert `checkpoint` in that same transaction.
+
+        All-or-nothing: if anything raises, nothing of the batch (and no checkpoint) is stored.
+        Validation happens before the transaction opens. `bars` may be empty (checkpoint only).
+        """
+        for bar in bars:
+            if bar.interval is not Interval.M1:
+                raise ValueError("bars_1m only stores 1m bars")
+            if bar.source is BarSource.DERIVED:
+                raise ValueError("derived bars are not canonical 1m bars")
         with self._lock:
+            self._require_open()
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                row = self._conn.execute(
-                    f"SELECT {_COLUMNS} FROM bars_1m"  # noqa: S608 - fixed column list
-                    " WHERE market=? AND symbol=? AND open_time_ms=?",
-                    (str(bar.market), bar.symbol, bar.open_time_ms),
-                ).fetchone()
-                if row is None:
-                    self._conn.execute(
-                        f"INSERT INTO bars_1m({_COLUMNS})"  # noqa: S608 - fixed column list
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        _to_row(bar, observed_session_id),
-                    )
-                    result = WriteResult(WriteOutcome.INSERTED)
-                else:
-                    existing = _from_row(row)
-                    if same_market_data(existing.bar, bar):
-                        result = WriteResult(WriteOutcome.DUPLICATE, existing)
-                    elif bar.source is BarSource.WS_LIVE and existing.bar.source is not (
-                        BarSource.WS_LIVE
-                    ):
-                        self._conn.execute(
-                            "DELETE FROM bars_1m WHERE market=? AND symbol=? AND open_time_ms=?",
-                            (str(bar.market), bar.symbol, bar.open_time_ms),
-                        )
-                        self._conn.execute(
-                            f"INSERT INTO bars_1m({_COLUMNS})"  # noqa: S608 - fixed column list
-                            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            _to_row(bar, observed_session_id),
-                        )
-                        result = WriteResult(WriteOutcome.REPLACED, existing)
-                    else:
-                        result = WriteResult(WriteOutcome.CONFLICT, existing)
+                results = [self._write_in_txn(bar, observed_session_id) for bar in bars]
+                if checkpoint is not None:
+                    self._put_checkpoint(checkpoint)
                 self._conn.execute("COMMIT")
             except BaseException:
                 self._conn.execute("ROLLBACK")
                 raise
-        return result
+        return results
+
+    def _write_in_txn(self, bar: Bar, observed_session_id: str | None) -> WriteResult:
+        row = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM bars_1m"  # noqa: S608 - fixed column list
+            " WHERE market=? AND symbol=? AND open_time_ms=?",
+            (str(bar.market), bar.symbol, bar.open_time_ms),
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                f"INSERT INTO bars_1m({_COLUMNS})"  # noqa: S608 - fixed column list
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _to_row(bar, observed_session_id),
+            )
+            return WriteResult(WriteOutcome.INSERTED)
+        existing = _from_row(row)
+        if same_market_data(existing.bar, bar):
+            return WriteResult(WriteOutcome.DUPLICATE, existing)
+        if bar.source is BarSource.WS_LIVE and existing.bar.source is not BarSource.WS_LIVE:
+            self._conn.execute(
+                "DELETE FROM bars_1m WHERE market=? AND symbol=? AND open_time_ms=?",
+                (str(bar.market), bar.symbol, bar.open_time_ms),
+            )
+            self._conn.execute(
+                f"INSERT INTO bars_1m({_COLUMNS})"  # noqa: S608 - fixed column list
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _to_row(bar, observed_session_id),
+            )
+            return WriteResult(WriteOutcome.REPLACED, existing)
+        return WriteResult(WriteOutcome.CONFLICT, existing)
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise StoreClosed("the live bar store is closed")
+
+    # ------------------------------------------------------------------ checkpoints
+    def _put_checkpoint(self, cp: Checkpoint) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO ingest_checkpoints(job, market, symbol, schema_version,"
+            " window_from_ms, window_to_ms, cursor_ms, rows_written, chunks_done, status,"
+            " updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                cp.job,
+                str(cp.market),
+                cp.symbol,
+                cp.schema_version,
+                cp.window_from_ms,
+                cp.window_to_ms,
+                cp.cursor_ms,
+                cp.rows_written,
+                cp.chunks_done,
+                cp.status,
+                cp.updated_at_ms,
+            ),
+        )
+
+    def set_checkpoint(self, cp: Checkpoint) -> None:
+        """Store `cp` alone (one transaction), e.g. a terminal status after the last chunk."""
+        self.write_many([], checkpoint=cp)
+
+    def get_checkpoint(self, job: str, market: Market, symbol: str) -> Checkpoint | None:
+        with self._lock:
+            self._require_open()
+            row = self._conn.execute(
+                "SELECT schema_version, window_from_ms, window_to_ms, cursor_ms, rows_written,"
+                " chunks_done, status, updated_at_ms FROM ingest_checkpoints"
+                " WHERE job=? AND market=? AND symbol=?",
+                (job, str(market), symbol),
+            ).fetchone()
+        if row is None:
+            return None
+        return Checkpoint(
+            job=job,
+            market=market,
+            symbol=symbol,
+            schema_version=int(row[0]),
+            window_from_ms=int(row[1]),
+            window_to_ms=int(row[2]),
+            cursor_ms=int(row[3]),
+            rows_written=int(row[4]),
+            chunks_done=int(row[5]),
+            status=str(row[6]),
+            updated_at_ms=int(row[7]),
+        )
 
     # ------------------------------------------------------------------ reads
     def get(self, market: Market, symbol: str, open_time_ms: int) -> StoredBar | None:

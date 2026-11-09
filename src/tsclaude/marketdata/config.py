@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -117,16 +117,73 @@ class RestConfig(BaseModel):
     funding_rate_requests_per_5min: int = Field(default=250, ge=1, le=500)
 
 
+type HistoryPolicy = Literal["off", "on_demand", "background"]
+
+MINUTES_PER_DAY = 1440
+
+
+class BackfillStartupConfig(BaseModel):
+    """What a monitoring Start loads, and when the larger history is loaded.
+
+    - `catchup_max_minutes`: the bounded catch-up every Start runs (downtime since the last stored
+      bar, capped, newest first). `None` (code default, legacy behavior) means the whole
+      `lookback_days` window is the catch-up.
+    - `history`: the rest of the `lookback_days` window. `off`: never; `on_demand`: only when a
+      consumer needs it (paper with a warm-up strategy) or the operator asks; `background`: right
+      after the catch-up on every Start.
+    """
+
+    model_config = _STRICT
+
+    catchup_max_minutes: int | None = Field(default=None, ge=1)
+    history: HistoryPolicy = "off"
+
+
+class BackfillRunConfig(BaseModel):
+    """Workload limits of one ingestion run (all enforced by `marketdata/backfill.py`)."""
+
+    model_config = _STRICT
+
+    #: minutes per chunk = rows per transaction = rows in flight (one chunk at a time)
+    chunk_minutes: int = Field(default=1000, ge=1, le=1000)
+    inter_chunk_pause_ms: int = Field(default=25, ge=0, le=60_000)
+    #: one REST fetch of a chunk (cancelled when exceeded; nothing is written yet)
+    chunk_timeout_s: float = Field(default=30.0, gt=0)
+    #: a chunk write slower than this is reported as `write_slow`; it is never abandoned or
+    #: overlapped: the run waits for the writer to finish (up to `write_join_timeout_s`)
+    write_timeout_s: float = Field(default=30.0, gt=0)
+    #: beyond this the writer is declared stuck: the run fails, the store is not closed
+    write_join_timeout_s: float = Field(default=90.0, gt=0)
+    pair_budget_s: float = Field(default=120.0, gt=0)
+    run_budget_s: float = Field(default=600.0, gt=0)
+    max_consecutive_chunk_errors: int = Field(default=3, ge=1)
+    #: Stop waits this long for the run to finish its current chunk before cancelling a fetch
+    stop_grace_s: float = Field(default=10.0, gt=0)
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.pair_budget_s > self.run_budget_s:
+            raise ValueError("pair_budget_s must be <= run_budget_s")
+        if self.write_timeout_s > self.write_join_timeout_s:
+            raise ValueError("write_timeout_s must be <= write_join_timeout_s")
+        return self
+
+
 class BackfillConfig(BaseModel):
     model_config = _STRICT
 
     lookback_days: float = Field(default=3.0, gt=0)
     max_backfill_days: float = Field(default=30.0, gt=0)
+    startup: BackfillStartupConfig = BackfillStartupConfig()
+    run: BackfillRunConfig = BackfillRunConfig()
 
     @model_validator(mode="after")
     def _check(self) -> Self:
         if self.max_backfill_days < self.lookback_days:
             raise ValueError("max_backfill_days must be >= lookback_days")
+        cap = self.startup.catchup_max_minutes
+        if cap is not None and cap > self.lookback_days * MINUTES_PER_DAY:
+            raise ValueError("startup.catchup_max_minutes must be <= lookback_days in minutes")
         return self
 
 
@@ -204,3 +261,41 @@ def load_config(
     return MarketDataConfig.from_mapping(
         _load_yaml(Path(universe_path)), _load_yaml(Path(quality_path))
     )
+
+
+class DevIngestProfile(BaseModel):
+    """`configs/ingest_dev.yaml`: conservative profile for development (`TSC_INGEST_PROFILE=dev`).
+
+    It narrows the live universe to the listed pairs and replaces the whole `backfill` section.
+    It never widens the universe: every listed pair must exist in the base universe. Production
+    runs without the profile and are unaffected.
+    """
+
+    model_config = _STRICT
+
+    version: int = Field(ge=0)
+    description: str = ""
+    spot: tuple[str, ...] = ()
+    usdm: tuple[str, ...] = ()
+    backfill: BackfillConfig
+
+    @model_validator(mode="after")
+    def _one_pair_at_most(self) -> Self:
+        if len(self.spot) + len(self.usdm) < 1:
+            raise ValueError("the dev profile needs at least one pair")
+        return self
+
+
+def load_dev_profile(path: Path | str = Path("configs/ingest_dev.yaml")) -> DevIngestProfile:
+    return DevIngestProfile.model_validate(_load_yaml(Path(path)))
+
+
+def apply_dev_profile(config: MarketDataConfig, profile: DevIngestProfile) -> MarketDataConfig:
+    """`config` restricted to the profile's pairs, with the profile's backfill section."""
+    for market, wanted in ((Market.SPOT, profile.spot), (Market.USDM, profile.usdm)):
+        unknown = [s for s in wanted if s not in config.universe.symbols(market)]
+        if unknown:
+            raise ValueError(f"dev profile pairs not in the {market} universe: {unknown}")
+    universe = config.universe.model_copy(update={"spot": profile.spot, "usdm": profile.usdm})
+    quality = config.quality.model_copy(update={"backfill": profile.backfill})
+    return config.model_copy(update={"universe": universe, "quality": quality})

@@ -42,14 +42,31 @@ rest:
   funding_rate_requests_per_5min: 250  # documented separate limit: 500 / 5 min / IP
 
 backfill:
-  # Startup REST backfill window. 9 days covers the paper bracket_reference warm-up read (748 x 15m
-  # bars ~ 7.8 days before the paper start, from the live bar store) with headroom. The headroom
-  # does not absorb missing minutes: one missing inside that read leaves the strategy short.
-  # Cost: only minutes not already stored are fetched; a first start fetches 12,960 1m bars per
-  # pair (13 REST pages of <= 1000, under the REST weight budget above), ~78k rows for the 6-pair
-  # universe, written row by row on the event loop (a longer first start; paper waits for it).
+  # `lookback_days` is the history TARGET. 9 days covers the paper bracket_reference warm-up read
+  # (748 x 15m bars ~ 7.8 days before the paper start, from the live bar store) with headroom. The
+  # headroom does not absorb missing minutes: one missing inside that read leaves the strategy short.
+  # Cost of the full window: only minutes not already stored are fetched; 12,960 1m bars per pair
+  # (13 REST pages of <= 1000), ~78k rows for the 6-pair universe, committed one chunk per transaction.
   lookback_days: 9
   max_backfill_days: 30       # older missing history is registered as a gap for the M2 importer
+  # Start does NOT load the 9 days any more: it runs a bounded catch-up (below). The rest of the
+  # lookback window ("history") is loaded on demand: automatically when paper is enabled with a
+  # warm-up strategy (paper waits for it and fails closed if it is incomplete), or when the
+  # operator asks (POST /api/ingestion/history). Newest first, one chunk (= one transaction) at a
+  # time, written by a single dedicated writer thread. Progress: GET /api/ingestion.
+  startup:
+    catchup_max_minutes: 1440 # 24 h; older downtime is registered as a gap, loaded by "history"
+    history: on_demand        # off | on_demand | background
+  run:
+    chunk_minutes: 1000       # one REST page; also rows per transaction and rows in flight
+    inter_chunk_pause_ms: 25  # gives the event loop and Stop a turn between chunks
+    chunk_timeout_s: 30       # REST fetch of one chunk (3 x rest.timeout_s)
+    write_timeout_s: 30       # slower writes are reported (write_slow) and joined, never overlapped
+    write_join_timeout_s: 90  # beyond this the writer is declared stuck and the run fails
+    pair_budget_s: 120        # exceeded -> PAUSED (resumable); 3-day runs took 22-68 s in total
+    run_budget_s: 600         # must stay <= paper.backfill_wait_s (900); guarded by a test
+    max_consecutive_chunk_errors: 3
+    stop_grace_s: 10
 
 clock:
   sample_interval_s: 300

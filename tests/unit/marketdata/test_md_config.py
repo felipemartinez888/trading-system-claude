@@ -7,7 +7,13 @@ from pydantic import ValidationError
 
 from tsclaude.contracts.market import Market
 from tsclaude.marketdata.binance.ws import combined_url, plan_groups, stream_name
-from tsclaude.marketdata.config import MarketDataConfig, WsConfig, load_config
+from tsclaude.marketdata.config import (
+    MarketDataConfig,
+    WsConfig,
+    apply_dev_profile,
+    load_config,
+    load_dev_profile,
+)
 from tsclaude.marketdata.types import StreamKey, StreamKind
 
 REPO = Path(__file__).resolve().parents[3]
@@ -95,3 +101,61 @@ def test_groups_split_by_max_streams() -> None:
     )
     assert [g.name for g in groups] == ["spot#1", "spot#2", "usdm-market", "usdm-public"]
     assert [len(g.streams) for g in groups] == [3, 1, 2, 1]
+
+
+# ---------------------------------------------------------------------- ingestion limits
+def test_backfill_defaults_keep_the_legacy_window_and_bounded_runs() -> None:
+    cfg = MarketDataConfig.from_mapping(UNIVERSE, {})
+    b = cfg.quality.backfill
+    assert b.startup.catchup_max_minutes is None  # the whole lookback is the catch-up
+    assert b.startup.history == "off"
+    assert (b.run.chunk_minutes, b.run.max_consecutive_chunk_errors) == (1000, 3)
+
+
+@pytest.mark.parametrize(
+    "backfill",
+    [
+        {"run": {"chunk_minutes": 0}},
+        {"run": {"chunk_minutes": 1001}},
+        {"run": {"pair_budget_s": 700, "run_budget_s": 600}},
+        {"run": {"write_timeout_s": 100, "write_join_timeout_s": 90}},
+        {"run": {"max_consecutive_chunk_errors": 0}},
+        {"run": {"typo": 1}},
+        {"startup": {"history": "always"}},
+        {"startup": {"catchup_max_minutes": 0}},
+        {"lookback_days": 1, "startup": {"catchup_max_minutes": 1441}},
+    ],
+)
+def test_invalid_ingestion_limits_rejected(backfill: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        MarketDataConfig.from_mapping(UNIVERSE, {"backfill": backfill})
+
+
+def test_repo_yaml_selects_on_demand_history_and_bounded_runs() -> None:
+    pytest.importorskip("yaml")
+    cfg = load_config(REPO / "configs" / "universe.yaml", REPO / "configs" / "data_quality.yaml")
+    b = cfg.quality.backfill
+    assert b.lookback_days == 9  # the history target the paper warm-up needs is unchanged
+    assert b.startup.history == "on_demand"
+    assert b.startup.catchup_max_minutes == 1440
+    import yaml
+
+    paper = yaml.safe_load((REPO / "configs" / "paper.yaml").read_text(encoding="utf-8"))
+    # a run that exhausts its budget must end before paper gives up waiting for it
+    assert b.run.run_budget_s <= float(paper["backfill_wait_s"])
+
+
+def test_dev_profile_narrows_to_one_pair_and_never_widens() -> None:
+    pytest.importorskip("yaml")
+    base = load_config(REPO / "configs" / "universe.yaml", REPO / "configs" / "data_quality.yaml")
+    profile = load_dev_profile(REPO / "configs" / "ingest_dev.yaml")
+    dev = apply_dev_profile(base, profile)
+    assert dev.universe.pairs() == [(Market.SPOT, "BTCUSDT")]
+    assert dev.quality.backfill.startup.catchup_max_minutes == 60
+    assert dev.quality.backfill.run.chunk_minutes == 100
+    assert dev.quality.ws == base.quality.ws  # only the backfill section is replaced
+    # the base config is untouched (frozen models, copies)
+    assert len(base.universe.pairs()) == 6
+    outside = profile.model_copy(update={"spot": ("DOGEUSDT",)})
+    with pytest.raises(ValueError, match="not in the spot universe"):
+        apply_dev_profile(base, outside)
