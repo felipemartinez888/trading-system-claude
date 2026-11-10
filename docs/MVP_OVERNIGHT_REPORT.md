@@ -120,7 +120,7 @@ official trial was recorded, and no holdout data was touched.
 | Walk-forward status and table show the risk rules used | `79908c7` | `test_research_status.py`; frontend test runs in CI | IMPLEMENTED, TESTED (backend) |
 | Decision latency 3,000 ms (SIMULATION §2: at least the live p95). Measured p95 2,170 ms, max 2,920 ms over 576 live bars; latency 0 had filled entries one minute earlier than Paper can | `1cc2693` (CI `42837576325` 7/7) | `docs/research/evidence/live_release_latency_2026-11-10.json`; latency test | VERIFIED: CI `42837576325` 7/7 on `1cc2693` |
 | Walk-forward reports sum the risk-policy blocks per phase; end-to-end rehearsal of the first-experiment pipeline (synthetic data, REFERENCE strategy) | `f716a71` `ce751fc` | `test_backtest_risk_policy.py` (24) | IMPLEMENTED, TESTED |
-| M5-3: agent gate in the paper runtime, `agent_gated` book, journaled and replayable | branch `task/m5-runtime-wiring` `cf8cfe9`…`97168b2` (pushed, **not merged**) | 58 new tests; mode off byte-identical; 9 mutants killed; independent review running; CI `42838323339` running | IMPLEMENTED, TESTED (mock client only) |
+| M5-3: agent gate in the paper runtime, `agent_gated` book, journaled and replayable | branch `task/m5-runtime-wiring` `cf8cfe9`…`97168b2` (pushed, **not merged**) | 60 new tests; mode off byte-identical (reproduced by the reviewer); Fable review CONDITIONAL PASS, 0 blocking, findings fixed or recorded (L-13); CI `42838323339` 7/7 on `97168b2` (fastapi status test included) | VERIFIED on its branch (mock client only); not merged (D-H) |
 
 **Findings for the owner.**
 - 2 R holds the floor only while take-profits fill as maker orders: it nets 1.52, or 1.4995 if
