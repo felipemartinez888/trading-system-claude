@@ -26,6 +26,14 @@ This is **not** milestone acceptance and does not claim the earlier unresponsive
 validation ([RUNBOOK_INGESTION](RUNBOOK_INGESTION.md), [devlog](devlog/2026-11-09-start-stability-bounded-ingestion.md)).
 **Owner manual validation of the development profile: PASS (owner-reported, 2026-11-09, head `d649d95`):** BTCUSDT spot, `history: off`, 3 bars inserted, 0 errors, checkpoint ok, writer not stuck, Stop clean, `safe_to_close_store: true`, dashboard responsive. This covers the dev profile only: production-profile stability, a RUNNING paper session (O-1) and end-to-end MVP acceptance have **no evidence yet**.
 
+**Autonomous MVP session (2026-11-09/10, branch `task/mvp-integration`, pushed under D-07, not merged):** reconciled status and plan in
+[MVP_MASTER_PLAN](MVP_MASTER_PLAN.md), evidence in [MVP_VALIDATION_REPORT](MVP_VALIDATION_REPORT.md) (status **MVP FUNCTIONAL — VALIDATION
+INCOMPLETE**), [MVP_USER_GUIDE](MVP_USER_GUIDE.md), [MVP_LIMITATIONS](MVP_LIMITATIONS.md). Added: read-only `GET /api/research/status` with an
+explicit `NO_VALIDATED_STRATEGY` state, actionable paper-blocker hints, an anchored walk-forward driver (`tsclaude backtest walkforward`,
+development segment only, synthetic tests only), an owner evidence script. Owner Stage B (production profile) clean from its artifacts; Stage C
+(Paper O-1) loaded the 9-day history in about 33 s but observed no bar (PC clock 3.4 s off, since fixed) and ended with a PC restart. No gate
+changes; none of this is M3/M4 acceptance.
+
 ### Shortest-safe-path MVP track (owner direction, 2026-10-27; local branches, not pushed)
 A demonstrable local Windows app, strictly paper-only, built in small approved steps. Every step is **MVP
 readiness only**: none of these items is M1–M4 acceptance, and none is evidence of strategy performance.
