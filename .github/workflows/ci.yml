@@ -2,16 +2,19 @@ name: CI
 
 on:
   push:
-    branches: [main, "task/**"]
+    branches: [main, "task/**", "acceptance/**"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# P1 (CI proposal): an ordinary push still supersedes the run of an older push on the same
+# branch. A dispatched run (formal acceptance, benchmark) and a push to acceptance/** get a group
+# of their own (run id, commit), so nothing can cancel them or replace them while pending.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: "ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || startsWith(github.ref, 'refs/heads/acceptance/') && format('sha-{0}', github.sha) || 'push' }}"
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/heads/acceptance/') }}
 
 jobs:
   python:
