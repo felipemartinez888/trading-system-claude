@@ -24,7 +24,7 @@ CI on `f6ce164`: `42854101526` 7/7; on `0955749`: `42859002211` 7/7. Later runs 
 | A2 | Warm-up-aware anchor (WF-2) | earlier anchors refused; every synthetic run integrity-clean | VERIFIED | `67bb18e`; same | — |
 | A3 | Trial-registry run ids | `last_run_id == RunOutcome.run_id`; crash keeps provisional id | VERIFIED | `6f9ee18`, nonce/attach fix `6377cea`; CI `42770742512` 7/7 | — |
 | A4 | README status, broken link | real status; 0 broken links | VERIFIED | `04307f5` | — |
-| A5 | M3 acceptance proposals D-A, D-B | written as OPEN | VERIFIED (proposal only) | `04307f5`; [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md) | **D-A, D-B** to decide |
+| A5 | M3 acceptance proposals D-A, D-B | written as OPEN | VERIFIED (proposal only) | `04307f5`; [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md) | D-A decided as D-24 (2026-11-10); **D-B** to decide |
 | A6 | Owner dashboard smoke check | owner reports panels render | BLOCKED (visual confirmation only). Owner ran it at `0955749` on Windows: all 7 automated checks PASS (bundle_built, app_started, research/paper/agents status APIs, dashboard_served, clean_quit); status `NO_VALIDATED_STRATEGY`, Paper disabled, agents OFF. The build first needed a manual esbuild approval under pnpm 12, now fixed (PL-1) | owner report 2026-11-10; `scripts/owner_checks/dashboard_smoke.ps1` | owner confirms the panels visually |
 | A7 | Reviews + CI for A1–A3 | both green | VERIFIED | MVP_VALIDATION_REPORT §12 | — |
 | OR-1 | Readiness T1 (R-02): Target A under the production paper latency | the 13 tests at the latency `build_paper_config` reads from `configs/`; next-open bound stated for it; drift guard | VERIFIED (tests and CI only) | `5f4628e`, comment `8f8b2f5`; 15 Target A tests (13 at 3,000 ms + latency-0 case + guard); CI `42878174027` 7/7 on `59c826a` (python ubuntu 2363 passed, windows 2361); independent review CONDITIONAL PASS, 0 blocking, mutants on the guard and the latency killed | — |
@@ -88,6 +88,6 @@ CI on `f6ce164`: `42854101526` 7/7; on `0955749`: `42859002211` 7/7. Later runs 
 | M6-3 | Every contract event type has a deliberate place in the export | a new `EventType` fails a test until it is mapped or listed as not exported; schemas accept exactly their file's types | IMPLEMENTED, TESTED (2 tests; against the 9c681ca exporter with the M5-3 contract it fails on the three agent types) | `94e821e`; `test_eval_event_coverage.py` (also on the M5 branch) | — |
 
 ## Owner-only (never done autonomously)
-D-A M3 acceptance · D-B kill-switch reset · D-C trial counting · D-D two-stage preregistration · D-E live risk
+D-A M3 acceptance (decided, D-24) · D-B kill-switch reset · D-C trial counting · D-D two-stage preregistration · D-E live risk
 floor · D-F1 SOL/universe · D-F2 holdout months · D-G lock files · D-H merge · any freeze, holdout unlock,
 paid API, live trading.

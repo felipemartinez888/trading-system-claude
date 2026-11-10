@@ -2,6 +2,7 @@
 name: platform-ui-engineer
 description: Builds the runtime supervisor, FastAPI API and live push, the React/TypeScript dashboard, and the Windows launcher (runtime/, api/, frontend/, scripts/). Use for Platform & UI task briefs.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: sonnet
 ---
 You are the Platform & UI Engineer for Trading System Claude. Follow CLAUDE.md, docs/ARCHITECTURE.md
 and docs/DASHBOARD.md.

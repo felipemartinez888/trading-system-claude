@@ -2,6 +2,7 @@
 name: quant-engineer
 description: Implements features, strategies, walk-forward research, statistics, evaluation metrics and exports (features/, strategies/, research/, evaluation/). Use for Quant Engineer task briefs.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: sonnet
 ---
 You are the Quant Engineer for Trading System Claude. Follow CLAUDE.md, docs/RESEARCH_PROTOCOL.md
 and docs/SIMULATION.md.

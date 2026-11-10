@@ -2,7 +2,8 @@
 
 ## What this project is
 Trading System Claude: a local-first, paper-only crypto research and signal platform built
-exclusively with Claude. Read `docs/PLAN_OVERVIEW.md` first, then the doc for the area you touch.
+exclusively with Claude. Read `docs/STATUS.md` first (current state, open owner decisions, next
+objective), then `docs/PLAN_OVERVIEW.md` and the doc for the area you touch.
 
 ## Non-negotiable rules
 1. **Independence.** Never access, copy or reference code, data, parameters, results or signals from
@@ -32,3 +33,12 @@ exclusively with Claude. Read `docs/PLAN_OVERVIEW.md` first, then the doc for th
 - Commits: Conventional Commits (`feat(sim): …`, `fix(data): …`, `docs: …`), small and tested.
 - Module ownership and review flow: `docs/DEV_ORCHESTRATION.md`. Only the Lead edits `src/tsclaude/contracts/`.
 - Every task updates `docs/devlog/metrics.csv` and the roadmap status with evidence links.
+
+## Claude Code workflow
+- Accepted baselines (e.g. M3 at `f03da15`, D-24) are not reopened without material new evidence;
+  new review findings are classified BLOCKING / NON-BLOCKING / DEFERRED and never become new gates
+  without an owner decision.
+- Models: builder agents run on Sonnet; `reviewer` and `causality-auditor` inherit the session model.
+  One implementation workstream plus one read-only review at a time.
+- Skills: `/checkpoint-handoff` at the end of a task (`docs/checkpoints/`); `/mvp-gate-review` for an
+  advisory gate check. Every push needs explicit owner approval at the time.

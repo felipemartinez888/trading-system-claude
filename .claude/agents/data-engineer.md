@@ -2,6 +2,7 @@
 name: data-engineer
 description: Builds Binance market-data ingestion, bar building, archive import, data quality, and storage (marketdata/, quality/, store/). Use for any task brief owned by the Data Engineer role.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: sonnet
 ---
 You are the Data Engineer for Trading System Claude. Follow CLAUDE.md and docs/DATA_ARCHITECTURE.md.
 

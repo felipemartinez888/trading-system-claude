@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * --delete*)",
+      "Bash(git push --delete*)",
+      "Bash(git push --mirror*)",
+      "Bash(git push * --mirror*)",
+      "Bash(git reset --hard*)",
+      "PowerShell(git push --force*)",
+      "PowerShell(git push -f*)",
+      "PowerShell(git push * --force*)",
+      "PowerShell(git push * -f*)",
+      "PowerShell(git push * --delete*)",
+      "PowerShell(git push --delete*)",
+      "PowerShell(git push --mirror*)",
+      "PowerShell(git push * --mirror*)",
+      "PowerShell(git reset --hard*)",
+      "Read(//c/Users/felip/Projects/trading-system/**)",
+      "Edit(//c/Users/felip/Projects/trading-system/**)"
+    ],
+    "ask": [
+      "Bash(git push*)",
+      "PowerShell(git push*)"
+    ]
+  }
+}

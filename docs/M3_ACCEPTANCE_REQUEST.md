@@ -1,5 +1,8 @@
 # M3 acceptance request (for the owner; NOT approved)
 
+> **Decided 2026-11-10:** the owner accepted M3 as a supervised, paper-only operational milestone at
+> `f03da15`, recorded as [D-24](DECISIONS_PENDING.md#2026-11-10-m3-acceptance-d-24). The request below is kept as written.
+
 This asks the owner to decide proposal **D-A** ([DECISIONS_PENDING](DECISIONS_PENDING.md)). Nothing here
 accepts M3. Source: the independent closure audit ([MVP_CLOSURE_HANDOFF](MVP_CLOSURE_HANDOFF.md) §1, §2).
 
