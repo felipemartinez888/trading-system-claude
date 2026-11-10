@@ -641,6 +641,8 @@ export interface WalkForwardSummary {
   failed_test_folds?: number[] | null;
   checks_passed?: boolean | null;
   live_deployable?: boolean | null;
+  /** "live" (the paper risk rules), "allow_all" (none) or "not_recorded" (report predates P1-6) */
+  risk_policy?: string | null;
   final_selection?: string | null;
   not_validation?: boolean;
   unreadable?: string;

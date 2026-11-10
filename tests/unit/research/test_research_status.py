@@ -179,4 +179,12 @@ def test_walk_forward_reports_are_listed_as_recorded_and_never_as_validation(
     assert rows["aaaa"]["failed_test_folds"] == [2]
     assert rows["aaaa"]["live_deployable"] is False
     assert rows["aaaa"]["not_validation"] is True
+    assert rows["aaaa"]["risk_policy"] == "not_recorded"  # a report from before P1-6
     assert "unreadable" in rows["bbbb"]
+    live = root / "cccc"
+    live.mkdir()
+    (live / "walkforward.json").write_text(json.dumps({
+        "plan": {"plan_id": "cccc"}, "strategy_id": "bracket_reference", "oos": {},
+        "risk_policy": {"mode": "live", "risk_config_hash": "h"},
+    }), encoding="utf-8")  # fmt: skip
+    assert {r["report"]: r for r in walk_forward_summaries(root)}["cccc"]["risk_policy"] == "live"

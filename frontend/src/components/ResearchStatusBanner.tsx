@@ -89,6 +89,14 @@ function yesNo(v: boolean | null | undefined): string {
   return v === true ? "yes" : v === false ? "no" : "—";
 }
 
+/** Which risk rules a walk-forward's backtests applied (backend `research.risk_policy`). */
+export function riskPolicyLabel(mode: string | null | undefined): string {
+  if (mode === "live") return "paper rules";
+  if (mode === "allow_all") return "none (allow_all)";
+  if (mode === "not_recorded") return "not recorded (no risk rules before 2026-11-10)";
+  return "—";
+}
+
 export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
   if (rows.length === 0) {
     return (
@@ -112,6 +120,7 @@ export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
             <th>OOS coverage</th>
             <th>Checks passed</th>
             <th>Live-compatible</th>
+            <th>Risk rules in backtests</th>
           </tr>
         </thead>
         <tbody>
@@ -133,6 +142,7 @@ export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
               </td>
               <td>{yesNo(r.checks_passed)}</td>
               <td>{yesNo(r.live_deployable)}</td>
+              <td>{riskPolicyLabel(r.risk_policy)}</td>
             </tr>
           ))}
         </tbody>

@@ -253,6 +253,9 @@ def walk_forward_summaries(root: Path) -> list[dict[str, Any]]:
                     if r.get("checks")
                     else None,
                     "live_deployable": live.get("any_deployable") if live else None,
+                    # which risk rules the runs applied (P1-6); a report without the field
+                    # predates it, when every backtest applied no risk rule
+                    "risk_policy": (r.get("risk_policy") or {}).get("mode") or "not_recorded",
                     "final_selection": final.get("status") if final else None,
                     "not_validation": True,
                 }

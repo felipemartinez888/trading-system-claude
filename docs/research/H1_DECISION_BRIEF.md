@@ -190,7 +190,9 @@ Owner steps are marked **(owner)**; everything else is prepared on the branch.
 4. Prepare `preregistrations/H1.yaml` from H1-v3. Set:
    - the anchor: a fixed month start, `auto` is refused at freeze;
    - the decided policy values;
-   - pinned `data.dataset_ids`, using the composite SOL/XRP ids rule of D-17 where relevant;
+   - pinned `data.dataset_ids`. The feasibility run's `feasibility.json` records the exact dataset
+     ids it read (`dataset_ids`); for the 4-symbol universe these are the pins. The D-17 composite
+     id applies to XRP;
    - `decision_latency_ms` and instrument filters, per H1-11.
 5. **(owner)** Promote `h1_compression_breakout` from DRAFT to the runnable registry and freeze. The
    freeze pins the code, the implementation hash, the anchor and the backtest config hash, including
