@@ -3,4 +3,5 @@
 # Usage: scripts/ci/evidence.sh <commit> [--repo owner/name] [--no-logs]
 # Exit 0: a qualifying run exists for exactly that commit; 1: none; 2: API not readable.
 set -uo pipefail
-exec python3 "$(dirname "$0")/evidence.py" "$@"
+py=$(command -v python3 || command -v python) || { echo "no python found" >&2; exit 2; }
+exec "$py" "$(dirname "$0")/evidence.py" "$@"

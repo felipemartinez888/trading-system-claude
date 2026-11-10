@@ -85,6 +85,8 @@ def _load_json(path: Path) -> Any:
 def compare_outcomes(a: Path, b: Path, limit: int = 50) -> tuple[bool, list[str]]:
     left = Counter(tuple(x) for x in _load_json(a)["outcomes"])
     right = Counter(tuple(x) for x in _load_json(b)["outcomes"])
+    if not left or not right:
+        return False, [f"no test cases in {a.name if not left else b.name}: nothing to compare"]
     if left == right:
         return True, [f"identical: {sum(left.values())} test cases"]
     only_a = sorted((left - right).elements())

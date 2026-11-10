@@ -105,3 +105,16 @@ def test_no_cases_print_nothing_and_a_worker_without_output_adds_nothing(
     session: Any = SimpleNamespace(config=SimpleNamespace())
     conftest.pytest_sessionfinish(session)
     assert not hasattr(session.config, "workeroutput")
+
+
+def test_a_worker_never_prints_or_writes_its_partial_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _fresh_conftest()
+    monkeypatch.setitem(sys.modules, "paper_scenarios", _scenarios(WORKER_A))
+    monkeypatch.setenv("TSC_RESTART_REPORT", str(tmp_path / "partial.json"))
+    rep = _Reporter()
+    rep.config = SimpleNamespace(workerinput={"workerid": "gw0"})  # type: ignore[attr-defined]
+    worker.pytest_terminal_summary(rep)
+    assert rep.lines == []
+    assert not (tmp_path / "partial.json").exists()
