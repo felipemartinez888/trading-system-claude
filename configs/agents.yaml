@@ -1,0 +1,54 @@
+# Advisory Claude agents (M5; docs/SIGNALS_AND_AGENTS.md §3-§6, ADR-0007, decision D-03).
+# Loaded by src/tsclaude/agents/config.py. Any invalid value forces mode `off` (fail closed) and the
+# error is reported by GET /api/agents/status. Decimals are quoted strings (exact).
+version: agents-config-v1
+
+# off | confirmed | research. `off` is the default until a key and budget are configured (§4):
+# deterministic only, no agent code runs on any signal path, signals show NOT_REQUESTED.
+# D-03 approves `confirmed` once M5 is accepted with a real key; this file stays `off` until then.
+# Keep the quotes: YAML 1.1 reads a bare `off` as the boolean false (the loader would then reject
+# the file and force `off` anyway, but report an error).
+mode: "off"
+
+# D-03: Sonnet 5.5 for both roles. Verify the exact model id against the Anthropic docs before
+# switching the mode on (not verifiable offline).
+model: claude-sonnet-5-5
+
+# USD per million tokens, list prices recorded in SIGNALS_AND_AGENTS §5 (verified 2026-10-19).
+# cached_input is the prompt-cache read price; set conservatively to the full input price until
+# measured.
+pricing:
+  input_per_mtok: "2"
+  output_per_mtok: "10"
+  cached_input_per_mtok: "2"
+
+daily_cap_usd: "1"            # D-03: hard cap per UTC day, checked before every call (worst case)
+per_call_timeout_s: 30        # §4 default
+max_retries: 1                # §4: one bounded retry (transport errors and timeouts only)
+max_output_tokens: 1024
+breaker_failure_threshold: 3  # consecutive failed reviews before the breaker opens
+breaker_cooldown_s: 600       # open breaker stays open this long, then one trial review
+
+# Evidence packet allowlists. Only dimensionless values (ranks, ratios, ATR units, bps, flags,
+# short lowercase labels) belong here: never absolute prices, symbols or timestamps.
+packet:
+  max_bars: 48
+  allowed_features:
+    - atr_pct_rank
+    - vol_pct_rank
+    - range_width_atr
+    - trend_slope_atr
+    - volume_ratio
+    - regime
+    - rsi
+  allowed_health:
+    - streams_healthy
+    - open_gaps
+    - missing_bars_lookback
+    - clock_skew_ok
+  allowed_risk:
+    - open_positions
+    - positions_in_cluster
+    - daily_loss_used_frac
+    - drawdown_frac
+    - gross_exposure_frac
