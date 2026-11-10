@@ -53,5 +53,14 @@ the H1 tests), so D-E decides whether any H1 result could ever trade in the base
 ## Remaining owner decisions
 D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H ([DECISIONS_PENDING](DECISIONS_PENDING.md)).
 
+## CI evidence (overnight)
+| Run | Commit | Result |
+|---|---|---|
+| `42770742512` | `9ef847a` | 7/7 green: python ubuntu 1965 passed, windows 1963 |
+| `42775771210` | `597ebf8` | **failed**: mypy strict on `research/preregistration.py` (fixed in `6c9d57c`) |
+| `42776226802` | `45cf45a` | 7/7 green: python ubuntu 2166 passed, windows 2164; frontend vitest + build both OS (covers preregistration tooling, live compatibility, status, M6, M5 first version, the walk-forward table) |
+| later | `2658aa4` and after | see the last checkpoint |
+
 ## Checkpoints
 - 2026-11-10 ~02:30 local: `e63743b` + this report.
+- 2026-11-10 ~04:00 local: `95ae656` (M5 review fixes, H1 draft + causality fixes, prereg review fixes, agent status card, semantic map update).
