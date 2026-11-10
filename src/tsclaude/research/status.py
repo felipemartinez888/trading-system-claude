@@ -214,7 +214,52 @@ def load_status(runs_dir: Path, repo_root: Path) -> dict[str, Any]:
         if prereg_dir.is_dir()
         else []
     )
-    return assess(REGISTRY.keys(), runs, preregistration_files=files)
+    status = assess(REGISTRY.keys(), runs, preregistration_files=files)
+    status["walk_forwards"] = walk_forward_summaries(runs_dir.parent / "walkforward")
+    return status
+
+
+def walk_forward_summaries(root: Path) -> list[dict[str, Any]]:
+    """Every walk-forward report under ``<data_dir>/walkforward/``, newest first, as recorded:
+    verdict, trial count, coverage, failed folds, live compatibility and the final-selection
+    status. An unreadable report is listed as such, never skipped. None of these verdicts is a
+    validation result (RESEARCH_PROTOCOL §2)."""
+    import json
+
+    out: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return out
+    for path in sorted(root.glob("*/walkforward.json"), key=lambda p: p.stat().st_mtime,
+                       reverse=True):  # fmt: skip
+        try:
+            r = json.loads(path.read_text(encoding="utf-8"))
+            oos = r.get("oos") or {}
+            live = r.get("live_compatibility") or {}
+            final = r.get("final_selection") or {}
+            out.append(
+                {
+                    "report": path.parent.name,
+                    "plan_id": (r.get("plan") or {}).get("plan_id"),
+                    "strategy_id": r.get("strategy_id"),
+                    "reference": r.get("strategy_id") in REFERENCE_STRATEGIES,
+                    "hypothesis_id": r.get("hypothesis_id"),
+                    "prereg_id": r.get("prereg_id"),
+                    "verdict": oos.get("verdict"),
+                    "n_trials": oos.get("n_trials"),
+                    "oos_trades": oos.get("oos_trades"),
+                    "oos_coverage": (oos.get("oos_coverage") or {}).get("share"),
+                    "failed_test_folds": oos.get("failed_test_folds"),
+                    "checks_passed": all((r.get("checks") or {}).values())
+                    if r.get("checks")
+                    else None,
+                    "live_deployable": live.get("any_deployable") if live else None,
+                    "final_selection": final.get("status") if final else None,
+                    "not_validation": True,
+                }
+            )
+        except (OSError, ValueError, AttributeError) as exc:
+            out.append({"report": path.parent.name, "unreadable": f"{type(exc).__name__}"})
+    return out
 
 
 __all__ = [
@@ -225,4 +270,5 @@ __all__ = [
     "StrategyTier",
     "assess",
     "load_status",
+    "walk_forward_summaries",
 ]

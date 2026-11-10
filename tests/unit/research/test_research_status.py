@@ -151,3 +151,32 @@ def test_load_status_reads_runs_and_preregistrations_from_disk(tmp_path: Path) -
     assert _tiers(status)["bracket_reference"] == "REFERENCE"
     assert status["runs_recorded"] == 2
     assert status["runs_trusted"] == 1
+
+
+def test_walk_forward_reports_are_listed_as_recorded_and_never_as_validation(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from tsclaude.research.status import walk_forward_summaries
+
+    root = tmp_path / "walkforward"
+    assert walk_forward_summaries(root) == []
+    good = root / "aaaa"
+    good.mkdir(parents=True)
+    (good / "walkforward.json").write_text(json.dumps({
+        "plan": {"plan_id": "aaaa"}, "strategy_id": "bracket_reference",
+        "oos": {"verdict": "INVALID_OOS_EVIDENCE", "n_trials": 21, "failed_test_folds": [2],
+                "oos_coverage": {"share": 0.25}},
+        "checks": {"same_code": True}, "live_compatibility": {"any_deployable": False},
+    }), encoding="utf-8")  # fmt: skip
+    bad = root / "bbbb"
+    bad.mkdir()
+    (bad / "walkforward.json").write_text("{not json", encoding="utf-8")
+    rows = {r["report"]: r for r in walk_forward_summaries(root)}
+    assert rows["aaaa"]["verdict"] == "INVALID_OOS_EVIDENCE"
+    assert rows["aaaa"]["reference"] is True
+    assert rows["aaaa"]["failed_test_folds"] == [2]
+    assert rows["aaaa"]["live_deployable"] is False
+    assert rows["aaaa"]["not_validation"] is True
+    assert "unreadable" in rows["bbbb"]
