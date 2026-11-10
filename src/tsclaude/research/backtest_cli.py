@@ -280,6 +280,13 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
                 test_months=args.test_months,
                 embargo_ms=args.embargo_minutes * MS_PER_MINUTE,
             )
+            from tsclaude.risk.config import RiskConfigError, load_risk_config
+
+            risk_path = cfg_path.parent / "risk.yaml"
+            try:  # informational only (live compatibility); a missing file is reported as such
+                risk_config = load_risk_config(risk_path) if risk_path.is_file() else None
+            except RiskConfigError:
+                risk_config = None
             report = run_walk_forward(
                 env,
                 cfg,
@@ -296,6 +303,7 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
                 max_new_trials=args.max_new_trials,
                 final_selection_enabled=args.final_selection,
                 min_oos_coverage=args.min_oos_coverage,
+                risk_config=risk_config,
             )
         except HoldoutError as exc:
             return refused("holdout", exc, 3)
@@ -322,6 +330,7 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
                 "checks": report["checks"],
                 "oos": report["oos"],
                 "final_selection": report["final_selection"],
+                "live_compatibility": report["live_compatibility"],
                 "provenance": "BACKTEST",
             },
             indent=2,

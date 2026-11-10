@@ -1018,6 +1018,42 @@ def _prereg_conformance(
     return dict(doc.get("trial_budget") or {})
 
 
+def _live_compatibility(
+    env: RunEnv,
+    strategy_id: str,
+    grid: Mapping[str, Mapping[str, Any]],
+    symbols: Sequence[tuple[Market, str]],
+    risk_config: Any | None,
+) -> dict[str, Any] | None:
+    """Whether each configuration could ever trade in the live baseline book (handoff I-1);
+    None when no risk configuration was given. Informational: it never changes selection."""
+    if risk_config is None:
+        return None
+    from tsclaude.research.live_compat import assess
+    from tsclaude.strategies import build_strategy
+
+    worst: dict[str, dict[str, Any]] = {}
+    order = {"INCOMPATIBLE": 0, "UNKNOWN": 1, "CONDITIONAL": 2, "COMPATIBLE": 3}
+    for config_id, params in grid.items():
+        strategy = build_strategy(strategy_id, dict(params))
+        for market, symbol in symbols:  # the least compatible symbol decides
+            got = assess(
+                strategy, risk=risk_config, cost_model=env.cost_model, market=market,
+                symbol=symbol,
+            ).to_dict()  # fmt: skip
+            got["symbol"] = f"{market}:{symbol}"
+            cur = worst.get(config_id)
+            if cur is None or order[got["status"]] < order[cur["status"]]:
+                worst[config_id] = got
+    return {
+        "risk_config_version": getattr(risk_config, "version", None),
+        "configurations": worst,
+        "any_deployable": any(v["deployable_in_baseline_book"] for v in worst.values()),
+        "note": "Backtests apply no risk gate; this shows what the live baseline book would "
+        "accept. It never changes selection (decision D-E).",
+    }
+
+
 # ---------------------------------------------------------------- trial budget
 def project_trials(
     evaluator: RunnerEvaluator,
@@ -1213,6 +1249,7 @@ def run_walk_forward(
     max_new_trials: int | None = None,
     final_selection_enabled: bool = False,
     min_oos_coverage: float = 1.0,
+    risk_config: Any | None = None,
 ) -> dict[str, Any]:
     """Run the procedure end to end and return (and write) the JSON report.
 
@@ -1352,6 +1389,15 @@ def run_walk_forward(
             evaluator, list(grid), window=(folds[0].train_from_ms, folds[-1].test_to_ms),
             n_min=n_min, oos_verdict=oos["verdict"], last_fold=folds[-1],
         )  # fmt: skip
+    live = _live_compatibility(env, strategy_id, grid, symbols, risk_config)
+    if final is not None and final.get("selected") and live is not None:
+        compat = live["configurations"].get(final["selected"], {})
+        final["live_compatibility"] = compat
+        if not compat.get("deployable_in_baseline_book"):
+            final["governance"] += (
+                " The candidate cannot trade in the live baseline book under the current risk "
+                "policy (live_compatibility; decision D-E)."
+            )
     cache = env.max_loss_cache
     report = {
         "version": WALKFORWARD_VERSION,
@@ -1388,6 +1434,7 @@ def run_walk_forward(
         "folds": [f.to_dict() for f in result.folds],
         "oos": oos,
         "final_selection": final,
+        "live_compatibility": live,
         "run_ids": [o.run_id for o in evaluator.runs],
         "n_trials_family_now": env.trials.n_trials(strategy_id),
     }

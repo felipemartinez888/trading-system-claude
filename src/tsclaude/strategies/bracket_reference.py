@@ -261,6 +261,11 @@ class BracketReference(Strategy[BracketReferenceParams]):
     def stop_loss_r(self, costs: PlanningCosts) -> float | None:
         return 1.0 + self.params.max_cost_r
 
+    def bracket_geometry(self, costs: PlanningCosts) -> tuple[float, float | None]:
+        """(take-profit in stop distances, smallest stop distance as a fraction of price that
+        the cost filter lets through): what `research.live_compat` checks against live rules."""
+        return self.params.tp_r, costs.round_trip_frac / self.params.max_cost_r
+
 
 def _with(prop: Proposal, conditions: dict[str, float | bool]) -> Proposal:
     return Proposal(
