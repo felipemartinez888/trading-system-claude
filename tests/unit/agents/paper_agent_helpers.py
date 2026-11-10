@@ -20,7 +20,7 @@ from tsclaude.contracts.signals import SignalRecord
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, ManualClock
 from tsclaude.marketdata.bars import BarClosed
 from tsclaude.sim.journal import Batch, MemoryJournal
-from tsclaude.sim.paper import PaperConfig, PaperTradingService
+from tsclaude.sim.paper import PaperConfig, PaperTradingService, Reviewer
 from tsclaude.sim.testing import minute
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sim"))
@@ -153,7 +153,7 @@ def entries(batches: Sequence[Batch], kind: str, **match: Any) -> list[tuple[int
 def new_service(
     cfg: PaperConfig,
     strategy: ScriptedStrategy,
-    reviewer: ReviewWorker | None = None,
+    reviewer: Reviewer | None = None,
     journal: MemoryJournal | None = None,
 ) -> tuple[PaperTradingService, MemoryJournal]:
     j = journal or MemoryJournal()

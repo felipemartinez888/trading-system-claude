@@ -395,7 +395,7 @@ def test_invalidation_skips_a_pending_admission_and_exits_an_admitted_one() -> N
         }
     )
     held = HeldReviewer(worker(mock_client(approve() * 2), bars))
-    svc, journal = new_service(gated_config(), strat, held)  # type: ignore[arg-type]
+    svc, journal = new_service(gated_config(), strat, held)
     for i in range(12):
         if i == 2:
             held.release(sid(2))  # ETH was requested first (its bar comes first): released
@@ -666,7 +666,7 @@ class BadReviewer:
 
 @pytest.mark.parametrize("mode", ["raises", "malformed", "unknown"])
 def test_a_broken_reviewer_stops_agent_gated_only(mode: str) -> None:
-    svc, journal = new_service(gated_config(), ps.scenario(), BadReviewer(mode))  # type: ignore[arg-type]
+    svc, journal = new_service(gated_config(), ps.scenario(), BadReviewer(mode))
     run(svc, scenario_bars(), list(range(ps.N)), missing=MISSING)
     assert svc.state is ServiceState.RUNNING, svc.fault
     assert svc.agent_fault is not None
