@@ -579,3 +579,69 @@ def test_walk_forward_reports_sum_the_policy_blocks_per_phase() -> None:
     }  # fmt: skip
     allow = types.SimpleNamespace(by_key={("train", 0, "a"): run(None)})
     assert wf._policy_blocks(allow) is None  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------- first-experiment rehearsal
+
+
+@pytest.mark.skipif(__import__("shutil").which("git") is None, reason="needs git")
+def test_rehearsal_of_the_first_experiment_pipeline_on_synthetic_data(tmp_path: Path) -> None:
+    """The whole path the first H1 walk-forward will take, on synthetic data and the REFERENCE
+    strategy (never evidence): a committed preregistration that keeps the live floor, frozen
+    against the live-policy backtest config; a walk-forward that conforms to it; and a report
+    naming the policy and why candidates did not become trades."""
+    import subprocess
+
+    from tsclaude.research import preregistration as pr
+    from tsclaude.research import walkforward as wf
+
+    data = tmp_path / "lake"
+    write_lake(data, [(Market.SPOT, "BTCUSDT", synthetic_rows(ms(2023, 12, 1), ms(2024, 3, 1)))])
+    base = dataclasses.asdict(fast_strategy().params)
+    configs = [{**base, "tp_r": tp, "max_cost_r": 0.2, "time_exit_bars": 48} for tp in (2.5, 3.0)]
+    repo = tmp_path / "repo"
+    (repo / "preregistrations").mkdir(parents=True)
+    doc = pr.load(REPO / "preregistrations" / "TEMPLATE.yaml")
+    doc.update(prereg_id="H-REH", search_space=configs,
+               holdout_procedure="two-stage-selection-record",
+               risk_compatibility=pr.KEEP_LIVE_FLOOR)  # fmt: skip
+    doc["trial_budget"]["counting"] = "configurations"
+    doc["universe"]["symbols"] = ["BTCUSDT"]
+    doc["walk_forward"].update(anchor="2024-01-01", end="2024-03-01", initial_train_months=1,
+                               test_months=1, embargo_minutes=1440)  # fmt: skip
+    path = repo / "preregistrations" / "H-REH.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    live = _live_cfg()
+    pr.freeze(path, now_ms=0, code={"commit": "test", "dirty": False},
+              backtest_config_hash=live.config_hash, backtest_risk=live.risk)  # fmt: skip
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t",
+                                                "-c", "commit.gpgsign=false", "commit", "-q",
+                                                "-m", "prereg"]):  # fmt: skip
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    env = dataclasses.replace(make_env(data), repo_root=repo)
+    grid = {wf.config_id_of(p): p for p in configs}
+    folds = wf.plan_folds(ms(2024, 1, 1), ms(2024, 3, 1), initial_train_months=1, test_months=1,
+                          embargo_ms=1440 * MIN)  # fmt: skip
+    with pytest.raises(wf.WalkForwardError, match="not the preregistered"):  # allow_all refused
+        wf.run_walk_forward(env, TEST_CONFIG, strategy_id="bracket_reference", grid=grid,
+                            symbols=[(Market.SPOT, "BTCUSDT")], folds=folds, n_min=300,
+                            work_root=data / "wf", prereg_id="H-REH", hypothesis_id=None,
+                            final_selection_enabled=True)  # fmt: skip
+    report = wf.run_walk_forward(
+        env, live, strategy_id="bracket_reference", grid=grid,
+        symbols=[(Market.SPOT, "BTCUSDT")], folds=folds, n_min=300, work_root=data / "wf",
+        prereg_id="H-REH", hypothesis_id=None, final_selection_enabled=True,
+    )  # fmt: skip
+    assert report["prereg_id"] == "H-REH"
+    assert report["risk_policy"]["mode"] == "live"
+    assert report["risk_policy"]["risk_config_hash"] == RISK.config_hash
+    blocks = report["risk_policy_blocks"]
+    assert blocks is not None
+    assert blocks["train"]["runs"] == len(grid) * len(folds)
+    assert blocks["train"]["checks"] > 0
+    assert report["live_compatibility"]["any_deployable"] is True
+    assert "applied the paper risk policy" in report["live_compatibility"]["note"]
+    assert report["oos"]["verdict"] in {wf.INSUFFICIENT_OOS_EVIDENCE, wf.NO_EDGE_DEMONSTRATED,
+                                        wf.INVALID_OOS_EVIDENCE}  # fmt: skip
+    assert env.trials.n_trials("bracket_reference") > 0  # the rehearsal's trials are recorded
