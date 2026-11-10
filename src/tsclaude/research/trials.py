@@ -11,10 +11,17 @@ seeds is only possible by recording new trials). The hypothesis / preregistratio
 parameter search cannot reset the count by renaming its hypothesis.
 Re-running an identical configuration does not add a trial; it increments ``evaluations``.
 
+Run ids: an evaluation is recorded **before** it runs (a run that crashes is still a trial), so
+it is recorded with a provisional run id; the real id (named after the manifest hash) exists only
+once the artifacts are written. `attach_run` then replaces the provisional id: ``last_run_id``,
+and ``first_run_id`` when this evaluation created the row. A run that fails after recording keeps
+its provisional id, which names no run directory, and its evaluation stays counted.
+
 ``n_trials(family)`` -- the count of distinct configurations recorded for the strategy id -- is
 the only value the runner passes to `certify` as ``n_trials``. Random-entry controls and cost
 stress variants are diagnostics of a configuration, not candidate configurations, and are not
-counted. Rows are never deleted or updated except the evaluation counter and last-seen fields.
+counted. Rows are never deleted. The only updates are the evaluation counter, the last-seen
+fields, and `attach_run`'s replacement of a provisional run id by the run id it stood for.
 
 TODO(M4, audit N5): enforce the preregistration's declared trial budget (refuse runs beyond it).
 """
@@ -148,6 +155,37 @@ class TrialRegistry:
         finally:
             conn.close()
         return TrialRecord(key, strategy_id, int(count), evaluations, row is None)
+
+    def attach_run(self, trial_key: str, *, provisional_run_id: str, run_id: str) -> bool:
+        """Replace an evaluation's provisional run id by the id of the run it produced.
+
+        Only a field still holding ``provisional_run_id`` changes: ``last_run_id`` unless a later
+        evaluation has been recorded since, and ``first_run_id`` only if this evaluation created
+        the row. Returns whether ``last_run_id`` now names ``run_id``. Counts never change."""
+        if not run_id or run_id == provisional_run_id:
+            raise ValueError("run_id must be the real run id, different from the provisional id")
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE research_trials SET first_run_id = ?"
+                    " WHERE trial_key = ? AND first_run_id = ?",
+                    (run_id, trial_key, provisional_run_id),
+                )
+                cur = conn.execute(
+                    "UPDATE research_trials SET last_run_id = ?"
+                    " WHERE trial_key = ? AND last_run_id = ?",
+                    (run_id, trial_key, provisional_run_id),
+                )
+                attached = cur.rowcount == 1
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+        return attached
 
     def n_trials(self, family: str) -> int:
         """Distinct configurations recorded for a strategy id (the family)."""

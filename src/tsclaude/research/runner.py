@@ -900,13 +900,15 @@ def run_backtest(
     )
     seed = req.seed if req.seed is not None else int(key[:8], 16)
     seed_source = "explicit (counted in the trial key)" if req.seed is not None else "trial key"
+    # provisional run id: the real one (manifest hash) is attached once the artifacts exist
+    provisional_run_id = f"bt-{stamp}-{key[:8]}"
     trial = env.trials.record(
         hypothesis_label=req.hypothesis,
         strategy_id=strat.strategy_id,
         strategy_version=strat.version,
         params_hash=strat.params_hash,
         config=trial_config,
-        run_id=f"bt-{stamp}-{key[:8]}",
+        run_id=provisional_run_id,
         now_ms=created,
     )
 
@@ -1189,6 +1191,9 @@ def run_backtest(
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
+    )
+    env.trials.attach_run(
+        trial.trial_key, provisional_run_id=provisional_run_id, run_id=manifest["run_id"]
     )
     return RunOutcome(manifest["run_id"], run_dir, manifest, metrics, metrics_hash)
 

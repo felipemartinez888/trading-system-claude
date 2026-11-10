@@ -186,6 +186,81 @@ def test_trial_count_increments_per_distinct_configuration(tmp_path: Path) -> No
     assert c.manifest["trials"]["trial_key"] == a.manifest["trials"]["trial_key"]
 
 
+def test_the_trial_registry_names_the_run_that_was_written(tmp_path: Path) -> None:
+    """Audit §6: the trial is recorded before the run with a provisional id, then the real run
+    id (named after the manifest hash) replaces it once the artifacts exist."""
+    d = _lake(tmp_path / "lake")
+    env = make_env(d)
+    lo, hi = ms(2024, 3, 3), ms(2024, 3, 6)
+    first = run_backtest(request(lo, hi), env, TEST_CONFIG)
+    (row,) = env.trials.list("bracket_reference")
+    assert row["trial_key"] == first.manifest["trials"]["trial_key"]
+    assert row["first_run_id"] == row["last_run_id"] == first.run_id
+    assert (env.runs_dir / first.run_id / "manifest.json").is_file()
+    again = run_backtest(request(lo, hi), env, TEST_CONFIG)  # same configuration: same trial
+    (row,) = env.trials.list("bracket_reference")
+    assert row["evaluations"] == 2
+    assert row["first_run_id"] == first.run_id
+    assert row["last_run_id"] == again.run_id
+    assert again.run_id != first.run_id
+    assert (env.runs_dir / again.run_id / "manifest.json").is_file()
+
+
+def test_a_run_that_fails_after_recording_keeps_its_provisional_id_and_its_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tsclaude.research import runner
+
+    d = _lake(tmp_path / "lake")
+    env = make_env(d)
+    lo, hi = ms(2024, 3, 3), ms(2024, 3, 6)
+
+    def crash(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("simulated crash after the trial was recorded")
+
+    monkeypatch.setattr(runner, "measure_max_loss", crash)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_backtest(request(lo, hi), env, TEST_CONFIG)
+    (row,) = env.trials.list("bracket_reference")
+    assert row["evaluations"] == 1
+    assert env.trials.n_trials("bracket_reference") == 1  # a crashed evaluation is still a trial
+    provisional = row["last_run_id"]
+    assert provisional == row["first_run_id"]
+    assert provisional.endswith(row["trial_key"][:8])
+    assert not (env.runs_dir / provisional).exists()
+    monkeypatch.undo()
+    done = run_backtest(request(lo, hi), env, TEST_CONFIG)
+    (row,) = env.trials.list("bracket_reference")
+    assert row["evaluations"] == 2
+    assert row["first_run_id"] == provisional  # created by the crashed evaluation: kept
+    assert row["last_run_id"] == done.run_id
+
+
+def test_attach_run_changes_only_a_field_that_still_holds_the_provisional_id(
+    tmp_path: Path,
+) -> None:
+    from tsclaude.research.trials import TrialRegistry
+
+    reg = TrialRegistry(tmp_path / "state.db")
+    kw: dict[str, Any] = {
+        "hypothesis_label": "h", "strategy_id": "s", "strategy_version": "1",
+        "params_hash": "p", "config": {"from_ms": 1},
+    }  # fmt: skip
+    rec = reg.record(run_id="prov-1", now_ms=1, **kw)
+    reg.record(run_id="prov-2", now_ms=2, **kw)  # a later evaluation of the same trial
+    assert reg.attach_run(rec.trial_key, provisional_run_id="prov-1", run_id="bt-real-1") is False
+    (row,) = reg.list("s")
+    assert (row["first_run_id"], row["last_run_id"]) == ("bt-real-1", "prov-2")
+    assert reg.attach_run(rec.trial_key, provisional_run_id="prov-2", run_id="bt-real-2") is True
+    (row,) = reg.list("s")
+    assert (row["first_run_id"], row["last_run_id"], row["evaluations"]) == (
+        "bt-real-1", "bt-real-2", 2,
+    )  # fmt: skip
+    assert reg.n_trials("s") == 1
+    with pytest.raises(ValueError, match="real run id"):
+        reg.attach_run(rec.trial_key, provisional_run_id="x", run_id="x")
+
+
 def test_random_entry_control_matches_entries_per_hour(run1: tuple[RunOutcome, Path]) -> None:
     out, _ = run1
     _, rows = read_table(out.run_dir / "trades.parquet")
