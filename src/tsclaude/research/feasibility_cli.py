@@ -1,10 +1,13 @@
 """`tsclaude backtest feasibility`: P&L-free stage counts on development data (audit H1-1).
 
 Reads the lake only through `LakeReader` behind the holdout guard (event-store unlocks), like
-``backtest run``. It evaluates no outcome and records no trial. Each configuration (``--params``,
-or one per entry of ``--grid``) writes ``<data_dir>/feasibility/feas-<hash12>/feasibility.json``;
-a JSON summary goes to stdout. Refusals exit 2 (``{"ok": false, "refused": "feasibility"}``); a
-range touching the holdout exits 3. The Lead wires `register_feasibility` into ``backtest``.
+``backtest run``. It evaluates no outcome and records no trial. ``--draft`` looks the strategy
+up in `strategies.DRAFT_REGISTRY` (strategies awaiting an owner freeze, which no run can build)
+instead of the runnable `REGISTRY`; the same development-only refusals apply. Each
+configuration (``--params``, or one per entry of ``--grid``) writes
+``<data_dir>/feasibility/feas-<hash12>/feasibility.json``; a JSON summary goes to stdout.
+Refusals exit 2 (``{"ok": false, "refused": "feasibility"}``); a range touching the holdout
+exits 3. The Lead wires `register_feasibility` into ``backtest``.
 """
 
 from __future__ import annotations
@@ -71,7 +74,7 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
     from tsclaude.sim.costs import CostModel
     from tsclaude.store.eventstore import EventStore
     from tsclaude.store.holdout import EventStoreUnlocks, HoldoutError, HoldoutGuard
-    from tsclaude.strategies import Strategy, build_strategy
+    from tsclaude.strategies import Strategy, build_draft_strategy, build_strategy
 
     settings = Settings.from_env()
     try:
@@ -82,8 +85,9 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
             if args.grid is not None
             else {"params": dict(json.loads(args.params))}
         )
+        build = build_draft_strategy if args.draft else build_strategy
         strategies: dict[str, Strategy[Any]] = {
-            cid: build_strategy(args.strategy, p) for cid, p in grid.items()
+            cid: build(args.strategy, p) for cid, p in grid.items()
         }
         symbols = parse_symbols(args.symbols, args.market)
         from_ms, to_ms = parse_time(args.from_), parse_time(args.to)
@@ -126,6 +130,7 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
             except (FeasibilityRefused, ValueError) as exc:
                 return _refuse(str(exc))
             result["config_id"] = cid
+            result["draft"] = bool(args.draft)
             result["backtest_config_hash"] = cfg.config_hash
             out_dir = out_root / f"feas-{result['content_hash'][:12]}"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +154,7 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
                 "pnl_free": True,
                 "trials_recorded": 0,
                 "strategy_id": args.strategy,
+                "draft": bool(args.draft),
                 "results": summaries,
                 "provenance": "BACKTEST",
             },
@@ -177,5 +183,10 @@ def register_feasibility(bsub: Any) -> None:
         "--datasets",
         default=None,
         help='JSON file: [dataset_id, ...] or {"dataset_ids": [...]}; pins the read',
+    )
+    fe.add_argument(
+        "--draft",
+        action="store_true",
+        help="build the strategy from DRAFT_REGISTRY (awaiting an owner freeze; counts only)",
     )
     fe.set_defaults(func=cmd_feasibility)
