@@ -21,7 +21,7 @@ acceptance or formal (Target C) MVP acceptance.
 | Local walk-forward | `1c40da2` | `tests/unit/research/test_walkforward.py` **17 passed**; `tests/unit/backtest/test_walkforward_runner.py` **1 passed** (synthetic lake through `run_backtest`) | Includes the train-only selection canary |
 | CI `42751246117` | `f1658fe` | frontend ubuntu ✅, frontend windows ✅, M2 cross-OS ubuntu ✅ / windows ✅, safety guards ✅; python jobs **cancelled** by the next push | The vitest run covers the research panel and the Paper hint |
 | CI `42752436724` | `28b4fe7` | **python ubuntu: 1867 passed, 0 failed** (ruff lint, ruff format, mypy strict also green); **python windows: 1864 passed, 1 failed**: the pre-existing flake `test_mvp2_paper.py::test_p4_incomplete_backfill_stays_awaiting_and_processes_nothing` (`RUNNING is AWAITING_BACKFILL`, §6); frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | First CI run covering the new API, hints, research status and walk-forward code |
-| CI `42754283876` | `ceb393c` (flake fix included) | frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅; python ubuntu/windows: see the latest entry below | — |
+| CI `42754283876` | `ceb393c` (flake fix included) | **7/7 green on the first attempt**: python ubuntu **1873 passed**, python windows **1871 passed**, frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | One green Windows run does not prove the intermittent flakes are gone; the latency reproduction (§6) does the heavy lifting |
 | Pre-existing CI flakes (before this session) | `954c7c6`, `1dec031`, `1acd38a` | 1–3 paper-runtime failures per run, Windows (jobs `129324514607`, `129332534067`, `129342046002`) and once Ubuntu (`129307675701`) | Being root-caused (§6) |
 
 ## 3. Owner runs read in this session (artifacts in `C:\Users\felip\tsc_runs`)
@@ -75,7 +75,7 @@ acceptance or formal (Target C) MVP acceptance.
 | Mandatory core functions implemented | ✅ except the formal M4/M5/M6 scope (Target C) |
 | Integration scenarios verified | ⚠️ 5, 6, 8, 10, 11 partial (§4) |
 | Applicable safety gates | ⚠️ M3 literal gates open; paper-only isolation holds (no order code, no keys; safety-guard CI job green) |
-| Relevant regression tests executed successfully | ⚠️ local green. CI `42752436724`: ubuntu 1867/1867, windows 1864/1865, the 1 failure being the pre-existing flake fixed since. CI on the flake fix: see §2 |
+| Relevant regression tests executed successfully | ✅ CI `42754283876` on `ceb393c`: 7/7 green (ubuntu 1873, windows 1871 passed). The later review fixes (`54af1ef`) are covered by local tests; their CI run is recorded in §2 |
 | Paper isolated from real trading | ✅ by construction (no signed endpoints, no keys; CLAUDE.md rule 2; safety guards in CI) |
 | Dashboard reflects system state | ✅ for the parts shown. New: research status and actionable blockers |
 | Recovery tested | ✅ tests; ⚠️ real crash recovery pending |
