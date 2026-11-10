@@ -111,8 +111,26 @@ about 13 reviews per day even if every call cost its full worst case; measured c
   enforced by the ledger). Throughput is bounded by the latency of two calls.
 - The ledger file is re-read on every reservation; this is fine at tens of calls a day, but it
   would need compaction at much higher volume.
-- The Windows `msvcrt.locking` path is untested here (Linux only); it needs a run on the
+- The Windows `msvcrt.locking` path runs on Linux only with a stub `msvcrt` (re-review N4: the
+  retries are bounded at 6 x ~10 s and then fail closed); a real lock needs a run on the
   owner's PC.
+- **Operator note (re-review N6):** a crash that tears the last ledger line blocks all agent
+  spend (fail closed, `BUDGET_EXHAUSTED`, `ledger_error` in `/api/agents/status`) until the
+  torn line is removed by hand from `<data_dir>/agents/` (copy the file first; delete only the
+  last, incomplete line). No automatic repair: an unreadable ledger cannot prove the spend.
+
+## Re-review of the fixes (Fable, 2026-11-10)
+
+Verdict CHANGES REQUESTED, narrow: B2, B3, M1, M2, M3 and the minors FIXED; B1 PARTIAL. Fixed in
+the follow-up commit (`tests/unit/agents/test_agents_rereview_fixes.py`, 8 tests; the three N1
+cases fail on the previous code and the N4 test hangs there):
+
+| Finding | Fix |
+|---|---|
+| N1 `cost_usd "1E+40"` (`decimal.InvalidOperation`), invalid UTF-8, a deeply nested line escaped as exceptions (constructor, `snapshot()`) | `parse_ledger` also maps `ArithmeticError` and `RecursionError`, `read_ledger` maps `UnicodeDecodeError`, to `LedgerUnreadable`: spend refused with `BUDGET_EXHAUSTED`, no client call |
+| N3 surviving mutants (up-front two-call check, `release_trial`, settlement day) | one test each: a cap that fits the analyst alone makes no call; a budget refusal in a half-open trial lets the next trial run; a settlement on another day refuses |
+| N4 unbounded Windows lock retry | 6 attempts, then `LedgerUnreadable` (fail closed); the constructor records it as the ledger error |
+| N6 torn last line | operator note above (no code change: fail closed is the intended behaviour) |
 
 ## Requests for the Lead (contracts — not edited)
 

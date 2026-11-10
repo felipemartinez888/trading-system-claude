@@ -198,8 +198,10 @@ def parse_ledger(lines: list[str]) -> list[CostEntry]:
         if line.strip():
             try:
                 entries.append(CostEntry.from_json(line))
-            except (ValueError, KeyError, TypeError) as exc:
-                raise LedgerUnreadable(f"line {n}: {exc}") from None
+            # ArithmeticError: decimal overflow ("1E+40" quantized); RecursionError: a
+            # pathologically nested line. Every malformed line refuses spend, never raises.
+            except (ValueError, KeyError, TypeError, ArithmeticError, RecursionError) as exc:
+                raise LedgerUnreadable(f"line {n}: {type(exc).__name__}") from None
     calls(entries)  # validates the reservation/settlement pairing
     return entries
 
@@ -224,7 +226,7 @@ def read_ledger(path: Path) -> list[CostEntry]:
         return []
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise LedgerUnreadable(type(exc).__name__) from None
     return parse_ledger(text.splitlines())
 
@@ -239,6 +241,9 @@ def over_reservations(entries: list[CostEntry]) -> int:
     )
 
 
+_WIN_LOCK_ATTEMPTS = 6  # x ~10 s per msvcrt LK_LOCK attempt
+
+
 @contextlib.contextmanager
 def _os_file_lock(path: Path) -> Iterator[None]:
     """Exclusive advisory lock on a sidecar file (POSIX: flock; Windows: msvcrt.locking)."""
@@ -249,12 +254,13 @@ def _os_file_lock(path: Path) -> Iterator[None]:
             import msvcrt
 
             os.lseek(fd, 0, os.SEEK_SET)
-            while True:
+            for attempt in range(_WIN_LOCK_ATTEMPTS):
                 try:
                     msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # retries ~10 s, then raises
                     break
                 except OSError:
-                    continue
+                    if attempt == _WIN_LOCK_ATTEMPTS - 1:  # bounded: fail closed, never hang
+                        raise LedgerUnreadable("cost ledger lock unavailable") from None
             try:
                 yield
             finally:
@@ -282,8 +288,11 @@ class CostLedger:
         self.error: str | None = None
         self._entries: list[CostEntry] = []
         if path is not None:
-            with self._locked():
-                self._refresh()
+            try:
+                with self._locked():
+                    self._refresh()
+            except LedgerUnreadable as exc:  # the lock itself is unavailable
+                self.error = f"cost ledger unreadable ({exc})"
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
