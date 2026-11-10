@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/positions.schema.json",
+  "title": "tsc-eval v2 positions.jsonl: position opened / closed (closed = the trade record) per book",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "sim_position_opened",
+            "sim_position_closed"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_position_opened"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_position_opened"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_position_closed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_position_closed"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sim_position_opened": {
+      "type": "object",
+      "required": [
+        "book",
+        "trade_id",
+        "market",
+        "symbol",
+        "side",
+        "qty",
+        "entry_price",
+        "notional",
+        "entry_fee",
+        "sim_seq"
+      ],
+      "properties": {
+        "book": {
+          "type": "string",
+          "minLength": 1
+        },
+        "market": {
+          "enum": [
+            "spot",
+            "usdm"
+          ]
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "side": {
+          "enum": [
+            "long",
+            "short"
+          ]
+        },
+        "qty": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "entry_price": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "notional": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "entry_fee": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "sim_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    "sim_position_closed": {
+      "type": "object",
+      "required": [
+        "trade_id",
+        "book",
+        "market",
+        "symbol",
+        "side",
+        "request_id",
+        "signal_id",
+        "entry_bar_open_ms",
+        "entry_price",
+        "qty",
+        "exit_bar_open_ms",
+        "exit_price",
+        "exit_reason",
+        "gap_fill",
+        "ambiguous_bar",
+        "spans_gap",
+        "gross_pnl",
+        "fees",
+        "funding",
+        "net_pnl",
+        "risk_amount",
+        "r_multiple",
+        "sim_seq"
+      ],
+      "properties": {
+        "book": {
+          "type": "string",
+          "minLength": 1
+        },
+        "market": {
+          "enum": [
+            "spot",
+            "usdm"
+          ]
+        },
+        "side": {
+          "enum": [
+            "long",
+            "short"
+          ]
+        },
+        "signal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_bar_open_ms": {
+          "type": "integer"
+        },
+        "exit_bar_open_ms": {
+          "type": "integer"
+        },
+        "entry_price": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "exit_price": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "qty": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "gross_pnl": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "fees": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "funding": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "net_pnl": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "risk_amount": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "r_multiple": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "gap_fill": {
+          "type": "boolean"
+        },
+        "ambiguous_bar": {
+          "type": "boolean"
+        },
+        "spans_gap": {
+          "type": "boolean"
+        },
+        "resolved_from_backfill": {
+          "type": "boolean"
+        },
+        "deferred_no_trade": {
+          "type": "boolean"
+        },
+        "spans_exchange_downtime": {
+          "type": "boolean"
+        },
+        "sim_seq": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

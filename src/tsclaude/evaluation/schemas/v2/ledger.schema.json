@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/ledger.schema.json",
+  "title": "tsc-eval v2 ledger.jsonl: double-entry ledger postings per book (ledger hash = sha256(canonical_json([{tx_id, ts_ms, memo, legs}, ...])))",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "sim_ledger_posted"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_ledger_posted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_ledger_posted"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sim_ledger_posted": {
+      "type": "object",
+      "required": [
+        "book",
+        "tx_id",
+        "ts_ms",
+        "memo",
+        "legs",
+        "sim_seq"
+      ],
+      "properties": {
+        "book": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tx_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts_ms": {
+          "type": "integer"
+        },
+        "memo": {
+          "type": "string"
+        },
+        "legs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "sim_seq": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

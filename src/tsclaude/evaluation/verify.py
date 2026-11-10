@@ -22,7 +22,14 @@ from pathlib import Path
 from typing import Any
 
 from tsclaude.evaluation.export import ExportError, export_store
-from tsclaude.evaluation.scorer import FILES, MANIFEST, SchemaSet, check_export
+from tsclaude.evaluation.scorer import (
+    FILES,
+    FORMAT_VERSION,
+    MANIFEST,
+    SchemaSet,
+    check_export,
+    schema_dir_for,
+)
 from tsclaude.store.eventstore import EventStore
 
 
@@ -59,14 +66,21 @@ def verify_export(
     directory: Path | str, *, store: EventStore | None = None, schemas: SchemaSet | None = None
 ) -> VerifyReport:
     root = Path(directory)
-    schemas = schemas or SchemaSet()
     check, export = check_export(root, schemas)
     report = VerifyReport(check.ok, list(check.problems), check.lines, check.chain_head)
-    if export is not None and export.manifest.get("schemas") != schemas.digests():
+    version = int(export.manifest["format_version"]) if export is not None else FORMAT_VERSION
+    bundled = schemas or SchemaSet(schema_dir_for(version))
+    if export is not None and export.manifest.get("schemas") != bundled.digests():
         report.problems.append("manifest schema hashes differ from the bundled schemas")
-    if store is not None and export is not None:
+    if store is not None and export is not None and version != FORMAT_VERSION:
         report.store_checked = True
-        report.problems.extend(_against_store(root, export.manifest, store, schemas))
+        report.problems.append(
+            f"a format v{version} export cannot be compared with a fresh export of the store: "
+            f"this exporter writes v{FORMAT_VERSION} (the structural checks above still apply)"
+        )
+    elif store is not None and export is not None:
+        report.store_checked = True
+        report.problems.extend(_against_store(root, export.manifest, store, bundled))
         store_seq, _ = store.head
         report.store_head_seq = int(store_seq)
         report.events_after_head = max(

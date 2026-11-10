@@ -41,7 +41,14 @@ JSON Lines + JSON Schema (`src/tsclaude/contracts/export/*.schema.json`), one fi
 - `transitions.jsonl` — every lifecycle event with timestamps.
 - `fills.jsonl`, `positions.jsonl` — per book.
 - `coverage.jsonl` — observed sessions and data gaps.
+- `agents.jsonl` (format v2, M5-3) — advisory agent review requests, outcomes and `agent_gated`
+  admissions. Advisory only: no agent value reaches the baseline, shadow or benchmark books.
 - `manifest.json` — system version, commit, protocol hash, chain head hash, export time.
+
+As implemented (`tsc-eval`, schemas in `src/tsclaude/evaluation/schemas/v2/`), the export also
+carries the paper steps, orders, ledger postings and simulator events the books need. **Format
+v2** adds `agents.jsonl`. v1 exports, which have no agent events, are still checked and scored
+against `schemas/v1`. Agreeing the format with the other team is open (D-06).
 
 The format is system-neutral so the other system can produce the same files, and a shared scorer can
 evaluate both.

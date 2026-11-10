@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/fills.schema.json",
+  "title": "tsc-eval v2 fills.jsonl: simulated paper fills per book",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "sim_order_filled"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_order_filled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_order_filled"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sim_order_filled": {
+      "type": "object",
+      "required": [
+        "book",
+        "order_id",
+        "role",
+        "bar_open_ms",
+        "at_open",
+        "direction",
+        "price",
+        "raw_price",
+        "qty",
+        "fee",
+        "notional",
+        "liquidity",
+        "sim_seq"
+      ],
+      "properties": {
+        "book": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "bar_open_ms": {
+          "type": "integer"
+        },
+        "at_open": {
+          "type": "boolean"
+        },
+        "direction": {
+          "enum": [
+            "buy",
+            "sell"
+          ]
+        },
+        "price": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "raw_price": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "qty": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "fee": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "notional": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        },
+        "sim_seq": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

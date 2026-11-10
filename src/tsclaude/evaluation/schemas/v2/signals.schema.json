@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/signals.schema.json",
+  "title": "tsc-eval v2 signals.jsonl: every signal record at creation (SIGNALS_AND_AGENTS §2), all run modes (filter run_mode=LIVE for the protocol). Demo-detector signals are DEMO; signals created inside a paper session SIMULATED.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "signal_created"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED",
+            "DEMO"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "signal_created"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/signal_created"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "signal_created": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "signal_id",
+        "run_mode",
+        "market",
+        "symbol",
+        "timeframe",
+        "strategy_id",
+        "strategy_version",
+        "params_hash",
+        "prereg_id",
+        "evidence_grade",
+        "side",
+        "stage",
+        "decision_time_ms",
+        "created_at_ms",
+        "snapshot_id",
+        "entry_conditions",
+        "entry_rule",
+        "ref_price",
+        "stop_price",
+        "stop_basis",
+        "take_profit_price",
+        "exit_policy",
+        "rr_gross",
+        "rr_net",
+        "est_cost_bps",
+        "break_even_win_rate",
+        "rationale",
+        "market_conditions"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "minLength": 26
+        },
+        "run_mode": {
+          "enum": [
+            "LIVE",
+            "REPLAY",
+            "BACKTEST"
+          ]
+        },
+        "market": {
+          "enum": [
+            "spot",
+            "usdm"
+          ]
+        },
+        "side": {
+          "enum": [
+            "long",
+            "short"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "WATCH",
+            "CONFIRMED"
+          ]
+        },
+        "decision_time_ms": {
+          "type": "integer"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "ref_price": {
+          "type": "number"
+        },
+        "stop_price": {
+          "type": "number"
+        },
+        "take_profit_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "entry_rule": {
+          "type": "object",
+          "required": [
+            "kind",
+            "valid_until_ms"
+          ],
+          "properties": {}
+        },
+        "entry_conditions": {
+          "type": "array"
+        },
+        "market_conditions": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

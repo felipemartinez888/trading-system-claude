@@ -37,7 +37,7 @@ from tsclaude.evaluation.verify import verify_export
 from tsclaude.store.eventstore import EventStore
 
 EXPORTED_AT = 1_735_700_000_000
-SCHEMA_DIR = Path(scorer_mod.__file__).resolve().parent / "schemas" / "v1"
+SCHEMA_DIR = scorer_mod.SCHEMA_DIR  # the bundled set of the current format version (v2)
 
 
 # ---------------------------------------------------------------------------- fixtures
@@ -593,3 +593,72 @@ def test_a_prefix_export_verifies_but_says_it_does_not_cover_the_store(
     alone = verify_export(tmp_path / "full").to_dict()
     assert alone["store_checked"] is False
     assert alone["covers_whole_store"] is None
+
+
+# ------------------------------------------------------------------ format versions (M5-3: v2)
+def _as_v1(src: Path, dst: Path) -> None:
+    """The v1 form of a v2 export without agent events. Exporting one store with the 9c681ca
+    exporter (v1) and with this one, then applying this rewrite, gave byte-identical directories
+    (devlog 2026-11-10-m5-runtime-wiring, "Export format v2")."""
+    from tsclaude.evaluation.scorer import FILES_BY_VERSION, GENESIS, schema_dir_for
+
+    dst.mkdir(parents=True)
+    manifest = json.loads((src / MANIFEST).read_text("utf-8"))
+    assert manifest["files"]["agents.jsonl"]["lines"] == 0
+    files = {}
+    for name in FILES_BY_VERSION[1]:
+        prev, out = GENESIS, []
+        for raw in (src / name).read_text("utf-8").splitlines():
+            obj = json.loads(raw)
+            obj["format_version"] = 1
+            obj["prev_line_hash"] = prev
+            obj.pop("line_hash")
+            obj["line_hash"] = scorer_mod.line_hash(obj)
+            prev = obj["line_hash"]
+            out.append(scorer_mod.canonical_json(obj))
+        data = "".join(x + "\n" for x in out).encode("utf-8")
+        (dst / name).write_bytes(data)
+        files[name] = {
+            "lines": len(out),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "last_line_hash": prev if out else None,
+        }
+    manifest.update(format_version=1, files=files, schemas=SchemaSet(schema_dir_for(1)).digests())
+    (dst / MANIFEST).write_text(scorer_mod.canonical_json(manifest) + "\n", encoding="utf-8")
+
+
+def test_the_current_export_is_format_v2_with_an_empty_agents_file(exported: Path) -> None:
+    manifest = json.loads((exported / MANIFEST).read_text("utf-8"))
+    assert manifest["format_version"] == scorer_mod.FORMAT_VERSION == 2
+    assert manifest["files"]["agents.jsonl"] == {
+        "lines": 0,
+        "sha256": hashlib.sha256(b"").hexdigest(),
+        "last_line_hash": None,
+    }
+
+
+def test_a_v1_export_is_still_checked_and_scored(
+    built: Built, exported: Path, scored: dict[str, Any], tmp_path: Path
+) -> None:
+    v1 = tmp_path / "v1"
+    _as_v1(exported, v1)
+    report = verify_export(v1)
+    assert report.ok, report.problems
+    again = score_directory(v1)
+    assert again["format_version"] == 1
+    assert again["paper_sessions"] == scored["paper_sessions"]  # every book value, both sessions
+    # a v1 export cannot be compared with a fresh (v2) export of the store: refused, not passed
+    with EventStore(built.path) as store:
+        cross = verify_export(v1, store=store)
+    assert not cross.ok
+    assert any("cannot be compared with a fresh export" in p for p in cross.problems)
+
+
+def test_an_unknown_format_version_is_refused(exported: Path, tmp_path: Path) -> None:
+    root = _copy(exported, tmp_path)
+    manifest = json.loads((root / MANIFEST).read_text("utf-8"))
+    manifest["format_version"] = 3
+    (root / MANIFEST).write_text(scorer_mod.canonical_json(manifest) + "\n", encoding="utf-8")
+    report, export = check_export(root)
+    assert export is None
+    assert "format_version 3" in report.problems[0]

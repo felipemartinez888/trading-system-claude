@@ -41,11 +41,16 @@ from pathlib import Path
 from typing import Any
 
 FORMAT = "tsc-eval"
-FORMAT_VERSION = 1
-SCORER_VERSION = "tsc-eval-scorer-1"
+#: v2 (M5-3): ``agents.jsonl`` carries the advisory agents' events of an ``agent_gated`` session,
+#: which are journaled inside paper batches; v1 exports (no agent events) are still checked and
+#: scored, each against its own schema set.
+FORMAT_VERSION = 2
+SUPPORTED_FORMAT_VERSIONS = (1, 2)
+SCORER_VERSION = "tsc-eval-scorer-2"
 GENESIS = "0" * 64
 MANIFEST = "manifest.json"
-SCHEMA_DIR = Path(__file__).resolve().parent / "schemas" / "v1"
+SCHEMA_ROOT = Path(__file__).resolve().parent / "schemas"
+SCHEMA_DIR = SCHEMA_ROOT / f"v{FORMAT_VERSION}"
 
 #: export file -> the record (event) types it holds; one file per record family (EVALUATION
 #: PROTOCOL §4, extended with the records the books need: steps, orders, ledger, sim events)
@@ -89,8 +94,26 @@ FILES: dict[str, tuple[str, ...]] = {
         "clock_skew_changed",
         "chain_verified",
     ),
+    "agents.jsonl": (
+        "agent_review_requested",
+        "agent_review_completed",
+        "agent_gated_admission",
+    ),
 }
 FILE_OF: dict[str, str] = {t: f for f, types in FILES.items() for t in types}
+#: the files of each format version (v1 had no agents.jsonl)
+FILES_BY_VERSION: dict[int, dict[str, tuple[str, ...]]] = {
+    1: {name: types for name, types in FILES.items() if name != "agents.jsonl"},
+    2: FILES,
+}
+
+
+def schema_dir_for(format_version: int) -> Path:
+    """The bundled schema directory of a format version (``schemas/v1``, ``schemas/v2``)."""
+    if format_version not in SUPPORTED_FORMAT_VERSIONS:
+        raise ValueError(f"unsupported format_version {format_version!r}")
+    return SCHEMA_ROOT / f"v{format_version}"
+
 
 #: Dashboard values the export cannot reproduce (Paper and Signals pages), and why.
 NOT_DERIVABLE: tuple[dict[str, str], ...] = (
@@ -397,7 +420,6 @@ def check_export(
 ) -> tuple[CheckReport, Export | None]:
     """Structural verification of an export directory from its files alone."""
     root = Path(directory)
-    schemas = schemas or SchemaSet()
     problems: list[str] = []
 
     def problem(text: str) -> None:
@@ -412,6 +434,16 @@ def check_export(
         manifest = json.loads(manifest_raw)
     except json.JSONDecodeError as exc:
         return CheckReport(False, [f"{MANIFEST}: not JSON ({exc})"], 0, None), None
+    version = manifest.get("format_version") if isinstance(manifest, dict) else None
+    if not isinstance(version, int) or version not in SUPPORTED_FORMAT_VERSIONS:
+        return CheckReport(
+            False,
+            [f"{MANIFEST}: format_version {version!r} is not one of {SUPPORTED_FORMAT_VERSIONS}"],
+            0,
+            None,
+        ), None
+    schemas = schemas or SchemaSet(schema_dir_for(version))
+    expected_files = FILES_BY_VERSION[version]
     for err in schemas.validate(manifest, "manifest.schema.json"):
         problem(f"{MANIFEST}: {err}")
     if problems:
@@ -421,10 +453,10 @@ def check_export(
     head = manifest["chain_head"]
     export = Export(root, manifest)
     files = manifest["files"]
-    if sorted(files) != sorted(FILES):
-        problem(f"{MANIFEST}: files {sorted(files)} != {sorted(FILES)}")
+    if sorted(files) != sorted(expected_files):
+        problem(f"{MANIFEST}: files {sorted(files)} != {sorted(expected_files)}")
     total = 0
-    for name in sorted(FILES):
+    for name in sorted(expected_files):
         path = root / name
         if not path.is_file():
             problem(f"{name}: missing")
@@ -469,7 +501,7 @@ def check_export(
                 problem(f"{where}: line_hash mismatch (content changed)")
             prev = obj["line_hash"]
             ev = obj["event"]
-            if obj["record_type"] != ev["type"] or FILE_OF.get(ev["type"]) != name:
+            if obj["record_type"] != ev["type"] or ev["type"] not in expected_files[name]:
                 problem(f"{where}: record type {obj['record_type']!r} does not belong here")
             if chain_hash(ev["prev_hash"], event_body(ev)) != ev["hash"]:
                 problem(f"{where}: source event hash does not match its content (seq {ev['seq']})")
@@ -835,7 +867,7 @@ def score(export: Export) -> dict[str, Any]:
     return {
         "scorer_version": SCORER_VERSION,
         "format": FORMAT,
-        "format_version": FORMAT_VERSION,
+        "format_version": export.manifest["format_version"],
         "chain_head": export.manifest["chain_head"],
         "paper_sessions": {sid: score_session(ls) for sid, ls in sorted(by_session.items())},
         "demo_signals": {"provenance": "DEMO", "items": demo_signals(export)},
@@ -855,7 +887,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--schemas", default=None, help="schema directory (default: bundled)")
     parser.add_argument("--check-only", action="store_true", help="verify, do not score")
     args = parser.parse_args(argv)
-    schemas = SchemaSet(Path(args.schemas) if args.schemas else None)
+    schemas = SchemaSet(Path(args.schemas)) if args.schemas else None  # None: by format_version
     report, export = check_export(args.export, schemas)
     if export is None:
         print(json.dumps({"check": report.to_dict()}, indent=2, sort_keys=True))

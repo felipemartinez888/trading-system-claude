@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/transitions.schema.json",
+  "title": "tsc-eval v2 transitions.jsonl: signal lifecycle transitions and shadow outcomes, with timestamps",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "signal_transitioned",
+            "signal_shadow_outcome"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED",
+            "DEMO"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "signal_transitioned"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/signal_transitioned"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "signal_shadow_outcome"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/signal_shadow_outcome"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "signal_transitioned": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "from",
+        "to",
+        "reason",
+        "book"
+      ],
+      "properties": {
+        "from": {
+          "enum": [
+            "WATCH",
+            "CONFIRMED",
+            "VETOED",
+            "OPEN",
+            "CLOSED",
+            "EXPIRED",
+            "INVALIDATED"
+          ]
+        },
+        "to": {
+          "enum": [
+            "WATCH",
+            "CONFIRMED",
+            "VETOED",
+            "OPEN",
+            "CLOSED",
+            "EXPIRED",
+            "INVALIDATED"
+          ]
+        }
+      }
+    },
+    "signal_shadow_outcome": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "book",
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {}
+        }
+      }
+    }
+  }
+}

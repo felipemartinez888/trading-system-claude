@@ -204,3 +204,48 @@ strictly additive contracts, L-12/ADR-0007, no look-ahead, and replay that fails
 | 6 | `ReviewWorker.close()` does not wait for a running review | Accepted (minor). The gate deadline bounds it; the cost ledger stays consistent (append under lock) |
 | 7 | `sim/paper.py` imports `agents.wiring` (a sim↔agents layering change) | Accepted by the Lead (L-13) |
 | 8 | The journaled `reason` is the gate's text, clipped to 300 chars | Follow-up for the real adapter: sanitize provider exception text before it reaches the journal |
+
+## Export format v2: agent sessions through the M6 export (2026-11-10, integration session)
+
+**Defect found.** Before this change, no `agent_gated` session could be exported. The M6 exporter
+refuses any unmapped event type inside a paper batch. `agent_review_requested` is journaled in the
+baseline's submission batch, so every export failed with `ExportError: event
+'agent_review_requested' at seq 14 inside a paper batch`. Reproduced by
+`tests/unit/agents/test_agents_export.py` before the fix: 6 failed. It failed closed (no wrong
+export was written), but it would have blocked M6 for every confirmed-mode session after a merge.
+
+**Fix: export format v2.**
+- New `agents.jsonl` file for `agent_review_requested`, `agent_review_completed` and
+  `agent_gated_admission`, with `agents.schema.json`. The schema refuses
+  `baseline_affected: true`, an admission to a book other than `agent_gated`, a provenance other
+  than SIMULATED and an aggregate other than `agent`.
+- `steps.schema.json` v2 accepts `agent_review` steps and requires their `review` and
+  `available_at_ms`.
+- `schemas/v1` is unchanged, and v1 exports are still checked and scored. The scorer and verifier
+  pick the schema set and file list by the manifest's `format_version`.
+- A v1 export compared with the store is refused: a fresh export would be v2. The structural
+  checks still apply.
+- The scorer is unchanged otherwise: it ignores record types it does not score and non-bar steps.
+- Scorer version `tsc-eval-scorer-2`.
+
+**Evidence.**
+- Four outcome mixes (approve, downgrade, veto, mixed): each agent_gated session exports, verifies
+  against its store, and scores. The scorer reproduces all four books' ledger hashes, agent_gated
+  included. Every agent event appears in `agents.jsonl` once.
+- Mode off: the books are unchanged and `agents.jsonl` is empty.
+- The jsonschema reference validator agrees on every agent and step line.
+- Backward compatibility, checked by hand:
+  - The `9c681ca` exporter (v1) and this exporter (v2, rewritten to v1 by
+    `test_eval_export._as_v1`) were run on the same store. The outputs are byte-identical.
+  - The `9c681ca` v1 export checks, verifies and scores under the new scorer. It reproduces every
+    ledger hash of both sessions, also with the standalone `scorer.py --check-only`.
+- Tests: `tests/unit/agents/test_agents_export.py` (8); `tests/unit/evaluation` 3 new
+  format-version tests; the schema tests now cover both versions.
+
+**Mode-off identity, re-verified independently.** The paper scenario of
+`tests/unit/sim/test_paper_session.run_live` was run with each tree's own code, on `9c681ca` and on
+`127e445`. Both give the same 39 batches, journal digest `61c6163a…`, three ledger hashes and
+fingerprint.
+
+**D-06 question added:** agent events in the shared format (a separate file, advisory only), and
+whether the other team's system needs an equivalent.

@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/manifest.schema.json",
+  "title": "tsc-eval v2 manifest.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "format_version",
+    "system",
+    "app_version",
+    "git_commit",
+    "protocol",
+    "exported_at_ms",
+    "exported_at",
+    "chain_head",
+    "chain_verified",
+    "files",
+    "schemas",
+    "paper_sessions",
+    "not_exported"
+  ],
+  "properties": {
+    "format": {
+      "const": "tsc-eval"
+    },
+    "format_version": {
+      "const": 2
+    },
+    "system": {
+      "type": "string"
+    },
+    "app_version": {
+      "type": "string"
+    },
+    "git_commit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "protocol": {
+      "type": "object",
+      "required": [
+        "document",
+        "status",
+        "sha256"
+      ],
+      "properties": {
+        "document": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "exported_at_ms": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "exported_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "chain_head": {
+      "$ref": "envelope.schema.json#/$defs/chain_head"
+    },
+    "chain_verified": {
+      "const": true
+    },
+    "files": {
+      "type": "object",
+      "required": [
+        "agents.jsonl",
+        "coverage.jsonl",
+        "fills.jsonl",
+        "ledger.jsonl",
+        "orders.jsonl",
+        "positions.jsonl",
+        "signals.jsonl",
+        "sim_events.jsonl",
+        "steps.jsonl",
+        "transitions.jsonl"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "agents.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "coverage.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "fills.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "ledger.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "orders.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "positions.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "signals.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "sim_events.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "steps.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "transitions.jsonl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lines",
+            "sha256",
+            "last_line_hash"
+          ],
+          "properties": {
+            "lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "last_line_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "envelope.schema.json#/$defs/sha256"
+      }
+    },
+    "paper_sessions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "not_exported": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "event types present in the store up to the chain head and deliberately not exported (research and others), with counts"
+    }
+  }
+}

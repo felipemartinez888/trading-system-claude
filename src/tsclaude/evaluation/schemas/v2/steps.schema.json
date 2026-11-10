@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/steps.schema.json",
+  "title": "tsc-eval v2 steps.jsonl: the input record of every paper batch (a released bar with its observed flag, a funding application a manual reset, or an advisory agent review outcome (format v2)); the first carries the session configuration. Provenance of a bar step is its bar source (ws_live LIVE, rest_recovered RECOVERED, archive/rest_backfill/derived HISTORICAL); other steps SIMULATED.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "paper_step"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "LIVE",
+            "RECOVERED",
+            "HISTORICAL",
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "paper_step"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/paper_step"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "paper_step": {
+      "type": "object",
+      "required": [
+        "kind",
+        "batch_size",
+        "intents",
+        "intent_errors",
+        "risk"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "bar",
+            "funding",
+            "reset",
+            "agent_review"
+          ]
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "intents": {
+          "type": "array"
+        },
+        "intent_errors": {
+          "type": "array"
+        },
+        "risk": {
+          "type": "array"
+        },
+        "observed": {
+          "type": "boolean"
+        },
+        "released_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "release_latency_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minute_closed": {
+          "const": true
+        },
+        "bar": {
+          "type": "object",
+          "required": [
+            "market",
+            "symbol",
+            "interval",
+            "open_time_ms",
+            "close_time_ms",
+            "open",
+            "high",
+            "low",
+            "close",
+            "source",
+            "trades"
+          ],
+          "properties": {
+            "market": {
+              "enum": [
+                "spot",
+                "usdm"
+              ]
+            },
+            "interval": {
+              "const": "1m"
+            },
+            "open_time_ms": {
+              "type": "integer"
+            },
+            "close_time_ms": {
+              "type": "integer"
+            },
+            "open": {
+              "type": "number"
+            },
+            "high": {
+              "type": "number"
+            },
+            "low": {
+              "type": "number"
+            },
+            "close": {
+              "type": "number"
+            },
+            "source": {
+              "enum": [
+                "archive",
+                "rest_backfill",
+                "ws_live",
+                "rest_recovered",
+                "derived"
+              ]
+            },
+            "trades": {
+              "type": "integer"
+            }
+          }
+        },
+        "available_at_ms": {
+          "type": "integer"
+        },
+        "review": {
+          "type": "object",
+          "required": [
+            "signal_id",
+            "state",
+            "risk_passed"
+          ],
+          "properties": {
+            "signal_id": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "risk_passed": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "bar"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bar",
+              "observed",
+              "released_at_ms"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "agent_review"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "review",
+              "available_at_ms"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

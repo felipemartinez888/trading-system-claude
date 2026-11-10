@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v2/agents.schema.json",
+  "title": "tsc-eval v2 agents.jsonl: advisory agent reviews of an agent_gated paper session (M5-3, ADR-0007): the review request (journaled with the baseline submission), the outcome (its own batch) and the agent_gated admission. Advisory only: no agent value reaches the baseline, shadow or benchmark books. Every line belongs to a paper batch.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "agent_review_requested",
+            "agent_review_completed",
+            "agent_gated_admission"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "agent_review_requested"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "aggregate_type": {
+                "const": "agent"
+              },
+              "payload": {
+                "$ref": "#/$defs/agent_review_requested"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "agent_review_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "aggregate_type": {
+                "const": "agent"
+              },
+              "payload": {
+                "$ref": "#/$defs/agent_review_completed"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "agent_gated_admission"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "aggregate_type": {
+                "const": "agent"
+              },
+              "payload": {
+                "$ref": "#/$defs/agent_gated_admission"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "agent_review_requested": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "requested_at_ms",
+        "book"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string"
+        },
+        "requested_at_ms": {
+          "type": "integer"
+        },
+        "book": {
+          "type": "string"
+        }
+      }
+    },
+    "agent_review_completed": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "state",
+        "risk_passed",
+        "requested_at_ms",
+        "available_at_ms",
+        "agent_gated_admitted",
+        "advisory_status",
+        "baseline_affected",
+        "rules"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "risk_passed": {
+          "type": "boolean"
+        },
+        "requested_at_ms": {
+          "type": "integer"
+        },
+        "available_at_ms": {
+          "type": "integer"
+        },
+        "agent_gated_admitted": {
+          "type": "boolean"
+        },
+        "advisory_status": {
+          "type": "string"
+        },
+        "baseline_affected": {
+          "const": false
+        },
+        "rules": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_cost_usd": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        }
+      }
+    },
+    "agent_gated_admission": {
+      "type": "object",
+      "required": [
+        "signal_id",
+        "book",
+        "action",
+        "decision_ms",
+        "available_at_ms"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string"
+        },
+        "book": {
+          "const": "agent_gated"
+        },
+        "action": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision_ms": {
+          "type": "integer"
+        },
+        "available_at_ms": {
+          "type": "integer"
+        },
+        "released_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

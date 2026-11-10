@@ -12,15 +12,22 @@ import pytest
 from eval_helpers import build_store
 
 from tsclaude.evaluation.cli import register_evaluation
-from tsclaude.evaluation.scorer import FILES, SchemaSet
+from tsclaude.evaluation.scorer import (
+    FILES,
+    FILES_BY_VERSION,
+    FORMAT_VERSION,
+    SUPPORTED_FORMAT_VERSIONS,
+    SchemaSet,
+    schema_dir_for,
+)
 
-SCHEMAS = SchemaSet()
+SCHEMAS = SchemaSet()  # the bundled set of the current format version
 
 
 def _envelope(**over: Any) -> dict[str, Any]:
     line: dict[str, Any] = {
         "format": "tsc-eval",
-        "format_version": 1,
+        "format_version": FORMAT_VERSION,
         "record_type": "sim_order_filled",
         "line_no": 1,
         "prev_line_hash": "0" * 64,
@@ -77,7 +84,7 @@ def test_valid_line_passes() -> None:
         (lambda x: x["event"]["payload"].pop("qty"), "missing 'qty'"),
         (lambda x: x["event"]["payload"].update(direction="up"), "not in"),
         (lambda x: x.update(record_type="sim_position_opened"), "not in"),
-        (lambda x: x.update(format_version=2), "expected 1"),
+        (lambda x: x.update(format_version=1), "expected 2"),
     ],
 )
 def test_invalid_lines_fail(change: Any, fragment: str) -> None:
@@ -95,12 +102,27 @@ def test_if_then_selects_the_payload_schema() -> None:
     assert any("missing 'trade_id'" in e for e in errors)  # the opened-position payload applies
 
 
-def test_one_schema_per_file_and_a_manifest_schema() -> None:
-    names = set(SCHEMAS.schemas)
-    assert {n.replace(".jsonl", ".schema.json") for n in FILES} <= names
-    assert {"envelope.schema.json", "manifest.schema.json"} <= names
-    for name, schema in SCHEMAS.schemas.items():
-        assert schema["$id"].endswith("/eval/v1/" + name)
+@pytest.mark.parametrize("version", SUPPORTED_FORMAT_VERSIONS)
+def test_one_schema_per_file_and_a_manifest_schema(version: int) -> None:
+    schemas = SchemaSet(schema_dir_for(version))
+    names = set(schemas.schemas)
+    assert names == {n.replace(".jsonl", ".schema.json") for n in FILES_BY_VERSION[version]} | {
+        "envelope.schema.json",
+        "manifest.schema.json",
+    }
+    for name, schema in schemas.schemas.items():
+        assert schema["$id"].endswith(f"/eval/v{version}/" + name)
+    assert set(FILES_BY_VERSION[FORMAT_VERSION]) == set(FILES)
+
+
+def test_v1_lines_still_validate_against_the_v1_schemas() -> None:
+    """Exports written before format v2 (no agents.jsonl) stay checkable."""
+    v1 = SchemaSet(schema_dir_for(1))
+    assert v1.validate(_envelope(format_version=1), "fills.schema.json") == []
+    assert v1.validate(_envelope(format_version=2), "fills.schema.json") != []
+    assert "agents.schema.json" not in v1.schemas
+    with pytest.raises(ValueError, match="unsupported format_version"):
+        schema_dir_for(3)
 
 
 def test_schemas_agree_with_a_reference_validator(tmp_path: Path) -> None:
@@ -117,8 +139,9 @@ def test_schemas_agree_with_a_reference_validator(tmp_path: Path) -> None:
     assert list(validator.iter_errors(good)) == []
     bad = _envelope(provenance="DEMO")
     assert list(validator.iter_errors(bad)) != []
-    for schema in SCHEMAS.schemas.values():
-        jsonschema.Draft202012Validator.check_schema(schema)
+    for version in SUPPORTED_FORMAT_VERSIONS:
+        for schema in SchemaSet(schema_dir_for(version)).schemas.values():
+            jsonschema.Draft202012Validator.check_schema(schema)
     # and every line of a real export agrees in both validators
     built = build_store(tmp_path / "state.db")
     from tsclaude.evaluation.export import build_lines
