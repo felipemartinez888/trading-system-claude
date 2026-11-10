@@ -30,8 +30,8 @@ Overall status (validation report §10, §12): **MVP FUNCTIONAL, VALIDATION INCO
 | 10 | Paper-runtime execution | VERIFIED |
 | 11 | Signal generation and promotion | TESTED |
 | 12 | Dashboard and APIs | TESTED |
-| 13 | AI agent integration (M5) | NOT STARTED |
-| 14 | Evaluation and export (M6) | NOT STARTED |
+| 13 | AI agent integration (M5) | TESTED (mock part only; not wired into the runtime) |
+| 14 | Evaluation and export (M6) | TESTED (locally and in CI from `45cf45a`; no real session exported) |
 | 15 | Logging, tests, CI, recovery | VERIFIED |
 
 ## 1. Architecture and configuration
@@ -79,15 +79,15 @@ Overall status (validation report §10, §12): **MVP FUNCTIONAL, VALIDATION INCO
 - **Next dependency:** H1 features, after the owner freezes a preregistration (handoff §5, B5).
 
 ## 5. Strategy interfaces
-- **Paths:** [strategies/](../src/tsclaude/strategies/) (`base.py`, `bracket_reference.py`, `__init__.py`).
-- **Key symbols:** `Strategy[P]` (abstract `warmup_bars`, `on_bar`; optional `diagnose`); `Proposal`; `PlanningCosts`; `BracketReference`, `BracketReferenceParams`; `build_strategy` and `REGISTRY` (unknown ids fail closed).
+- **Paths:** [strategies/](../src/tsclaude/strategies/) (`base.py`, `bracket_reference.py`, `h1_compression_breakout.py`, `__init__.py`).
+- **Key symbols:** `Strategy[P]` (abstract `warmup_bars`, `on_bar`; optional `diagnose`); `Proposal`; `PlanningCosts`; `BracketReference`, `BracketReferenceParams`, `bracket_geometry`; `build_strategy` and `REGISTRY` (unknown ids fail closed); `DRAFT_REGISTRY` and `build_draft_strategy` (the draft `h1_compression_breakout`, usable only by the P&L-free feasibility count; no run or trial possible).
 - **Depends on:** `features`, `contracts`. **Consumed by:** `research/runner` (via `research/source.py`), `strategies/live_adapter`.
 - **Requirements / ADRs:** REQ-SIG-01, REQ-SIG-05; [ADR-0012](adr/0012-win-rate-margin-objective.md); D-14 (grade X is reference-only).
 - **Tests:** [tests/unit/strategies/](../tests/unit/strategies/) (`test_strat_bracket_reference.py`, `test_strat_diagnose.py`).
 - **Evidence:** [devlog 2026-10-28 reference adapter](devlog/2026-10-28-mvp3-reference-adapter.md).
-- **Limits:** `bracket_reference` is the only strategy, a pipeline reference, not a research subject (D-14); it traded 0 times on real BTC 2024-Q1 with defaults (limitations "Quantitative"). No H1-H4 implemented.
+- **Limits:** `bracket_reference` is the only runnable strategy, a pipeline reference, not a research subject (D-14); it traded 0 times on real BTC 2024-Q1 with defaults. H1 exists only as a DRAFT (no runs); H2-H4 not implemented. Every ADR-0012 take-profit geometry is incompatible with the live risk floor 1.5 (`research/live_compat.py`, D-E).
 - **State:** TESTED.
-- **Next dependency:** revised H1 preregistration (draft: [H1-v1](research/H1-v1.preregistration.DRAFT.yaml)) and decisions D-C, D-E, D-F1.
+- **Next dependency:** owner freeze of [H1-v2](research/H1-v2.preregistration.DRAFT.yaml) after D-C, D-E, D-F1 and the feasibility count.
 
 ## 6. Risk engine
 - **Paths:** [risk/](../src/tsclaude/risk/) (`engine.py`, `config.py`, `market.py`, `hook.py`), [configs/risk.yaml](../configs/risk.yaml).
@@ -123,13 +123,13 @@ Overall status (validation report §10, §12): **MVP FUNCTIONAL, VALIDATION INCO
 - **Next dependency:** D-C, D-E, D-F1, then an H1 preregistration freeze; the first real step is the mechanics dry run (handoff B2).
 
 ## 9. Holdout guard and preregistration
-- **Paths:** [store/holdout.py](../src/tsclaude/store/holdout.py), [store/holdout_cli.py](../src/tsclaude/store/holdout_cli.py), [research/prereg.py](../src/tsclaude/research/prereg.py), [research/status.py](../src/tsclaude/research/status.py), [docs/research/](research/).
+- **Paths:** [store/holdout.py](../src/tsclaude/store/holdout.py), [store/holdout_cli.py](../src/tsclaude/store/holdout_cli.py), [research/prereg.py](../src/tsclaude/research/prereg.py), [research/preregistration.py](../src/tsclaude/research/preregistration.py) (schema `tsc-prereg-v1`, `validate_document`, `freeze`, `make_selection_record`, `walkforward_conformance`), [research/prereg_cli.py](../src/tsclaude/research/prereg_cli.py) (`tsclaude prereg validate|freeze|select`), [preregistrations/TEMPLATE.yaml](../preregistrations/TEMPLATE.yaml), [research/status.py](../src/tsclaude/research/status.py), [docs/research/](research/).
 - **Key symbols:** `HoldoutGuard.check`; `HoldoutApproval`; `inspect_preregistration`, `verify_recorded_unlock`; `touches_holdout`; exceptions `HoldoutLocked`, `PreregistrationError`; `authorize` and `unlock` (holdout_cli.py); `check_preregistration` (prereg.py); `assess`, `load_status`, `StrategyTier` (status.py).
 - **Depends on:** git history of `preregistrations/`, `store/lake_reader`. **Consumed by:** `research/runner`, `research/feasibility`, `GET /api/research/status`.
 - **Requirements / ADRs:** REQ-BT-05, REQ-DATA-08; [ADR-0009](adr/0009-preregistration-and-holdout-guard.md); L-07 in DECISIONS_PENDING.
 - **Tests:** [test_arc_holdout_reader.py](../tests/unit/archive/test_arc_holdout_reader.py), [test_arc_import_guard.py](../tests/unit/archive/test_arc_import_guard.py), [test_research_status.py](../tests/unit/research/test_research_status.py), [test_research_status_api.py](../tests/integration/test_research_status_api.py), holdout paths in `test_feasibility.py` and `test_walkforward_cli.py`.
 - **Evidence:** M2 acceptance record (S3/S4); D-17 session added a sealed-source rejection test.
-- **Limits:** **no preregistration exists and no hypothesis is implemented**; [H1-v1](research/H1-v1.preregistration.DRAFT.yaml) is a DRAFT that should not be frozen as written (handoff §5); a search preregistration cannot name one `strategy_hash`, so a second stage is proposed (D-D); 2026 months are not accepted as data (D-F2).
+- **Limits:** **no preregistration is frozen**; owner policy fields stay `PENDING` and freeze refuses them (D-C, D-D, D-E); a selection record deliberately has no top-level `strategy_hash`, so the unchanged guard cannot unlock with it (D-D); 2026 months are not accepted as data (D-F2).
 - **State:** TESTED (guard and status derivation). The guard has not been used for a real unlock.
 - **Next dependency:** H1 freeze (handoff B3, B5); D-D and D-F2 before validation and holdout.
 
@@ -168,17 +168,17 @@ Overall status (validation report §10, §12): **MVP FUNCTIONAL, VALIDATION INCO
 - **Next dependency:** owner smoke check A6; Research pages with B7.
 
 ## 13. AI agent integration (M5)
-- `src/tsclaude/agents/` **does not exist on this branch** (checked with `ls`). No code, tests or evidence.
-- **Spec only:** REQ-AGT-01..07, [ADR-0007](adr/0007-advisory-agents.md), [SIGNALS_AND_AGENTS](SIGNALS_AND_AGENTS.md), D-03 (Sonnet 5.5, $1/day cap, mode `confirmed`). ROADMAP lists M5 as not started.
-- **Hooks it will use:** `SignalRecord` and `AgentReviewState`, `AgentVerdict` in [contracts/signals.py](../src/tsclaude/contracts/signals.py).
-- **Limits:** the live-signal clause of M5 depends on Track B producing a strategy that signals (handoff Track C).
-- **State:** NOT STARTED. **Next dependency:** a strategy that emits real signals.
+- **Paths:** [agents/](../src/tsclaude/agents/) (`gate.py` `AgentGate`, `client.py` mock client, `schema.py`, `synthesis.py`, `budget.py` cost ledger with reservations and file lock, `breaker.py`, `cache.py`, `packet.py` masking and no-look-ahead, `config.py`, `real_client.py` stub), [configs/agents.yaml](../configs/agents.yaml) (`mode: "off"`), [api/agents.py](../src/tsclaude/api/agents.py) (`GET /api/agents/status`).
+- **Invariants:** advise only (a verdict can only move CONFIRMED to VETOED; no price/size field), baseline book unaffected (L-12), mode `off` makes no call and writes nothing.
+- **Tests:** [tests/unit/agents/](../tests/unit/agents/) (148), [test_agents_status_api.py](../tests/integration/test_agents_status_api.py); Fable review CHANGES REQUESTED (budget cap), fixed.
+- **Limits:** not called from the paper runtime; no `agent_gated` book or Agent tab; the real client is a stub; contract events requested (AGENT_REVIEW_COMPLETED, AGENT_COST_RECORDED). [devlog](devlog/2026-11-10-m5-agent-layer.md).
+- **State:** TESTED (mock part). **Next dependency:** contract events, runtime wiring; a real key and live signals (owner).
 
 ## 14. Evaluation and export (M6)
-- `src/tsclaude/evaluation/` **does not exist on this branch** (checked with `ls`). No code, tests or evidence.
-- **Spec only:** REQ-EVAL-01..04, [EVALUATION_PROTOCOL](EVALUATION_PROTOCOL.md), D-06 (A/B protocol finalized in M6). The development-metrics file [metrics.csv](devlog/metrics.csv) exists (REQ-EVAL-03).
-- **Limits:** no export, no Performance Analytics page.
-- **State:** NOT STARTED. **Next dependency:** Track B results and a forward-trial design (M7).
+- **Paths:** [evaluation/](../src/tsclaude/evaluation/) (`export.py` `export_store`, `verify.py` `verify_export`, `scorer.py` stdlib-only, `schemas/v1/` 11 JSON Schemas, `cli.py` `tsclaude evaluation export|verify|score`).
+- **Tests:** [tests/unit/evaluation/](../tests/unit/evaluation/) (42 + 1 API test in CI): schema validation, tamper/missing-line/relabel detection, byte-identical re-export, scorer equal to the app's own paper and signal values.
+- **Limits:** no real recorded session exported yet (owner); EVALUATION_PROTOCOL §5 metrics not shown by the dashboard are not scored; no Performance Analytics page; the format is not yet agreed with the other team (D-06). [devlog](devlog/2026-11-10-m6-evaluation-export.md).
+- **State:** TESTED. **Next dependency:** an owner export of a real session; D-06.
 
 ## 15. Logging, tests, CI, recovery
 - **Paths:** [runtime/logging.py](../src/tsclaude/runtime/logging.py) (`configure_logging`, `JsonFormatter`, `redact`), [api/security.py](../src/tsclaude/api/security.py) (`TokenRedactionFilter`), [ci.yml](../.github/workflows/ci.yml) (jobs `python`, `m2-cross-os`, `frontend`, `guards`), [tests/](../tests/) (`unit/`, `integration/`, `property/`, `owner_checks/`), [RUNBOOK_INGESTION](RUNBOOK_INGESTION.md), [RUNBOOK_PAPER_RESTART](RUNBOOK_PAPER_RESTART.md), [scripts/owner_checks/](../scripts/owner_checks/), [scripts/ci/](../scripts/ci/).
