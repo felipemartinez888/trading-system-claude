@@ -138,7 +138,9 @@ def test_restore_with_another_configuration_names_the_change_and_fails_closed() 
 
 def test_a_dropped_instrument_is_named_and_the_reason_stays_short() -> None:
     """Review of T3: instruments are compared by ``market:symbol``, so one dropped instrument
-    names itself instead of printing both instrument lists (1,321 characters before)."""
+    names itself. Before, the whole lists were printed, the kept instrument included (390
+    characters with this two-instrument fixture; the reviewer measured 1,321 with the
+    production instrument list)."""
     from tsclaude.contracts.market import Market
     from tsclaude.sim.paper import ConfigurationMismatch
 
@@ -150,6 +152,7 @@ def test_a_dropped_instrument_is_named_and_the_reason_stays_short() -> None:
     assert all(d.startswith(f"instruments.{Market.SPOT.value}:ETHUSDT.") for d in
                info.value.differences)  # fmt: skip
     assert all(d.endswith("-> <absent>") for d in info.value.differences)
+    assert "BTCUSDT" not in str(info.value)  # the unchanged instrument is not printed
     assert len(str(info.value)) < 400
 
 
@@ -166,6 +169,13 @@ def test_configuration_differences_reports_every_canonical_difference() -> None:
     assert configuration_differences({"x": 1}, {"x": True}) == ["x: 1 -> true"]
     long = configuration_differences({"books": ["baseline"] * 20}, {"books": []})
     assert long == [f"books: {('[' + ','.join(['"baseline"'] * 20))[:57]}... -> []"]
+    # duplicate market:symbol keys (no valid config has them) fall back to the whole list
+    one = desc["instruments"][0]
+    twice = [one, one]
+    changed = [one, {**one, "tick_size": "0.5"}]
+    dup = configuration_differences({"instruments": twice}, {"instruments": changed})
+    assert len(dup) == 1
+    assert dup[0].startswith("instruments: [")
 
 
 def test_a_journal_without_a_recorded_configuration_keeps_the_batch_comparison() -> None:

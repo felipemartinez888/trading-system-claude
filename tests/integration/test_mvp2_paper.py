@@ -343,7 +343,10 @@ def test_p3_restore_with_a_different_configuration_is_unavailable(tmp_path: Path
         assert rig.runtime.session_id == record["new_session_id"]
         assert rig.runtime.state is PaperState.RUNNING
         await rig.minute(1)
-        assert len(rig.journal(record["new_session_id"])) >= 1
+        fresh = rig.journal(record["new_session_id"])
+        assert len(fresh) >= 1
+        assert fresh[0][0].payload["session"]["starting_equity"] == "5000"  # current settings
+        assert rig.journal()[0][0].payload["session"]["starting_equity"] == "10000"
         assert len(rig.journal()) == 2  # the old session stays as recorded
         assert rig.store.verify().ok
         await rig.supervisor.close()

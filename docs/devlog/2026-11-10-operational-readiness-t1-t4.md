@@ -19,13 +19,22 @@ M3 is **not** accepted by this work; D-A stays the owner's decision.
 ## Evidence
 
 - Target A: 15 passed (the 13 originals at 3,000 ms, the latency-0 case, the guard).
-- Owner gate subset (readiness review §6 step 2 paths) at `59c826a`: **124 passed** (120 at `0955749`; +2 Target A, +2 restart).
+- Owner gate subset (readiness review §6 step 2 paths): **124 passed** at `59c826a` (120 at `0955749`; +2 Target A, +2 restart), **126 passed** from `8f8b2f5` on (+2 restart tests).
 - At `59c826a`: `tests/unit/sim`, `tests/unit/risk`, hints, owner scripts and the paper integration tests: 705 passed.
 - Full unit suite at `59c826a`: 1966 passed, 2 skipped, 16 failed, all 16 environment-only (11 `test_subscription_nowait`, 5 `test_o4_zero_trade_capture`: no pytest-asyncio here). ruff, ruff format, mypy: clean.
-- CI `42878174027` on `59c826a`: 7/7 success (python ubuntu 2363 passed, 1 skipped; windows 2361 passed, 1 skipped). The follow-up commit `8f8b2f5` and this record run in the next CI.
+- CI `42878174027` on `59c826a`: 7/7 success (python ubuntu 2363 passed, 1 skipped; windows 2361 passed, 1 skipped). CI `42883833236` on `dbcea55` (the follow-ups `8f8b2f5` and the first version of this record): 7/7 success. The review fixes after it run in the next CI.
+- Full unit suite at `dbcea55`: 1968 passed, 2 skipped, the same 16 environment-only failures.
 - After the follow-ups: sim, risk, hints, owner scripts and integration (modules that import fastapi cannot be collected here): 753 passed, 9 skipped.
-- Independent review (`reviewer`, fresh context, on `git archive` copies): **CONDITIONAL PASS, 0 blocking**. Conditions: a green CI on `59c826a` (met, above) and a Windows run of the T4 script (owner). Mutants: the drift guard catches latency 0 in `paper_config()` and in `backtest.yaml`; `[production_latency]` catches an engine that ignores the latency; the T3 check disabled and `ConfigurationMismatch` outside `RestoreError` are caught; a T4 `throw` → `Write-Warning` mutant survives the static tests.
-- Digests read from the owner PC (read-only staging of `data\session_end\*.json`): `config_digest` `7a68bcfcfd52ac5a…` in `paper-bracket-20261106-104529` (360 batches), `paper-20261109-2201` (150) and `recovery-20261109-2227` (3,498).
+- Independent review of `7125c5c..59c826a` (`reviewer`, fresh context, on `git archive` copies): **CONDITIONAL PASS, 0 blocking**. Conditions: a green CI on `59c826a` (met, above) and a Windows run of the T4 script (owner). Mutants: the drift guard catches latency 0 in `paper_config()` and in `backtest.yaml`; `[production_latency]` catches an engine that ignores the latency; the T3 check disabled and `ConfigurationMismatch` outside `RestoreError` are caught; a T4 `throw` → `Write-Warning` mutant survives the static tests.
+- Digests read from the owner PC: the three session-end files were staged read-only on 2026-11-10 and read; each `config_digest` is `7a68bcfcfd52ac5ab083ba20d7661d37265e8f63e772510786ecbd9b6a23a9bc`, state RUNNING. File SHA-256 values, so anyone can re-check the same files:
+
+  | Session folder (`C:\Users\felip\tsc_runs\…`) | File in `data\session_end\` | Batches | SHA-256 |
+  |---|---|---|---|
+  | `paper-bracket-20261106-104529` | `0001793987693335-paper.json` | 360 | `a7dd6fcfa4fce6188d97e50a90047ad5e8a71e274e212fbf60e1fe90e999d37a` |
+  | `paper-20261109-2201` | `0001794284839838-paper.json` | 150 | `061c5074609d0574c1195ad571d593b14fd7502609f1eb48c2bab75557e962c0` |
+  | `recovery-20261109-2227` | `0001794285761704-paper.json` | 3,498 | `5e5969b551c11e7ed25aaca8fefb657361d0b432c7cf62a90cd83888082b1629` |
+
+- Second independent review, of the follow-up `8f8b2f5` and the record `dbcea55`: **CHANGES REQUESTED, 1 blocking finding, docs only** (B1: the tightening claim above, false). Code and tests found fail-closed in both directions, every hint claim true in the code (new session after the mismatch, current settings at the next Start, `--evidence` selects the old session's file: default INCONCLUSIVE, with `--evidence` PASS in a scratch run), 12 of 13 mutants killed. B1 and findings 1, 2, 4, 5, 6, 7 and 8 fixed in the next commit (count per commit, reason-length test pins the kept instrument out of the message, duplicate-key test, ROADMAP T4 wording, these hashes, the metrics time, p3 checks the new session's settings). Not fixed: finding 3 (a type-only leaf difference can print the same text on both sides; still non-empty, only a hand-made journal reaches it).
 
 ## Review findings not fixed here (non-blocking)
 
@@ -40,10 +49,12 @@ M3 is **not** accepted by this work; D-A stays the owner's decision.
   different configuration is still INCONCLUSIVE ("configuration differs"), never FAIL or PASS.
 - Restore with the same configuration is unchanged (the recorded and current descriptions are equal,
   so the batch comparison runs as before).
-- **One tightening, fail-closed:** before T3, a session recorded under another configuration was
-  refused only when a recomputed batch differed from the journal, so a difference that no journaled
-  batch depended on could restore under the new configuration. Every recorded difference is now
-  refused with `ConfigurationMismatch`. Recovery as in the hint.
+- **The set of refused journals is unchanged.** Batch 0 always journals the full `describe()` and
+  replay always compared it canonically, so before T3 every configuration difference was already
+  refused at batch 0 (`RestoreError: batch 0 (bar) diverged from the journal`). Only the error type
+  (`ConfigurationMismatch`, still a `RestoreError`) and the reason text changed. An earlier draft
+  of this record claimed a tightening; the follow-up review showed it false by running the
+  pre-T3 code (`3cf2ef3`) on latency, equity, books and instrument changes: all refused at batch 0.
 - A first batch with no recorded configuration keeps the batch comparison only.
 
 ## Not done here
