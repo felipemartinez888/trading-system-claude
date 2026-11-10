@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import test_paper_session as ps
 from paper_agent_helpers import approve, config, downgrade, gated_config, mock_client, run, veto
 from paper_agent_helpers import worker as make_worker
 
@@ -33,6 +32,11 @@ AGENT_TYPES = (
     str(EventType.AGENT_REVIEW_COMPLETED),
     str(EventType.AGENT_GATED_ADMISSION),
 )
+
+# the scenario of tests/unit/sim/test_paper_session.py (importable once paper_agent_helpers has
+# put tests/unit/sim on sys.path, as in test_agents_paper_wiring.py)
+import test_paper_session as ps  # noqa: E402
+
 MISSING = frozenset({(13, "ETHUSDT")})
 EXPORTED_AT = 1_800_000_000_000
 
