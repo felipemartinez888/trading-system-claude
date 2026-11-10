@@ -388,3 +388,47 @@ def test_validity_checks_read_the_runs_manifests(done: tuple[Path, dict[str, Any
     checks, failures = validity_checks(result, evaluator, FOLDS, code_commit="test", **kw)  # type: ignore[arg-type]
     assert checks["runs_match_their_windows"] is False
     assert any("runs_match_their_windows" in f for f in failures)
+
+
+def test_a_resume_against_another_trial_registry_is_refused(
+    done: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    """Final review M1: runs whose trials this registry does not hold would under-count."""
+    src, _ = done
+    data = _copy(src, tmp_path / "d")
+    (data / "state.db").unlink()
+    with pytest.raises(ResumeRefused, match="not in this trial registry"):
+        _walk(_env(data), data)
+
+
+def test_a_lower_coverage_floor_needs_a_preregistration_declaring_it(
+    done: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    """Final review M2: the floor cannot be lowered after a result is seen."""
+    src, _ = done
+    data = _copy(src, tmp_path / "d")
+    env = _env(data)
+    rows = env.trials.list("bracket_reference")
+    with pytest.raises(WalkForwardError, match="needs a committed preregistration"):
+        _walk(env, data, min_oos_coverage=0.5)
+    assert env.trials.list("bracket_reference") == rows
+
+
+def test_the_ledger_rescore_count_is_validated_and_never_lowered(
+    done: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    """Final review M3."""
+    src, first = done
+    data = _copy(src, tmp_path / "d")
+    ledger = data / "wf" / first["plan"]["plan_id"] / "progress.jsonl"
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    lines[1] = '{"kind":"meta","rescore_n_trials":1}'
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report = _walk(_env(data), data)
+    assert report["rescore_n_trials_stored"] == 1
+    assert report["rescore_n_trials"] == first["rescore_n_trials"] == 3
+    assert _summary(report) == _summary(first)
+    lines[1] = '{"kind":"meta"}'
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ResumeRefused, match="rescore trial count"):
+        _walk(_env(data), data)

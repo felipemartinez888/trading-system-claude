@@ -35,6 +35,7 @@ import heapq
 import itertools
 import json
 import logging
+import platform
 import secrets
 import shutil
 import sqlite3
@@ -246,18 +247,26 @@ def git_version() -> dict[str, Any]:
     git = shutil.which("git")
     if git is None:
         return {"commit": "unknown", "dirty": None}
+    repo = str(Path(__file__).resolve().parents[3])  # the checkout this code runs from
     head = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [git, "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+        [git, "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     )
-    status = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [git, "status", "--porcelain", "--untracked-files=no"],
+    tracked = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [git, "-C", repo, "status", "--porcelain", "--untracked-files=no"],
         capture_output=True,
         text=True,
         check=False,
     )
-    if head.returncode != 0:
+    untracked_src = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [git, "-C", repo, "status", "--porcelain", "--untracked-files=all", "--", "src"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0 or tracked.returncode != 0 or untracked_src.returncode != 0:
         return {"commit": "unknown", "dirty": None}
-    return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
+    dirty = bool(tracked.stdout.strip() or untracked_src.stdout.strip())
+    return {"commit": head.stdout.strip(), "dirty": dirty}
 
 
 def warmup_ms_of(strategy: Strategy[Any]) -> int:
@@ -670,6 +679,7 @@ def max_loss_cache_key(
         "pinned_max_loss": None if pinned is None else sorted(pinned),
         "lake_parts": parts,
         "code_commit": commit,
+        "environment": {"python": platform.python_version(), "numpy": np.__version__},
     }
 
 
@@ -688,8 +698,11 @@ def _max_loss(
         raw = measure_max_loss(env, raw_req, cfg)
         status = "off"
         if cache is not None and key is not None:
-            cache.put(key, raw)
-            status = "miss"
+            try:  # best effort: a failed write never fails the run
+                cache.put(key, raw)
+                status = "miss"
+            except (OSError, ValueError) as exc:
+                _log.warning("max-loss measurement not cached: %s", exc)
     return _apply_max_loss_override(dict(raw), req), status
 
 

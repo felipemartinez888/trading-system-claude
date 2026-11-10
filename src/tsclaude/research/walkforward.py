@@ -707,7 +707,12 @@ class RunnerEvaluator:
 
     def _run(self, phase: str, index: int, config_id: str, from_ms: int, to_ms: int) -> RunOutcome:
         from tsclaude.research.runner import RunOutcome, run_backtest
-        from tsclaude.research.wf_progress import ReuseExpectation, entry_for, verify_reused_run
+        from tsclaude.research.wf_progress import (
+            ResumeRefused,
+            ReuseExpectation,
+            entry_for,
+            verify_reused_run,
+        )
 
         entry = None if self._ledger is None else self._ledger.get(phase, index, config_id)
         if entry is not None:
@@ -718,6 +723,12 @@ class RunnerEvaluator:
                 prereg_id=self._prereg_id,
                 code_commit=str(self._code_commit),
             )
+            if not self._env.trials.existing({expect.trial_key}):
+                raise ResumeRefused(
+                    f"recorded run {entry.run_id} ({entry.key}) cannot be reused: its trial is not "
+                    "in this trial registry (another or a restored state.db); reusing it would "
+                    "under-count trials"
+                )
             run_dir, manifest, metrics, sha = verify_reused_run(self._env.runs_dir, entry, expect)
             out = RunOutcome(str(manifest["run_id"]), run_dir, manifest, metrics, sha)
             self.reused += 1
@@ -856,6 +867,7 @@ def plan_identity(
     dataset_ids: Sequence[str] | None,
     final_selection_rule: str | None,
     warmup_ms: int,
+    min_oos_coverage: float = 1.0,
 ) -> dict[str, Any]:
     """Everything that decides the runs of a walk-forward, hashed into its plan id. A progress
     ledger only ever serves the plan it was written for. Resumable only when the code commit is
@@ -880,6 +892,20 @@ def plan_identity(
     if prereg_id is not None:  # refused here, before anything runs, if not committed
         rel = check_preregistration(env.repo_root, prereg_id)
         prereg = {"id": prereg_id, "sha256": file_sha256(Path(env.repo_root) / rel)}
+    if min_oos_coverage < 1.0:
+        # a lower floor only from a committed preregistration that declares it, never chosen
+        # after a result is seen
+        declared = None
+        if prereg_id is not None:
+            import yaml
+
+            raw = yaml.safe_load((Path(env.repo_root) / rel).read_text(encoding="utf-8"))
+            declared = raw.get("min_oos_coverage") if isinstance(raw, dict) else None
+        if declared is None or float(declared) != min_oos_coverage:
+            raise WalkForwardError(
+                f"min_oos_coverage {min_oos_coverage} below 1.0 needs a committed preregistration "
+                "(--prereg) declaring the same min_oos_coverage"
+            )
     pins = None if dataset_ids is None else sorted(dataset_ids)
     lo = min(folds[0].train_from_ms - warmup_ms, DEV_START_MS)
     parts: dict[str, list[str]] = {}
@@ -919,6 +945,7 @@ def plan_identity(
         "cost_model": cost_identity(env.cost_model),
         "exchange_interruptions": env.exchange_interruptions.manifest(),
         "final_selection_rule": final_selection_rule,
+        "min_oos_coverage": min_oos_coverage,
         "code_commit": commit if resumable else None,
         "lake_parts": parts,
     }
@@ -1145,7 +1172,7 @@ def run_walk_forward(
     With a resumable plan and ``resume``, completed evaluations recorded in the directory's
     progress ledger are verified and reused."""
     from tsclaude.research.runner import segment_of
-    from tsclaude.research.wf_progress import ProgressLedger
+    from tsclaude.research.wf_progress import ProgressLedger, ResumeRefused
 
     if not folds:
         raise WalkForwardError("no folds")
@@ -1172,7 +1199,7 @@ def run_walk_forward(
     plan = plan_identity(
         env, cfg, strategy_id=strategy_id, grid=grid, symbols=symbols, folds=folds, n_min=n_min,
         hypothesis_id=hypothesis_id, prereg_id=prereg_id, dataset_ids=dataset_ids,
-        final_selection_rule=rule, warmup_ms=warmup,
+        final_selection_rule=rule, warmup_ms=warmup, min_oos_coverage=min_oos_coverage,
     )  # fmt: skip
     if report_dir is None and work_root is not None:
         name = plan["plan_id"] if plan["resumable"] and resume else None
@@ -1213,8 +1240,11 @@ def run_walk_forward(
         ledger = ProgressLedger(ledger_path, plan["plan_id"], plan_values)
     if ledger is not None:
         evaluator.attach_ledger(ledger, str(commit))
-    rescore_n = int((ledger.meta if ledger is not None and ledger.meta else plan_values)
-                    ["rescore_n_trials"])  # fmt: skip
+    stored = (ledger.meta or {}).get("rescore_n_trials") if ledger is not None else None
+    if ledger is not None and (not isinstance(stored, int) or isinstance(stored, bool)):
+        raise ResumeRefused(f"{ledger.path}: the plan's rescore trial count is missing or invalid")
+    # never below what the registry implies now (a lowered or stale value stays conservative)
+    rescore_n = max(int(stored) if stored is not None else 0, budget["family_trials_after_max"])
     evaluator.rescore_trials = rescore_n
     result = walk_forward(list(grid), folds, evaluator, n_min=n_min)
     checks, check_failures = validity_checks(
@@ -1278,6 +1308,7 @@ def run_walk_forward(
         "max_loss_cache": None if cache is None else {"hits": cache.hits, "misses": cache.misses},
         "trial_budget": budget,
         "rescore_n_trials": rescore_n,
+        "rescore_n_trials_stored": stored,
         "warmup": {
             "max_warmup_minutes": warmup // MS_PER_MINUTE,
             "data_start": None if start is None else _iso(start),
@@ -1297,10 +1328,13 @@ def run_walk_forward(
     }
     if report_dir is not None:
         report_dir.mkdir(parents=True, exist_ok=True)
-        report["report_path"] = str(report_dir / "walkforward.json")
-        (report_dir / "walkforward.json").write_text(
-            json.dumps(report, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
-        )
+        path = report_dir / "walkforward.json"
+        report["report_path"] = str(path)
+        text = json.dumps(report, indent=2, sort_keys=True, default=str) + "\n"
+        if path.exists() and path.read_text(encoding="utf-8") != text:
+            # an earlier report is kept, never overwritten
+            path.rename(report_dir / f"walkforward.previous-{env.now_ms()}.json")
+        path.write_text(text, encoding="utf-8")
     return report
 
 
