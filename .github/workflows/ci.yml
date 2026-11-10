@@ -46,11 +46,41 @@ jobs:
         run: ./scripts/ci/run.sh mypy uv run mypy src
       - name: Pytest
         shell: bash
-        run: ./scripts/ci/run.sh pytest uv run pytest -q
+        env:
+          # P0: the OD-2 restart outcomes as JSON (tests/conftest.py writes it; reporting only)
+          TSC_RESTART_REPORT: ci-logs/restart-report-${{ matrix.os }}-serial.json
+        run: >-
+          ./scripts/ci/run.sh pytest uv run pytest -q
+          --junitxml=ci-logs/junit-${{ matrix.os }}-serial.xml --durations=50
       - name: Report failures as annotations
         if: failure()
         shell: bash
         run: ./scripts/ci/annotate.sh
+      # P0 (CI proposal): per-test timing and outcomes, for the job summary and for comparing
+      # runs. Reporting only: these steps never change the job result.
+      - name: Test report (P0, reporting only)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          uv run --no-sync python -I scripts/ci/junit_summary.py summarize \
+            "ci-logs/junit-${{ matrix.os }}-serial.xml" --label "python serial (${{ matrix.os }})" \
+            --outcomes-out "ci-logs/outcomes-${{ matrix.os }}-serial.json" --summary-out "$GITHUB_STEP_SUMMARY"
+          uv pip freeze > "ci-logs/freeze-${{ matrix.os }}-serial.txt"
+          { echo "### Working tree after pytest (${{ matrix.os }}, report only)"; echo '```';
+            git status --porcelain --untracked-files=all | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload test report (P0)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ matrix.os }}-serial
+          path: |
+            ci-logs/junit-*.xml
+            ci-logs/outcomes-*.json
+            ci-logs/restart-report-*.json
+            ci-logs/freeze-*.txt
+          if-no-files-found: warn
       - name: Upload generated uv.lock
         if: hashFiles('uv.lock') != '' && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
