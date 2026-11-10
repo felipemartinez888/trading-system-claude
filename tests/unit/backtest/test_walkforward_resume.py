@@ -444,6 +444,10 @@ def _git(repo: Path, *args: str) -> None:
     )  # fmt: skip
 
 
+#: a preregistration needs a bounded holding period: the same grid with a 15m time exit
+PREREG_GRID = {config_id_of(p): p for p in ({**g, "time_exit_bars": 48} for g in GRID.values())}
+
+
 def _committed_prereg(repo: Path, **budget: Any) -> str:
     """A frozen, committed search preregistration matching this module's walk-forward."""
     import yaml
@@ -452,7 +456,7 @@ def _committed_prereg(repo: Path, **budget: Any) -> str:
 
     doc = pr.load(Path(__file__).resolve().parents[3] / "preregistrations" / "TEMPLATE.yaml")
     doc.update(
-        prereg_id="H-RUN", search_space=list(GRID.values()),
+        prereg_id="H-RUN", search_space=list(PREREG_GRID.values()),
         holdout_procedure="two-stage-selection-record",
         risk_compatibility="live-floor-kept-geometries-dropped",
     )  # fmt: skip
@@ -479,9 +483,11 @@ def test_a_walk_forward_under_a_preregistration_must_run_exactly_its_plan(tmp_pa
     pid = _committed_prereg(repo)
     env = _env(data, repo_root=repo)
     with pytest.raises(WalkForwardError, match=r"not the preregistered walk-forward.*n_min"):
-        _walk(env, data, prereg_id=pid, final_selection_enabled=True)  # n_min 5, not 300
+        _walk(env, data, grid=PREREG_GRID, prereg_id=pid, final_selection_enabled=True)
     with pytest.raises(WalkForwardError, match="final_selection"):
-        _walk(env, data, prereg_id=pid, n_min=300)
+        _walk(env, data, grid=PREREG_GRID, prereg_id=pid, n_min=300)
+    with pytest.raises(WalkForwardError, match="grid"):
+        _walk(env, data, prereg_id=pid, n_min=300, final_selection_enabled=True)  # other grid
     assert not env.runs_dir.exists()
     assert env.trials.n_trials("bracket_reference") == 0
 
@@ -494,5 +500,5 @@ def test_a_registry_rows_budget_in_the_preregistration_caps_the_run(tmp_path: Pa
     pid = _committed_prereg(repo, counting="registry_rows", max_registry_trials=2)
     env = _env(data, repo_root=repo)
     with pytest.raises(WalkForwardError, match="above --max-new-trials 2"):
-        _walk(env, data, prereg_id=pid, n_min=300, final_selection_enabled=True)
+        _walk(env, data, grid=PREREG_GRID, prereg_id=pid, n_min=300, final_selection_enabled=True)
     assert not env.runs_dir.exists()

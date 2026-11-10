@@ -13,8 +13,8 @@ strategy:
   strategy_id: bracket_reference
   version: 1.0.0
 search_space:        # every entry is one configuration (a trial per evaluated window)
-  - {tp_r: 1.0}
-  - {tp_r: 0.5}
+  - {tp_r: 1.0, time_exit_bars: 48}   # 15m: (48 + 1) x 15 = 735 min max holding <= embargo
+  - {tp_r: 0.5, time_exit_bars: 48}
 universe:
   market: spot
   symbols: [BTCUSDT, ETHUSDT]

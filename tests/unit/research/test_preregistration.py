@@ -76,9 +76,12 @@ def test_the_template_id_is_refused_by_every_run() -> None:
         (lambda d: d["strategy"].update(version="9.9.9"), "implemented version"),
         (lambda d: d["strategy"].update(strategy_id="h9"), "not an implemented strategy"),
         (lambda d: d["search_space"].append({"no_such": 1}), "search_space[2]"),
-        (lambda d: d["search_space"].append({"tp_r": 1.0}), "repeats a configuration"),
+        (lambda d: d["search_space"].append({"tp_r": 1.0, "time_exit_bars": 48}), "repeats a"),
         (lambda d: d["universe"].update(symbols=["BTCUSDT", "BTCUSDT"]), "twice"),
         (lambda d: d.update(max_loss_r_policy="lower"), "max_loss_r_policy"),
+        # the embargo must cover one maximum holding period (overnight H1 causality review)
+        (lambda d: d["search_space"].append({"tp_r": 0.8}), "holding period is unbounded"),
+        (lambda d: d["walk_forward"].update(embargo_minutes=700), "shorter than its maximum"),
         (lambda d: d["walk_forward"].update(end="2025-06-01"), "walk_forward.end"),
         # a typo or placeholder is never taken as an owner decision (review B2)
         (lambda d: d.update(holdout_procedure="TBD"), "is not a decision"),

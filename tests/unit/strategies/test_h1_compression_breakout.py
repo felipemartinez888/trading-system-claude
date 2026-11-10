@@ -420,3 +420,32 @@ def test_live_compatibility_of_the_draft_geometries(tp_r: float) -> None:
     )  # fmt: skip
     assert got.status == lc.INCOMPATIBLE
     assert got.strategy_min_stop_fraction == pytest.approx(COSTS.round_trip_frac / 0.2)
+
+
+def test_an_incomplete_newest_hour_fails_closed_instead_of_using_an_older_hour() -> None:
+    """Overnight causality review, minor 2: the window ends at a bar that closes its hour, but
+    a bar of that hour is missing; the trend must be undefined, not the previous hour's."""
+    arr = BarArrays.from_bars(_bars(80, 11))  # 20 complete hours, the last ends at bar 79
+    full = _slice(arr, 0, 80)
+    assert math.isfinite(trend_1h(full, M15, 4)[0])
+    keep = [i for i in range(80) if i != 77]  # the newest hour loses its third bar
+    hole = BarArrays(*(np.array(getattr(full, f)[keep]) for f in FIELDS))
+    assert hole.close_time_ms[-1] == full.close_time_ms[-1]  # still ends at the hour's close
+    assert all(math.isnan(x) for x in trend_1h(hole, M15, 4))
+
+
+def test_the_compression_rank_is_the_one_at_the_previous_bar() -> None:
+    """Overnight causality review, minor 3: the preregistered rule uses the ATR rank at i-1."""
+    from tsclaude.features.core import atr_percentile_rank
+
+    strat = H1CompressionBreakout(FAST)
+    arr = BarArrays.from_bars(_bars(200, 13))
+    differs = 0
+    for end in range(strat.window_bars + 1, len(arr) + 1, 3):
+        w = _slice(arr, end - strat.window_bars, end)
+        prev = atr_percentile_rank(_slice(w, 0, len(w) - 1), FAST.atr_n, FAST.rank_m)[-1]
+        now = atr_percentile_rank(w, FAST.atr_n, FAST.rank_m)[-1]
+        got = strat._features(w)["atr_rank_prev"]
+        assert got == pytest.approx(float(prev), nan_ok=True)
+        differs += int(not math.isclose(float(prev), float(now)))
+    assert differs > 0  # the check can tell i-1 from i

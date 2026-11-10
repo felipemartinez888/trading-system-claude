@@ -246,6 +246,44 @@ def configurations_of(doc: Mapping[str, Any]) -> tuple[dict[str, str], list[str]
     return out, problems
 
 
+def max_holding_ms_of(strategy: Any) -> int | None:
+    """The longest scheduled holding period of a configuration (decision close to its time
+    exit), or None when it has no time exit (an unbounded holding period)."""
+    fn = getattr(strategy, "max_holding_ms", None)
+    if callable(fn):
+        return int(fn())
+    bars = getattr(getattr(strategy, "params", None), "time_exit_bars", None)
+    if isinstance(bars, int) and not isinstance(bars, bool):
+        return (bars + 1) * int(strategy.interval.ms)
+    return None
+
+
+def holding_problems(doc: Mapping[str, Any]) -> list[str]:
+    """RESEARCH_PROTOCOL §3: the embargo must cover one maximum holding period of every
+    configuration (overnight causality review, H1 major 1)."""
+    sid = _get(doc, "strategy.strategy_id")
+    embargo = _get(doc, "walk_forward.embargo_minutes")
+    space = doc.get("search_space")
+    if not isinstance(embargo, int) or not isinstance(space, list):
+        return []
+    build = _builder(str(sid))
+    out: list[str] = []
+    for i, params in enumerate(space):
+        try:
+            strategy = build(str(sid), dict(params))
+        except (ValueError, TypeError, AttributeError):
+            continue  # reported by configurations_of
+        held = max_holding_ms_of(strategy)
+        if held is None:
+            out.append(f"search_space[{i}] has no time exit: its holding period is unbounded")
+        elif embargo * 60_000 < held:
+            out.append(
+                f"search_space[{i}]: embargo {embargo} min is shorter than its maximum holding "
+                f"period {held // 60_000} min"
+            )
+    return out
+
+
 # ---------------------------------------------------------------- validation
 def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Validation:
     from tsclaude.strategies import DRAFT_REGISTRY, REGISTRY
@@ -335,6 +373,7 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
                 "walk_forward.time_exit_required must be true: the embargo must cover one "
                 "maximum holding period (RESEARCH_PROTOCOL §3)"
             )
+        p.extend(holding_problems(doc))
     if doc.get("min_oos_coverage") is not None and doc.get("min_oos_coverage") != wf.get(
         "min_oos_coverage"
     ):
@@ -648,10 +687,12 @@ __all__ = [
     "content_sha256",
     "engine_sha256",
     "freeze",
+    "holding_problems",
     "implementation_files",
     "implementation_sha256",
     "load",
     "make_selection_record",
+    "max_holding_ms_of",
     "validate_document",
     "validate_file",
     "walkforward_conformance",
