@@ -5,6 +5,16 @@ on:
     branches: [main, "task/**", "acceptance/**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      pytest_mode:
+        description: >-
+          serial: the full workflow, as on push (formal acceptance runs). bench: experimental
+          (CI proposal P2) - the serial python jobs and 4-worker python jobs side by side on the
+          same commit, then a comparison job. stress-commit / stress-round: 4-worker python jobs
+          with the integration-test latency fixture.
+        type: choice
+        options: [serial, bench, stress-commit, stress-round]
+        default: serial
 
 permissions:
   contents: read
@@ -19,6 +29,7 @@ concurrency:
 jobs:
   python:
     name: python (${{ matrix.os }})
+    if: github.event_name != 'workflow_dispatch' || inputs.pytest_mode == 'serial' || inputs.pytest_mode == 'bench'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -91,11 +102,126 @@ jobs:
           name: uv-lock
           path: uv.lock
 
+  python-parallel:
+    # CI proposal P2, EXPERIMENTAL: only on workflow_dispatch with pytest_mode bench or stress-*.
+    # Never on push, never part of a formal acceptance run. pytest-xdist is installed into this
+    # job's environment only (pyproject.toml is unchanged); every other package is what the
+    # serial job gets, and the comparison job checks that.
+    name: python 4-worker experimental (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' && inputs.pytest_mode != 'serial'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      MODE: ${{ inputs.pytest_mode == 'bench' && 'parallel' || inputs.pytest_mode }}
+      TSC_TEST_LATENCY_MS: ${{ inputs.pytest_mode == 'stress-commit' && '40' || inputs.pytest_mode == 'stress-round' && '80' || '0' }}
+      TSC_TEST_LATENCY_MODE: ${{ inputs.pytest_mode == 'stress-round' && 'round' || 'commit' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python 3.13
+        run: uv python install 3.13
+      - name: Lock (only while uv.lock is not committed yet)
+        if: hashFiles('uv.lock') == ''
+        shell: bash
+        run: ./scripts/ci/run.sh lock uv lock
+      - name: Sync
+        shell: bash
+        run: ./scripts/ci/run.sh sync uv sync --all-groups
+      - name: Add pytest-xdist to this job's environment only
+        shell: bash
+        run: ./scripts/ci/run.sh xdist uv pip install "pytest-xdist==3.8.0"
+      - name: Ruff lint
+        shell: bash
+        run: ./scripts/ci/run.sh ruff-lint uv run --no-sync ruff check src tests scripts
+      - name: Ruff format
+        shell: bash
+        run: ./scripts/ci/run.sh ruff-format uv run --no-sync ruff format --check src tests scripts
+      - name: Mypy (strict)
+        shell: bash
+        run: ./scripts/ci/run.sh mypy uv run --no-sync mypy src
+      - name: Pytest, 4 workers, one file per worker at a time
+        shell: bash
+        env:
+          TSC_RESTART_REPORT: ci-logs/restart-report-${{ matrix.os }}-${{ env.MODE }}.json
+        run: >-
+          ./scripts/ci/run.sh pytest uv run --no-sync pytest -q -n 4 --dist loadfile
+          --junitxml=ci-logs/junit-${{ matrix.os }}-${{ env.MODE }}.xml --durations=50
+      - name: Report failures as annotations
+        if: failure()
+        shell: bash
+        run: ./scripts/ci/annotate.sh
+      - name: Test report
+        if: always()
+        shell: bash
+        run: |
+          uv run --no-sync python -I scripts/ci/junit_summary.py summarize \
+            "ci-logs/junit-${{ matrix.os }}-$MODE.xml" --label "python 4-worker $MODE (${{ matrix.os }})" \
+            --outcomes-out "ci-logs/outcomes-${{ matrix.os }}-$MODE.json" --summary-out "$GITHUB_STEP_SUMMARY"
+          uv pip freeze > "ci-logs/freeze-${{ matrix.os }}-$MODE.txt"
+      - name: No test changed a tracked file (resource isolation)
+        if: always()
+        shell: bash
+        run: |
+          changed=$(git status --porcelain --untracked-files=no)
+          { echo "### Working tree after pytest (${{ matrix.os }}, $MODE)"; echo '```';
+            git status --porcelain --untracked-files=all | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$changed" ]; then echo "::error::tests changed tracked files:"; echo "$changed"; exit 1; fi
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ matrix.os }}-${{ env.MODE }}
+          path: |
+            ci-logs/junit-*.xml
+            ci-logs/outcomes-*.json
+            ci-logs/restart-report-*.json
+            ci-logs/freeze-*.txt
+            ci-logs/*.log
+          if-no-files-found: error
+
+  compare:
+    # CI proposal P2, EXPERIMENTAL: the 4-worker run must give exactly the serial run's results
+    name: serial vs 4-worker comparison (experimental)
+    needs: [python, python-parallel]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.pytest_mode == 'bench'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: test-report-*
+          path: reports
+      - name: Same tests, same outcomes, same OD-2 report, same packages (any gap fails)
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          for os in ubuntu-latest windows-latest; do
+            s="reports/test-report-$os-serial"; p="reports/test-report-$os-parallel"
+            echo "### $os" >> "$GITHUB_STEP_SUMMARY"
+            for check in "compare $s/outcomes-$os-serial.json $p/outcomes-$os-parallel.json" \
+                "compare-json $s/restart-report-$os-serial.json $p/restart-report-$os-parallel.json" \
+                "compare-freeze $s/freeze-$os-serial.txt $p/freeze-$os-parallel.txt --ignore pytest-xdist --ignore execnet"; do
+              # shellcheck disable=SC2086
+              out=$(python3 -I scripts/ci/junit_summary.py $check 2>&1); r=$?
+              echo "- \`${check%% *}\` exit $r: $(echo "$out" | head -1)" >> "$GITHUB_STEP_SUMMARY"
+              echo "== $os: $check -> exit $r"; echo "$out"
+              [ "$r" -eq 0 ] || rc=1
+            done
+          done
+          exit "$rc"
+
   m2-cross-os:
     # Focused, verbose evidence for the M2 gate "cross-OS reproducibility hash". It runs the same two
     # existing tests (four pinned outputs) on the same commit on Windows and Linux. It does NOT replace
     # or filter the full-suite `python` job above, and it changes no constant or test.
     name: m2 cross-os gate (${{ matrix.os }})
+    if: github.event_name != 'workflow_dispatch' || inputs.pytest_mode == 'serial'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -146,6 +272,7 @@ jobs:
 
   frontend:
     name: frontend (${{ matrix.os }})
+    if: github.event_name != 'workflow_dispatch' || inputs.pytest_mode == 'serial'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -201,6 +328,7 @@ jobs:
 
   guards:
     name: safety guards
+    if: github.event_name != 'workflow_dispatch' || inputs.pytest_mode == 'serial'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
