@@ -68,9 +68,17 @@ Paper trading is **off by default**. To try it with the reference strategy in a 
 folder, follow "Stage C" in [RUNBOOK_INGESTION](RUNBOOK_INGESTION.md).
 
 ## 4. One-command evidence run (unattended, about 1 h 30 min)
+Run the **tracked** script from the checkout you are testing (NORMAL PowerShell). It always
+works on that checkout, the folder two levels above the script, and refuses to run from a copy
+outside a checkout. Older copies (for example `C:\Users\felip\tsc_runs\mvp_evidence.ps1`)
+defaulted to the older `tsc-ingestion-bounded` checkout: do not use them.
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\felip\tsc_runs\mvp_evidence.ps1
+cd C:\Users\felip\Projects\trading-system-claude          # or the worktree of the commit under test
+git log -1 --oneline                                         # the commit the evidence will be for
+powershell -ExecutionPolicy Bypass -File scripts\owner_checks\mvp_evidence.ps1 -SkipBacktest
 ```
+`-SkipBacktest` leaves out step 4, the only step that writes permanent trial records (in the
+`bracket_reference` family). Drop the switch only if you want that step.
 It runs the following, writing each output to `C:\Users\felip\tsc_runs\mvp-evidence-<stamp>\summary.json`:
 1. clock check;
 2. crash recovery on a **copy** of the session a PC restart ended;

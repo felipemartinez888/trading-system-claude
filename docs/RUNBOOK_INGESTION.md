@@ -87,7 +87,8 @@ If something looks wrong, report `/api/ingestion` (the `notes` array explains `w
 
 ## Production-profile bounded test and Paper O-1
 Owner-run, supervised, paper-only, public market data only (no keys, nothing sent to an exchange). All commands are PowerShell with **NORMAL privileges
-(no Administrator)**, from the repository root, on branch `feat/ingestion-bounded`. Do one stage at a time and stop at the first surprise.
+(no Administrator)**, from the root of the checkout under test (the commit being accepted; the
+stages were first run on branch `feat/ingestion-bounded`, since merged into the integration branch). Do one stage at a time and stop at the first surprise.
 Production pairs: spot and USD-M BTCUSDT, ETHUSDT, SOLUSDT (6).
 
 **Stage A: plan only (seconds, no network, no writes).**

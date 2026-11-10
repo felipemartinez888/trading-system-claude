@@ -14,21 +14,35 @@
 # Every output lands in <Runs>\mvp-evidence-<stamp>\ with summary.json. A PASS of any step is
 # evidence for that step only: not profitability, not M3 acceptance, not MVP acceptance.
 #
-# Usage (from any folder):
-#   powershell -ExecutionPolicy Bypass -File C:\Users\felip\tsc_runs\mvp_evidence.ps1
+# Usage (from any folder): run the TRACKED script of the checkout under test. It works on that
+# checkout (the folder two levels above this script), so a copy elsewhere or an older checkout is
+# never used by accident (operational-readiness review R-03). -Repo still overrides it explicitly.
+#   powershell -ExecutionPolicy Bypass -File C:\Users\felip\Projects\<checkout>\scripts\owner_checks\mvp_evidence.ps1
 #   options: -PaperHours 1 -RecoveryMinutes 15 -SkipRecovery -SkipPaper -SkipBacktest
+#   -SkipBacktest skips step 4, the only step that writes permanent trial records.
 param(
     [double]$PaperHours = 1,
     [int]$RecoveryMinutes = 15,
     [switch]$SkipRecovery,
     [switch]$SkipPaper,
     [switch]$SkipBacktest,
-    [string]$Repo = 'C:\Users\felip\Projects\tsc-ingestion-bounded',
+    [string]$Repo = '',  # default: the checkout this script belongs to (see below)
     [string]$Runs = 'C:\Users\felip\tsc_runs',
     [string]$CrashedSession = 'paper-20261109-125923',
     [string]$CanonicalData = 'C:\Users\felip\Projects\trading-system-claude\data'
 )
 $ErrorActionPreference = 'Stop'
+# The repository is the checkout this script belongs to (scripts\owner_checks\ -> its root),
+# unless -Repo names one. A copy outside a checkout is refused before anything is written.
+if (-not $Repo) {
+    $Repo = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+}
+$ownScript = Join-Path $Repo 'scripts\owner_checks\mvp_evidence.ps1'
+if (-not (Test-Path -LiteralPath (Join-Path $Repo 'pyproject.toml')) -or -not (Test-Path -LiteralPath $ownScript)) {
+    throw ("mvp_evidence.ps1: '$Repo' is not a Trading System Claude checkout. Run the tracked " +
+        "script from the checkout under test: powershell -ExecutionPolicy Bypass -File " +
+        "<checkout>\scripts\owner_checks\mvp_evidence.ps1 (or pass -Repo <checkout>).")
+}
 $stamp = Get-Date -Format 'yyyyMMdd-HHmm'
 $out = Join-Path $Runs "mvp-evidence-$stamp"
 New-Item -ItemType Directory -Path $out | Out-Null
