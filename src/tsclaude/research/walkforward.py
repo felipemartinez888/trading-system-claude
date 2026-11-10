@@ -1046,6 +1046,40 @@ def _describe_policy(cfg: BacktestConfig) -> dict[str, Any]:
     return describe(cfg.risk_policy, cfg.risk)
 
 
+def _exit_mix(evaluator: RunnerEvaluator) -> dict[str, Any]:
+    """Per phase and configuration: exits by reason summed over the plan's runs (base book) and
+    the share of time exits (mathematical audit F3, A7: a 2-3 R target can need more bars than
+    the time exit allows). Read from each run's own metrics; never used by selection."""
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    runs: dict[tuple[str, str], int] = {}
+    for (phase, _index, config), run in sorted(evaluator.by_key.items()):
+        reasons = ((run.metrics.get("trades") or {}).get("exit_reasons")) or {}
+        key = (phase, config)
+        runs[key] = runs.get(key, 0) + 1
+        agg = counts.setdefault(key, {})
+        for reason, n in reasons.items():
+            agg[str(reason)] = agg.get(str(reason), 0) + int(n)
+    out: dict[str, Any] = {}
+    for (phase, config), agg in sorted(counts.items()):
+        total = sum(agg.values())
+        out.setdefault(phase, {})[config] = {
+            "runs": runs[(phase, config)],
+            "trades": total,
+            "exit_reasons": dict(sorted(agg.items())),
+            "time_exit_share": None if total == 0 else agg.get("time_exit", 0) / total,
+        }
+    return out
+
+
+def _power_reading(oos: Mapping[str, Any], cfg: BacktestConfig) -> dict[str, Any] | None:
+    from tsclaude.research.power_plan import read_power
+
+    try:  # informational: never loses the report
+        return read_power(oos, alpha=cfg.alpha, power=cfg.min_power)
+    except (ValueError, TypeError) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def _policy_blocks(evaluator: RunnerEvaluator) -> dict[str, Any] | None:
     """Under ``risk_policy: live``: per phase (train, test, final), the base books' risk checks,
     the checks each paper rule blocked, and the runs whose base book was halted by the kill
@@ -1501,6 +1535,8 @@ def run_walk_forward(
         "live_compatibility": live,
         "risk_policy": _describe_policy(cfg),
         "risk_policy_blocks": _policy_blocks(evaluator),
+        "exit_mix": _exit_mix(evaluator),
+        "power_reading": _power_reading(oos, cfg),
         "run_ids": [o.run_id for o in evaluator.runs],
         "n_trials_family_now": env.trials.n_trials(strategy_id),
     }

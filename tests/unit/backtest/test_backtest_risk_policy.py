@@ -645,3 +645,7 @@ def test_rehearsal_of_the_first_experiment_pipeline_on_synthetic_data(tmp_path: 
     assert report["oos"]["verdict"] in {wf.INSUFFICIENT_OOS_EVIDENCE, wf.NO_EDGE_DEMONSTRATED,
                                         wf.INVALID_OOS_EVIDENCE}  # fmt: skip
     assert env.trials.n_trials("bracket_reference") > 0  # the rehearsal's trials are recorded
+    # diagnostics of the mathematical audit (F3, F4) are in the report, outside selection
+    assert set(report["exit_mix"]) >= {"train"}
+    assert all("time_exit_share" in v for v in report["exit_mix"]["train"].values())
+    assert "power_reading" in report

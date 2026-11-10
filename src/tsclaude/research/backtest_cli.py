@@ -441,5 +441,7 @@ def register(sub: Any) -> None:
     wf.add_argument("--repo-root", default=".")
     wf.set_defaults(func=_cmd_walkforward)
     from tsclaude.research.feasibility_cli import register_feasibility
+    from tsclaude.research.power_plan_cli import register_power_plan
 
     register_feasibility(bsub)
+    register_power_plan(bsub)
