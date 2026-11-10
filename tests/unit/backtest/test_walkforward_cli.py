@@ -95,6 +95,7 @@ def test_a_grid_with_an_unknown_parameter_is_refused(
     code, out = _run(capsys, *_argv(env))
     assert code == 2
     assert out["ok"] is False
+    assert "no_such_param" in str(out["error"])
     assert not (env["data"] / "runs").exists()
 
 

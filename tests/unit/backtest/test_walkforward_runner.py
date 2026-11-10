@@ -214,3 +214,18 @@ def test_rescore_rejects_a_run_whose_metrics_no_longer_match_the_manifest(
     (rescored,) = ev.rescore([score], fold)
     assert not rescored.valid
     assert any("do not match the manifest" in p for p in rescored.problems)
+
+
+def test_rescore_fails_closed_on_a_run_that_cannot_be_read_back(tmp_path: Path) -> None:
+    env = make_env(tmp_path)
+    (fold,) = plan_folds(ANCHOR, END, initial_train_months=1, test_months=1, embargo_ms=DAY)
+    ev = RunnerEvaluator(
+        env, TEST_CONFIG, strategy_id="bracket_reference",
+        grid={"a": dataclasses.asdict(FAST_PARAMS)}, symbols=BTC,
+    )  # fmt: skip
+    from tsclaude.research.walkforward import Score
+
+    (rescored,) = ev.rescore([Score("a", 100, 0.2, 0.7, "bt-does-not-exist")], fold)
+    assert not rescored.valid
+    assert rescored.margin_lcb is None
+    assert "cannot be read back" in rescored.problems[-1]

@@ -6,8 +6,10 @@ that only the selected configuration is evaluated out of sample.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -22,9 +24,11 @@ from tsclaude.research.walkforward import (
     Score,
     WalkForwardError,
     add_months,
+    baseline_outcomes,
     certify_oos,
     check_anchor,
     config_id_of,
+    default_anchor_ms,
     earliest_anchor_ms,
     month_start_at_or_after,
     plan_folds,
@@ -314,7 +318,8 @@ def test_a_fold_whose_train_runs_all_fail_runs_no_test_and_is_reported() -> None
     out = verdict(result, None, n_trials=1)
     assert out["verdict"] == INSUFFICIENT_OOS_EVIDENCE
     assert out["folds_without_valid_train"] == list(range(len(folds)))
-    assert "data quality only" in out["coverage_note"]
+    assert "never on a test result" in out["coverage_note"]
+    assert out["oos_coverage"]["share"] == 0.0
 
 
 def test_a_failed_test_run_voids_the_stitched_verdict_and_stops_the_walk_forward() -> None:
@@ -360,7 +365,10 @@ def test_a_failed_test_run_voids_the_stitched_verdict_and_stops_the_walk_forward
             {"evidence_grade": "X", "grade_reasons": ["r"], "integrity": {"problems": []}},
             "graded X",
         ),
-        ({"integrity": {"problems": []}}, "no evidence grade"),
+        ({"integrity": {"problems": []}}, "no valid evidence grade"),
+        ({"evidence_grade": "", "integrity": {"problems": []}}, "no valid evidence grade"),
+        ({"evidence_grade": "C", "integrity": {"problems": None}}, "no integrity record"),
+        ({"evidence_grade": "C", "integrity": {"problems": "gap"}}, "no integrity record"),
     ],
 )
 def test_run_problems_fail_closed(metrics: dict[str, object] | None, expected: str) -> None:
@@ -391,3 +399,65 @@ def test_the_earliest_anchor_leaves_the_whole_warm_up_inside_the_data() -> None:
         check_anchor(ms(2022, 2), data_start_ms=None, warmup_ms=warmup)
     with pytest.raises(WalkForwardError, match="negative"):
         earliest_anchor_ms(DEV_START, -1)
+
+
+def test_a_certified_looking_result_on_part_of_the_period_is_not_reported() -> None:
+    """Causality review M-1: with anchored windows one train-window gap removes every later
+    fold; a strong edge on the remaining fold must not be certified as the walk-forward's
+    verdict unless the preregistration allows that coverage."""
+    folds = plan_folds(DEV_START, DEV_END, initial_train_months=12, test_months=3, embargo_ms=DAY)
+
+    @dataclass
+    class GapAfterFoldZero(Recorder):
+        def score(self, config_id: str, fold: Fold) -> Score:
+            base = super().score(config_id, fold)
+            return base if fold.index == 0 else Score(config_id, 100, 0.1, 0.6, "bt", BAD)
+
+    rng = random.Random(5)  # a strong synthetic edge on fold 0 only (independent outcomes)
+    outcomes = [1.0 if rng.random() < 0.75 else -1.0 for _ in range(1200)]
+    rec = GapAfterFoldZero(train={"a": Score("a", 100, 0.1, 0.6)}, test={"a": outcomes})
+    result = walk_forward(["a"], folds, rec, n_min=30)
+    assert [f.status for f in result.folds] == ["TESTED"] + ["NO_SELECTION"] * 7
+    cert = certify_oos(outcomes, cfg=CFG, n_trials=1, max_loss_r=1.5, max_loss_source="t", seed=3)
+    assert cert is not None
+    assert cert.certified
+    strict = verdict(result, cert, n_trials=1)  # default: the whole planned period
+    assert strict["verdict"] == INSUFFICIENT_OOS_EVIDENCE
+    assert strict["oos_coverage"]["share"] == pytest.approx(
+        (folds[0].test_to_ms - folds[0].test_from_ms)
+        / sum(f.test_to_ms - f.test_from_ms for f in folds)
+    )
+    assert "margin_lcb" not in strict
+    assert "untested fold(s) [1, 2, 3, 4, 5, 6, 7]" in strict["reasons"][0]
+    lenient = verdict(result, cert, n_trials=1, min_oos_coverage=0.1)  # a preregistered floor
+    assert lenient["verdict"] == OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY
+    with pytest.raises(WalkForwardError, match="min_oos_coverage"):
+        verdict(result, cert, n_trials=1, min_oos_coverage=0.0)
+
+
+def test_failed_validity_checks_void_the_verdict() -> None:
+    result = _result([1.0, -1.0] * 10)
+    out = verdict(result, None, n_trials=1, void_reasons=["validity check same_code failed: x"])  # type: ignore[arg-type]
+    assert out["verdict"] == INVALID_OOS_EVIDENCE
+    assert out["reasons"] == ["validity check same_code failed: x"]
+
+
+def test_the_default_anchor_never_precedes_the_development_segment() -> None:
+    warmup = 1185 * M
+    assert default_anchor_ms(ms(2021, 11, 1), warmup) == DEV_START  # data from 2021: clamped
+    assert default_anchor_ms(DEV_START, warmup) == ms(2022, 2)
+    assert default_anchor_ms(ms(2023, 12, 1), warmup) == ms(2024, 1)
+
+
+def test_out_of_sample_outcomes_are_read_only_from_a_verified_trades_file(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "bt-x"
+    run_dir.mkdir()
+    outcomes, problems = baseline_outcomes(run_dir, {"outputs": {"trades_parquet_sha256": "0"}})
+    assert (outcomes, problems) == ([], ["the run has no trades file"])
+    (run_dir / "trades.parquet").write_bytes(b"not the recorded file")
+    outcomes, problems = baseline_outcomes(run_dir, {"outputs": {"trades_parquet_sha256": "0"}})
+    assert outcomes == []
+    assert problems == ["the trades file does not match the manifest hash"]
+    assert baseline_outcomes(run_dir, {})[1] == ["the trades file does not match the manifest hash"]

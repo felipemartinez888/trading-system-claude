@@ -41,6 +41,28 @@ Anchored walk-forward on the development segment: train windows grow, test windo
 of §5 (certified win-rate margin with a minimum trade count, never total return). Purging/embargo of one
 maximum holding period between train and test prevents overlapping labels from leaking.
 
+**How the tool enforces it** (`research/walkforward.py`, walkforward-v2; Lead implementation of audit
+WF-1, WF-2, WF-4, WF-6, 2026-11-10; owner policy choices stay open in
+[DECISIONS_PENDING](DECISIONS_PENDING.md)):
+- **Invalid runs are never used.** A train run with integrity problems (grade X) makes its configuration
+  ineligible for that fold. A test run with integrity problems voids the stitched verdict
+  (`INVALID_OOS_EVIDENCE`) and stops the walk-forward. Validity is re-read from every run's manifest
+  (windows, embargo, segment, configuration, preregistration, code); any failure voids the verdict.
+- **Coverage.** The stitched set must cover the planned test period (`min_oos_coverage`, default 1.0,
+  meaning all of it); below that the verdict is `INSUFFICIENT_OOS_EVIDENCE`. With anchored windows, one
+  train-window gap removes every later fold. A preregistration may set a lower floor, before any result.
+- **Warm-up.** The anchor must leave every run's warm-up inside gap-free stored data; earlier anchors
+  are refused before anything is recorded.
+- **Comparable selection.** Every fold is rescored with one trial count, fixed when the walk-forward
+  starts: the family's count after every trial the plan can add (conservative). A resumed walk-forward
+  therefore selects exactly as an uninterrupted one would.
+- **Void test runs are not inspected.** A void test run's artifacts stay on disk (nothing is deleted),
+  but its outcomes are not reported and must not be read before a rerun is designed: reading them would
+  let out-of-sample results shape the next attempt.
+- **Resume.** A restarted walk-forward reuses completed runs only after verifying them against its
+  progress ledger (hashes, trial key, window, preregistration, code commit); anything else refuses the
+  resume. Reuse never changes the trial count.
+
 ## 4. Statistics
 
 - **Uncertainty:** stationary block bootstrap (block length tied to holding period) for expectancy,

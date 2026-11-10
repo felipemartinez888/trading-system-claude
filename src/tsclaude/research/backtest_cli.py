@@ -53,6 +53,7 @@ def _default_reader(data_dir: Path, guard: HoldoutGuard) -> LakeReader:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    from tsclaude.research.max_loss_cache import MaxLossCache
     from tsclaude.research.prereg import PreregistrationRefused
     from tsclaude.research.runner import BacktestConfig, BacktestRequest, RunEnv, run_backtest
     from tsclaude.research.trials import TrialRegistry
@@ -96,6 +97,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             now_ms=clock.now_ms,
             repo_root=Path(args.repo_root),
             exchange_interruptions=registry,
+            max_loss_cache=MaxLossCache(settings.data_dir / "cache" / "max_loss"),
         )
         try:
             out = run_backtest(req, env, cfg)
@@ -169,26 +171,47 @@ def load_grid(path: Path) -> dict[str, dict[str, Any]]:
     raise ValueError("the grid must be a list of parameter objects or {id: parameters}")
 
 
+def load_dataset_pins(path: Path) -> list[str]:
+    """Dataset pins: a JSON list of dataset ids or ``{"dataset_ids": [...]}`` (non-empty)."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    ids = raw.get("dataset_ids") if isinstance(raw, dict) else raw
+    if not isinstance(ids, list) or not ids or not all(isinstance(x, str) and x for x in ids):
+        raise ValueError('the dataset pin file must be a non-empty list or {"dataset_ids": [...]}')
+    if len(set(ids)) != len(ids):
+        raise ValueError("the dataset pin file lists an id twice")
+    return sorted(ids)
+
+
 def _cmd_walkforward(args: argparse.Namespace) -> int:
     """Anchored walk-forward on the development segment only (RESEARCH_PROTOCOL §3).
 
     Without ``--from`` the anchor is the earliest UTC month start (not before the development
     segment) whose warm-up lies inside the stored data; an explicit earlier anchor is refused
-    (audit WF-2)."""
+    (audit WF-2). The report and the progress ledger go to ``<data_dir>/walkforward/<plan id>/``;
+    running the same command again after an interruption resumes it (verified reuse, WF-4).
+    Exit codes: 2 refused, 3 holdout, 4 preregistration, 5 interruption registry, 6 resume
+    refused."""
     from tsclaude.contracts.timeutil import MS_PER_MINUTE
-    from tsclaude.research.runner import DEV_START_MS, BacktestConfig, RunEnv, segment_of
+    from tsclaude.research.max_loss_cache import MaxLossCache
+    from tsclaude.research.prereg import PreregistrationRefused
+    from tsclaude.research.runner import BacktestConfig, RunEnv, segment_of
     from tsclaude.research.trials import TrialRegistry
     from tsclaude.research.walkforward import (
         WalkForwardError,
         check_anchor,
         data_start_ms,
-        earliest_anchor_ms,
+        default_anchor_ms,
         grid_warmup_ms,
         plan_folds,
         run_walk_forward,
     )
+    from tsclaude.research.wf_progress import ResumeRefused
     from tsclaude.store.eventstore import EventStore
     from tsclaude.store.holdout import EventStoreUnlocks, HoldoutError, HoldoutGuard
+
+    def refused(kind: str, exc: Exception, code: int) -> int:
+        print(json.dumps({"ok": False, "refused": kind, "error": str(exc)}))
+        return code
 
     settings = Settings.from_env()
     try:
@@ -207,9 +230,11 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
             )
         symbols = parse_symbols(args.symbols, args.market)
         warmup = grid_warmup_ms(args.strategy, grid)
-    except (ValueError, TypeError, OSError) as exc:  # TypeError: unknown parameter names
-        print(json.dumps({"ok": False, "refused": "walkforward", "error": str(exc)}))
-        return 2
+        pins = None if args.datasets is None else load_dataset_pins(Path(args.datasets))
+        if not 0.0 < args.min_oos_coverage <= 1.0:
+            raise WalkForwardError("--min-oos-coverage must be in (0, 1]")
+    except (ValueError, OSError) as exc:
+        return refused("walkforward", exc, 2)
     cfg_path = Path(args.config)
     cfg = BacktestConfig.load(cfg_path) if cfg_path.is_file() else BacktestConfig()
     from tsclaude.quality.interruptions import (
@@ -222,10 +247,8 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
     try:  # as `backtest run`: no file -> empty registry; a broken file refuses
         interruptions = load_registry(registry_path) if registry_path.is_file() else EMPTY_REGISTRY
     except InterruptionRegistryError as exc:
-        print(json.dumps({"ok": False, "refused": "exchange_interruptions", "error": str(exc)}))
-        return 5
+        return refused("exchange_interruptions", exc, 5)
     clock = SystemClock()
-    stamp = clock.now_ms()
     with EventStore(settings.state_db_path) as store:
         guard = HoldoutGuard(EventStoreUnlocks(store, Path(args.repo_root)))
         env = RunEnv(
@@ -235,16 +258,15 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
             now_ms=clock.now_ms,
             repo_root=Path(args.repo_root),
             exchange_interruptions=interruptions,
+            max_loss_cache=MaxLossCache(settings.data_dir / "cache" / "max_loss"),
         )
         try:  # the anchor and the folds need the data's coverage; nothing is recorded yet
-            start = data_start_ms(env.reader, symbols)
+            start = data_start_ms(env.reader, symbols, pins)
             if start is None:
                 raise WalkForwardError("no stored 1m bars for the requested symbols")
-            from_ms = (
-                explicit_from
-                if explicit_from is not None
-                else max(DEV_START_MS, earliest_anchor_ms(start, warmup))
-            )
+            from_ms = explicit_from
+            if from_ms is None:
+                from_ms = default_anchor_ms(start, warmup)
             check_anchor(from_ms, data_start_ms=start, warmup_ms=warmup)
             if segment_of(from_ms, to_ms) != "development":
                 raise WalkForwardError(
@@ -258,10 +280,6 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
                 test_months=args.test_months,
                 embargo_ms=args.embargo_minutes * MS_PER_MINUTE,
             )
-        except ValueError as exc:
-            print(json.dumps({"ok": False, "refused": "walkforward", "error": str(exc)}))
-            return 2
-        try:
             report = run_walk_forward(
                 env,
                 cfg,
@@ -271,24 +289,39 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
                 folds=folds,
                 n_min=args.n_min,
                 hypothesis_id=args.hypothesis,
-                report_dir=settings.data_dir / "walkforward" / f"wf-{stamp}",
+                work_root=settings.data_dir / "walkforward",
+                prereg_id=args.prereg,
+                dataset_ids=pins,
+                resume=not args.no_resume,
+                max_new_trials=args.max_new_trials,
+                final_selection_enabled=args.final_selection,
+                min_oos_coverage=args.min_oos_coverage,
             )
         except HoldoutError as exc:
-            print(json.dumps({"ok": False, "refused": "holdout", "error": str(exc)}))
-            return 3
+            return refused("holdout", exc, 3)
+        except PreregistrationRefused as exc:
+            return refused("preregistration", exc, 4)
+        except ResumeRefused as exc:
+            return refused("resume", exc, 6)
+        except ValueError as exc:
+            return refused("walkforward", exc, 2)
     print(
         json.dumps(
             {
                 "ok": True,
-                "report": str(
-                    settings.data_dir / "walkforward" / f"wf-{stamp}" / "walkforward.json"
-                ),
+                "report": report.get("report_path"),
+                "plan_id": report["plan"]["plan_id"],
+                "resumable": report["plan"]["resumable"],
+                "resume": report["resume"],
                 "strategy_id": report["strategy_id"],
                 "folds": len(report["folds"]),
                 "n_train_evaluations": report["n_train_evaluations"],
                 "n_test_evaluations": report["n_test_evaluations"],
+                "trial_budget": report["trial_budget"],
                 "warmup": report["warmup"],
+                "checks": report["checks"],
                 "oos": report["oos"],
+                "final_selection": report["final_selection"],
                 "provenance": "BACKTEST",
             },
             indent=2,
@@ -356,8 +389,39 @@ def register(sub: Any) -> None:
         help="gap between train end and test start: at least one maximum holding period",
     )
     wf.add_argument("--n-min", type=int, default=30, help="trades a configuration needs")
-    wf.add_argument("--max-configs", type=int, default=12, help="trial budget for the grid")
+    wf.add_argument(
+        "--max-configs", type=int, default=12, help="budget: distinct configurations in the grid"
+    )
+    wf.add_argument(
+        "--max-new-trials",
+        type=int,
+        default=None,
+        help="budget: refuse if the walk-forward could add more registry trials than this",
+    )
     wf.add_argument("--hypothesis", required=True, help="label stored with every trial")
+    wf.add_argument("--prereg", default=None, help="committed preregistration id for every run")
+    wf.add_argument(
+        "--datasets",
+        default=None,
+        help='JSON file: the dataset ids every run may read, [...] or {"dataset_ids": [...]}',
+    )
+    wf.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="ignore recorded progress and run every evaluation again (a new report directory)",
+    )
+    wf.add_argument(
+        "--final-selection",
+        action="store_true",
+        help="after a positive verdict, select one configuration on the whole development "
+        "window (rule pending governance; adds up to one trial per configuration)",
+    )
+    wf.add_argument(
+        "--min-oos-coverage",
+        type=float,
+        default=1.0,
+        help="share of the planned test period that must be tested out of sample (default all)",
+    )
     wf.add_argument("--config", default=str(DEFAULT_CONFIG))
     wf.add_argument("--repo-root", default=".")
     wf.set_defaults(func=_cmd_walkforward)
