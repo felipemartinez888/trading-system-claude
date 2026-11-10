@@ -250,7 +250,9 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         not isinstance(pins, list) or not pins or not all(isinstance(x, str) for x in pins)
     ):
         p.append("data.dataset_ids must be null or a non-empty list of dataset ids")
-    wf = doc.get("walk_forward") if isinstance(doc.get("walk_forward"), Mapping) else {}
+    wf: Mapping[str, Any] = (
+        doc["walk_forward"] if isinstance(doc.get("walk_forward"), Mapping) else {}
+    )
     if not wf:
         p.append("walk_forward is required")
     else:
@@ -280,7 +282,9 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         p.append(f"objective must be {OBJECTIVE!r} (ADR-0012)")
     if doc.get("selection_rule") not in SELECTION_RULES:
         p.append(f"selection_rule must be one of {list(SELECTION_RULES)}")
-    budget = doc.get("trial_budget") if isinstance(doc.get("trial_budget"), Mapping) else {}
+    budget: Mapping[str, Any] = (
+        doc["trial_budget"] if isinstance(doc.get("trial_budget"), Mapping) else {}
+    )
     maxc = budget.get("max_configurations")
     if not isinstance(maxc, int) or isinstance(maxc, bool) or maxc < 1:
         p.append("trial_budget.max_configurations must be a positive integer")
@@ -332,16 +336,18 @@ def _check_freeze(doc: Mapping[str, Any], v: Validation) -> None:
 
 def _validate_selection(doc: Mapping[str, Any], v: Validation) -> None:
     p = v.problems
-    parent = doc.get("parent") if isinstance(doc.get("parent"), Mapping) else {}
+    parent: Mapping[str, Any] = doc["parent"] if isinstance(doc.get("parent"), Mapping) else {}
     if not parent.get("prereg_id") or not parent.get("content_sha256"):
         p.append("parent.prereg_id and parent.content_sha256 are required")
-    sel = doc.get("selected") if isinstance(doc.get("selected"), Mapping) else {}
+    sel: Mapping[str, Any] = doc["selected"] if isinstance(doc.get("selected"), Mapping) else {}
     if not sel.get("config_id") or not isinstance(sel.get("params"), Mapping):
         p.append("selected.config_id and selected.params are required")
     sh = doc.get("strategy_hash")
     if not isinstance(sh, str) or len(sh) < 8:
         p.append("strategy_hash (the selected configuration's) is required")
-    wf = doc.get("walk_forward") if isinstance(doc.get("walk_forward"), Mapping) else {}
+    wf: Mapping[str, Any] = (
+        doc["walk_forward"] if isinstance(doc.get("walk_forward"), Mapping) else {}
+    )
     for key in ("plan_id", "report_sha256", "verdict"):
         if not wf.get(key):
             p.append(f"walk_forward.{key} is required")
