@@ -1,0 +1,49 @@
+# Preregistration template, schema tsc-prereg-v1 (research/preregistration.py).
+# Copy to preregistrations/<prereg_id>.yaml, fill it in, run `tsclaude prereg validate <file>`.
+# The TEMPLATE id itself is refused by every run. Fields set to PENDING are owner decisions that
+# are still open (DECISIONS_PENDING: D-C, D-D, D-E); `freeze` refuses while any is PENDING.
+# Freezing a hypothesis is an owner decision: freeze, review the diff, then the owner commits.
+schema: tsc-prereg-v1
+prereg_id: TEMPLATE
+kind: search
+title: Example search preregistration (the REFERENCE strategy; never research evidence)
+rationale: >
+  State the mechanism and why it should hold after costs, before any result is seen.
+strategy:
+  strategy_id: bracket_reference
+  version: 1.0.0
+search_space:        # every entry is one configuration (a trial per evaluated window)
+  - {tp_r: 1.0}
+  - {tp_r: 0.5}
+universe:
+  market: spot
+  symbols: [BTCUSDT, ETHUSDT]
+data:                # D-05; fixed, cannot be moved by a preregistration
+  development: ['2022-01-01', '2025-01-01']
+  validation: ['2025-01-01', '2026-01-01']
+  holdout: ['2026-01-01', '2026-10-01']
+  dataset_ids: null  # or the exact dataset ids every run may read (pinning)
+walk_forward:
+  anchor: auto       # or a UTC month start, e.g. '2022-02-01'
+  initial_train_months: 12
+  test_months: 3
+  embargo_minutes: 1440   # at least one maximum holding period
+  time_exit_required: true
+  n_min: 300
+  min_oos_coverage: 1.0
+objective: certified_margin_lcb_then_p_lcb   # ADR-0012, fixed
+selection_rule: full-development-train-v1
+trial_budget:
+  max_configurations: 2
+  max_registry_trials: null
+  counting: PENDING          # owner decision D-C: configurations | registry_rows
+holdout_procedure: PENDING   # owner decision D-D (two-stage preregistration)
+risk_compatibility: PENDING  # owner decision D-E (live net reward/risk floor vs geometries)
+rejection_criteria:
+  - certified margin lower bound <= 0
+  - expectancy lower bound <= 0
+  - fewer than 300 effective trades
+  - cost stress x1.5 not certified
+  - no edge over the random-entry control
+  - any integrity problem (grade X)
+max_loss_r_policy: L-10 default

@@ -25,6 +25,8 @@ def check_preregistration(repo_root: Path | str, prereg_id: str) -> str:
     """Return the repository-relative path of the committed preregistration or raise."""
     if not _ID.fullmatch(prereg_id):
         raise PreregistrationRefused(f"invalid preregistration id {prereg_id!r}")
+    if prereg_id.upper() == "TEMPLATE":
+        raise PreregistrationRefused("TEMPLATE is the schema example, not a preregistration")
     rel = f"{PREREG_DIR}/{prereg_id}.yaml"
     root = Path(repo_root)
     if not (root / rel).is_file():

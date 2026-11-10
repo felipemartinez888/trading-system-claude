@@ -900,7 +900,10 @@ def plan_identity(
             import yaml
 
             raw = yaml.safe_load((Path(env.repo_root) / rel).read_text(encoding="utf-8"))
-            declared = raw.get("min_oos_coverage") if isinstance(raw, dict) else None
+            if isinstance(raw, dict):
+                declared = raw.get("min_oos_coverage")
+                if declared is None and isinstance(raw.get("walk_forward"), dict):
+                    declared = raw["walk_forward"].get("min_oos_coverage")
         if declared is None or float(declared) != min_oos_coverage:
             raise WalkForwardError(
                 f"min_oos_coverage {min_oos_coverage} below 1.0 needs a committed preregistration "
@@ -965,6 +968,54 @@ def _canonical(obj: Any) -> str:
     from tsclaude.contracts.events import canonical_json
 
     return canonical_json(obj)
+
+
+def _months_between(a_ms: int, b_ms: int) -> int:
+    da = datetime.fromtimestamp(a_ms / 1000, UTC)
+    db = datetime.fromtimestamp(b_ms / 1000, UTC)
+    return (db.year - da.year) * 12 + (db.month - da.month)
+
+
+def _prereg_conformance(
+    env: RunEnv,
+    prereg_id: str,
+    *,
+    strategy_id: str,
+    grid: Mapping[str, Mapping[str, Any]],
+    symbols: Sequence[tuple[Market, str]],
+    folds: Sequence[Fold],
+    n_min: int,
+    min_oos_coverage: float,
+    dataset_ids: Sequence[str] | None,
+    final_selection: bool,
+) -> Mapping[str, Any]:
+    """A walk-forward under ``--prereg`` must run exactly what the frozen search preregistration
+    (schema tsc-prereg-v1) fixes; refused otherwise, before anything runs. Returns its budget."""
+    from tsclaude.research.prereg import check_preregistration
+    from tsclaude.research.preregistration import SCHEMA, load, walkforward_conformance
+
+    rel = check_preregistration(env.repo_root, prereg_id)
+    doc = load(Path(env.repo_root) / rel)
+    if doc.get("schema") != SCHEMA:
+        raise WalkForwardError(f"a walk-forward preregistration must use schema {SCHEMA}")
+    first = folds[0]
+    problems = walkforward_conformance(
+        doc,
+        strategy_id=strategy_id,
+        grid=grid,
+        symbols=[f"{m}:{s}" for m, s in symbols],
+        initial_train_months=_months_between(first.train_from_ms, first.train_to_ms),
+        test_months=_months_between(first.train_to_ms, first.test_to_ms),
+        embargo_minutes=(first.test_from_ms - first.train_to_ms) // MS_PER_MINUTE,
+        n_min=n_min,
+        min_oos_coverage=min_oos_coverage,
+        anchor=_iso(first.train_from_ms),
+        dataset_ids=dataset_ids,
+        final_selection=final_selection,
+    )
+    if problems:
+        raise WalkForwardError("not the preregistered walk-forward: " + "; ".join(problems))
+    return dict(doc.get("trial_budget") or {})
 
 
 # ---------------------------------------------------------------- trial budget
@@ -1201,6 +1252,13 @@ def run_walk_forward(
         hypothesis_id=hypothesis_id, prereg_id=prereg_id, dataset_ids=dataset_ids,
         final_selection_rule=rule, warmup_ms=warmup, min_oos_coverage=min_oos_coverage,
     )  # fmt: skip
+    prereg_budget: Mapping[str, Any] | None = None
+    if prereg_id is not None:
+        prereg_budget = _prereg_conformance(
+            env, prereg_id, strategy_id=strategy_id, grid=grid, symbols=symbols, folds=folds,
+            n_min=n_min, min_oos_coverage=min_oos_coverage, dataset_ids=dataset_ids,
+            final_selection=final_selection_enabled,
+        )  # fmt: skip
     if report_dir is None and work_root is not None:
         name = plan["plan_id"] if plan["resumable"] and resume else None
         report_dir = work_root / (name or f"{plan['plan_id']}-{env.now_ms()}")
@@ -1227,6 +1285,13 @@ def run_walk_forward(
         evaluator, list(grid), folds, final_window=final_window, env=env,
         strategy_id=strategy_id, tested_folds=tested,
     )  # fmt: skip
+    if (
+        prereg_budget is not None
+        and prereg_budget.get("counting") == "registry_rows"
+        and prereg_budget.get("max_registry_trials") is not None
+    ):
+        cap = int(prereg_budget["max_registry_trials"])
+        max_new_trials = cap if max_new_trials is None else min(max_new_trials, cap)
     if max_new_trials is not None and budget["new_trials_max"] > max_new_trials:
         raise WalkForwardError(
             f"the walk-forward can add up to {budget['new_trials_max']} new trials to "
