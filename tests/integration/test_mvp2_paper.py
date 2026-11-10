@@ -7,7 +7,7 @@ small (a few simulated minutes); results are provisional while the WHEA investig
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -29,13 +29,16 @@ from tsclaude.runtime.paper_runtime import (
 from tsclaude.runtime.supervisor import MonitoringSupervisor
 from tsclaude.signals.demo import DemoDetectorConfig
 from tsclaude.sim.journal import EventStoreJournal
-from tsclaude.sim.paper import PaperConfig
+from tsclaude.sim.paper import PaperConfig, PaperTradingService
 from tsclaude.sim.testing import spot_spec, usdm_spec
 from tsclaude.store.eventstore import EventStore
 
 T0 = 1_760_000_040_000 - 1_760_000_040_000 % MS_PER_MINUTE
 KEYS = [(Market.SPOT, "BTCUSDT"), (Market.USDM, "BTCUSDT")]
 POLL = 0.01
+#: upper bound of every condition wait below: only a hung runtime reaches it (a slow runner does
+#: not: the waits end on what the runtime did, not on elapsed time)
+WAIT_S = 60.0
 
 
 def paper_config(equity: str = "10000") -> PaperConfig:
@@ -74,6 +77,25 @@ class GatedFactory(FakeFactory):
         return instance
 
 
+async def until(
+    cond: Callable[[], bool], what: str, detail: Callable[[], str] = lambda: ""
+) -> None:
+    """Wait (bounded by `WAIT_S`) until `cond()` holds; the event loop runs in between."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + WAIT_S
+    while not cond():
+        if loop.time() > deadline:
+            raise AssertionError(f"timed out after {WAIT_S:g} s waiting for {what}: {detail()}")
+        await asyncio.sleep(POLL / 2)
+
+
+async def consumer_stopped(runtime: PaperRuntime) -> None:
+    """Wait until the paper consumer task has ended by itself (a halt or a failed open)."""
+    task = runtime._task
+    assert task is not None
+    await until(task.done, "the paper consumer to stop", lambda: f"paper {runtime.state}")
+
+
 class Rig:
     def __init__(self, tmp_path: Path, *, enabled: bool = True, **kw: Any) -> None:
         self.tmp = tmp_path
@@ -84,6 +106,7 @@ class Rig:
         self.problems: list[tuple[str, str]] = []
         self.config_factory = kw.pop("config_factory", paper_config)
         self.runtime = self._runtime(enabled)
+        self._count_polls(self.runtime)
         self.supervisor = MonitoringSupervisor(
             self.store,
             self.clock,
@@ -106,6 +129,96 @@ class Rig:
             bars=self.bars,
         )
 
+    # -------------------------------------------------------------- synchronization
+    # The tests drive a manual clock, the consumer polls in real time. Asserting, or moving the
+    # manual clock on, after a fixed real-time sleep is a race: on a slow runner (a blocking
+    # commit, a loaded scheduler) the sleep ends before the poll it was meant to cover, and the
+    # anchor is then fixed at a later manual time or not yet at all. These helpers wait for what
+    # the consumer did instead. They only read the runtime (`_count_polls` wraps a method of this
+    # test's instance; production code is unchanged).
+    def _count_polls(self, runtime: PaperRuntime) -> None:
+        """Record every completed poll of the consumer: `PaperRuntime._run` calls `_sync_state`
+        last in each iteration that polled (and in no other), with no await in between."""
+        self.polls = 0  # completed polls
+        self.quiet_poll = 0  # the last poll that changed nothing since the poll before it
+        self.settled_poll = 0  # ... and at which the anchor gate had decided at the clock's time
+        self._mark: tuple[Any, ...] | None = None
+        assert callable(getattr(runtime, "_sync_state", None))  # the hook point still exists
+        real = runtime._sync_state
+
+        def counted(service: PaperTradingService) -> None:
+            real(service)
+            stats = service.clock.stats
+            mark = (
+                self.store.head,  # everything journaled (paper steps, market data, signals)
+                runtime.state,
+                runtime.reason,
+                service.state,
+                service.observing_from_ms,
+                (stats.offered, stats.released, stats.late),
+                None if runtime.backfill is None else runtime.backfill["ok"],
+            )
+            self.polls += 1
+            if mark == self._mark:
+                self.quiet_poll = self.polls
+                if self.anchor_decided():
+                    self.settled_poll = self.polls
+            self._mark = mark
+
+        runtime._sync_state = counted  # type: ignore[method-assign]
+
+    def anchor_decided(self) -> bool:
+        """The anchor is fixed, or the gate gave its verdict (not the transient wait for a fresh
+        round) at the manual clock's current time."""
+        service = self.runtime.service
+        if service is not None and service.observing_from_ms is not None:
+            return True
+        observation = self.runtime.observation
+        return (
+            observation is not None
+            and observation["code"] != "clock_resync_pending"
+            and observation["attempted_at_ms"] == self.clock.now_ms()
+        )
+
+    def consuming(self) -> bool:
+        task = self.runtime._task
+        return task is not None and not task.done()
+
+    async def until(self, cond: Callable[[], bool], what: str) -> None:
+        await until(
+            cond,
+            what,
+            lambda: (
+                f"paper {self.runtime.state} ({self.runtime.reason}), polls {self.polls}, "
+                f"observation {self.runtime.observation}"
+            ),
+        )
+
+    async def settle(self, *, anchor: bool = True) -> None:
+        """Wait until the consumer has finished with everything given to it so far: it completed
+        a poll, after this call, that changed nothing since the poll before it (also after this
+        call), so with this manual time and these updates no further poll does anything; and,
+        with `anchor`, the anchor gate had decided at that poll (pass False while a slow clock
+        round is deliberately left pending). Ends at once when the consumer has stopped.
+
+        While paper has no consumer polling (disabled, halted, or still waiting behind a closed
+        startup-backfill gate) there is no poll to wait for: the loop gets the real time it always
+        got, and whatever the test then asserts is that nothing happened."""
+        gate = getattr(self.factory, "done", None)
+        waiting = self.runtime.service is None and gate is not None and not gate.is_set()
+        if not self.consuming() or waiting:
+            await asyncio.sleep(POLL * 6)
+            return
+        start = self.polls
+        reached = (lambda: self.settled_poll) if anchor else (lambda: self.quiet_poll)
+        await self.until(
+            lambda: not self.consuming() or reached() >= start + 2,
+            "a poll that changed nothing" + (" with the anchor gate decided" if anchor else ""),
+        )
+
+    async def halted(self) -> None:
+        await consumer_stopped(self.runtime)
+
     @property
     def md(self) -> FakeMarketData:
         assert self.factory.instance is not None
@@ -119,16 +232,19 @@ class Rig:
     def journal(self, session_id: str = "paper") -> list[Any]:
         return EventStoreJournal(self.store, session_id).batches()
 
-    async def minute(self, i: int, keys: Sequence[tuple[Market, str]] = KEYS) -> None:
-        """Deliver minute `i` like the live feed, then let the paper consumer poll."""
+    async def minute(
+        self, i: int, keys: Sequence[tuple[Market, str]] = KEYS, *, anchor: bool = True
+    ) -> None:
+        """Deliver minute `i` like the live feed, then wait until the paper consumer has finished
+        with it (`settle`), so the next step never moves the clock under an unfinished poll."""
         self.clock.set(T0 + (i + 1) * MS_PER_MINUTE + 1_500)
         for m, s in keys:
             self.md.push_bar(make_bar(m, s, T0 + i * MS_PER_MINUTE))
-        await asyncio.sleep(POLL * 6)
+        await self.settle(anchor=anchor)
 
-    async def idle(self, now_ms: int) -> None:
+    async def idle(self, now_ms: int, *, anchor: bool = True) -> None:
         self.clock.set(now_ms)
-        await asyncio.sleep(POLL * 6)
+        await self.settle(anchor=anchor)
 
 
 def run(coro: Any) -> Any:
@@ -340,7 +456,7 @@ def test_p6_lost_subscription_stops_paper_decisions(tmp_path: Path) -> None:
         await rig.supervisor.start("S1")
         await rig.minute(0)
         await rig.md.stop()  # not through the supervisor: paper is still consuming
-        await asyncio.sleep(POLL * 5)
+        await rig.halted()
         assert rig.runtime.state is PaperState.SUBSCRIPTION_LOST
         assert len(rig.journal()) == 2
         await rig.supervisor.close()
@@ -356,7 +472,7 @@ def test_p6_silent_subscription_stops_paper_decisions(tmp_path: Path) -> None:
         rig = Rig(tmp_path)
         rig.runtime.settings = PaperSettings(enabled=True, poll_s=POLL, silence_s=POLL * 5)
         await rig.supervisor.start("S1")
-        await asyncio.sleep(POLL * 30)  # no update at all
+        await rig.halted()  # no update at all
         assert rig.runtime.state is PaperState.SUBSCRIPTION_LOST
         assert "no market-data update" in str(rig.runtime.reason)
         await rig.supervisor.close()
@@ -370,7 +486,7 @@ def test_p9_consumer_exception_stops_paper_and_is_reported(tmp_path: Path) -> No
         await rig.supervisor.start("S1")
         await rig.minute(0)
         rig.paper_sub().queue.put_nowait(RuntimeError("subscription broken"))
-        await asyncio.sleep(POLL * 6)
+        await rig.halted()
         assert rig.runtime.state is PaperState.CONSUMER_DIED
         assert "subscription broken" in str(rig.runtime.reason)
         assert any("CONSUMER_DIED" in t for t, _ in rig.problems)
@@ -475,7 +591,7 @@ def test_paper_waits_for_the_market_data_backfill_before_opening(tmp_path: Path)
         rig = Rig(tmp_path, factory=gate)
         gate.done.set()  # first run: nothing to backfill
         await rig.supervisor.start("S1")
-        await asyncio.sleep(POLL * 6)
+        await rig.settle()
         for i in range(3):
             await rig.minute(i)
         await rig.supervisor.stop()
@@ -489,7 +605,7 @@ def test_paper_waits_for_the_market_data_backfill_before_opening(tmp_path: Path)
         for i in (3, 4, 5):  # the market-data backfill fills the bar store, then completes
             rig.bars.add(i)
         gate.done.set()
-        await asyncio.sleep(POLL * 10)
+        await rig.settle()
         assert rig.runtime.state is PaperState.RUNNING, rig.runtime.reason
         backfill = rig.runtime.backfill
         assert backfill is not None
@@ -506,7 +622,7 @@ def test_market_data_backfill_that_never_finishes_leaves_paper_unavailable(tmp_p
         rig = Rig(tmp_path, factory=gate)
         rig.runtime.settings = PaperSettings(enabled=True, poll_s=POLL, backfill_wait_s=POLL * 5)
         await rig.supervisor.start("S1")
-        await asyncio.sleep(POLL * 20)
+        await rig.halted()
         assert rig.runtime.state is PaperState.UNAVAILABLE
         assert "did not finish" in str(rig.runtime.reason)
         assert rig.runtime.service is None

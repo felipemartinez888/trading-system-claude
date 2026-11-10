@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from m1t2_fakes import make_bar
-from test_mvp2_paper import KEYS, POLL, T0, Rig, paper_config, run
+from test_mvp2_paper import KEYS, POLL, T0, Rig, consumer_stopped, paper_config, run
 
 from tsclaude.api.paper import _values
 from tsclaude.contracts.market import Market
@@ -339,7 +339,7 @@ def test_h5_real_subscription_closed_by_service_stop_is_detected_in_one_poll(
         await asyncio.sleep(POLL * 10)  # several normal timeouts while running: no loss
         assert rt.state is PaperState.RUNNING
         owner.stop()
-        await asyncio.sleep(POLL * 3)
+        await consumer_stopped(rt)
         assert rt.state is PaperState.SUBSCRIPTION_LOST
         assert "market data stopped" in str(rt.reason)
         await rt.stop()
@@ -356,7 +356,7 @@ def test_h5_real_subscription_overflow_stops_paper(tmp_path: Path) -> None:
         sub._put(BarClosed(bar))
         sub._put(BarClosed(bar))  # queue full: the real class counts a drop
         assert sub.dropped == 1
-        await asyncio.sleep(POLL * 5)
+        await consumer_stopped(rt)
         assert rt.state is PaperState.STOPPED_OVERFLOW
         await rt.stop()
 
@@ -369,7 +369,7 @@ def test_h5_foreign_close_while_running_is_caught_by_the_watchdog(tmp_path: Path
         sub = owner.subscribe()
         await _start(rt, owner, sub)
         sub.close()  # nobody in production does this while the service runs
-        await asyncio.sleep(POLL * 20)
+        await consumer_stopped(rt)
         assert rt.state is PaperState.SUBSCRIPTION_LOST
         assert "no market-data update" in str(rt.reason)
         await rt.stop()

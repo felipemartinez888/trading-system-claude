@@ -58,17 +58,24 @@ def test_no_anchor_until_the_requested_round_finishes(tmp_path: Path) -> None:
         rig.runtime._strategy_factory = lambda: recorder
         rig.clock.set(T0 + 20_000)
         await rig.supervisor.start("S1")
-        rig.md.resync_results = [0.4]  # the round takes 0.4 s
-        await rig.idle(T0 + 20_000)
+        finish = asyncio.Event()  # the round runs until the test lets it finish
+        real = rig.md.resync_clock
+
+        async def slow_round() -> bool:
+            await finish.wait()
+            return await real()
+
+        rig.runtime._resync = slow_round  # the hook the runtime was started with
+        await rig.idle(T0 + 20_000, anchor=False)  # polled; the round is still running
         observation = rig.runtime.observation
         assert observation is not None
         assert (observation["state"], observation["code"]) == ("blocked", PENDING)
         assert observation["resync"]["pending"] is True
         assert rig.runtime.service is not None
         assert rig.runtime.service.observing_from_ms is None
-        await rig.minute(0)  # minute 0 closes while the round is still running
+        await rig.minute(0, anchor=False)  # minute 0 closes while the round is still running
         assert rig.runtime.service.observing_from_ms is None
-        await asyncio.sleep(0.5)  # the round finishes; the next poll is at minute 1's open + 1.5 s
+        finish.set()  # the round finishes; the next poll is at minute 1's open + 1.5 s
         observation = await _settled(rig)
         assert observation["state"] == "active"
         assert observation["observing_from_ms"] == T0 + 2 * M
@@ -147,8 +154,7 @@ def test_a_round_that_does_not_finish_in_time_counts_as_failed(tmp_path: Path) -
         rig.clock.set(T0 + 20_000)
         await rig.supervisor.start("S1")
         rig.md.resync_results = [5.0]  # far longer than the timeout
-        await rig.idle(T0 + 20_000)
-        await asyncio.sleep(0.2)
+        await rig.idle(T0 + 20_000)  # returns once the round timed out (the gate's verdict)
         observation = await _settled(rig)
         assert observation["code"] == "clock_resync_failed"
         assert "no server-clock round within 0.05 s" in observation["problem"]
@@ -315,7 +321,7 @@ def test_every_monitoring_start_requests_its_own_fresh_round(tmp_path: Path) -> 
         rig.clock.set(T0 + 20_000)
         await rig.supervisor.start("S1")
         rig.md.resync_results = [10.0]  # never finishes in this run
-        await rig.idle(T0 + 20_000)
+        await rig.idle(T0 + 20_000, anchor=False)
         assert rig.runtime._resync_task is not None
         pending = rig.runtime._resync_task
         await rig.supervisor.stop()

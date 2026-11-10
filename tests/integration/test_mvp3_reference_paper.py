@@ -3,7 +3,6 @@ paper runtime. Synthetic bars and fake market data only; results are provisional
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -311,7 +310,7 @@ def test_nine_day_startup_backfill_reaches_the_reference_warm_up(tmp_path: Path)
                 b = make_bar(m, s, T0 + i * MS_PER_MINUTE, source=source)
                 store.write(b, "md" if source is BarSource.WS_LIVE else None)
                 rig.md.push_bar(b)
-            await asyncio.sleep(POLL * 6)
+            await rig.settle()
 
         rig.clock.set(start + 1_000)
         await rig.supervisor.start("S1")

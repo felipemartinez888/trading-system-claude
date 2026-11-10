@@ -55,12 +55,8 @@ def _settings(**kw: Any) -> PaperSettings:
     return PaperSettings(**base)
 
 
-async def _until(cond: Callable[[], bool], what: str, polls: int = 500) -> None:
-    for _ in range(polls):
-        if cond():
-            return
-        await asyncio.sleep(POLL)
-    raise AssertionError(f"timed out waiting for {what}")
+async def _until(rig: Rig, cond: Callable[[], bool], what: str) -> None:
+    await rig.until(cond, what)
 
 
 def _service(rig: Rig) -> PaperTradingService:
@@ -89,8 +85,8 @@ async def _all_decided(rig: Rig, n: int) -> None:
         s = service.clock.stats
         return s.offered == n and s.released + s.late == n
 
-    await _until(done, f"{n} bars offered and decided")
-    await asyncio.sleep(POLL * 3)
+    await rig.until(done, f"{n} bars offered and decided")
+    await rig.settle()
 
 
 def _journal_keys(rig: Rig) -> list[tuple[int, str, str]]:
@@ -224,13 +220,13 @@ def test_b_stop_in_a_bar_queued_behind_its_minute_fills_in_that_minute(tmp_path:
         await rig.supervisor.start("S1")
         await rig.idle(T0 + 20_000)
         await _until(
-            lambda: _service(rig).observing_from_ms is not None, "the S1 observation anchor"
+            rig, lambda: _service(rig).observing_from_ms is not None, "the S1 observation anchor"
         )
         assert _service(rig).observing_from_ms == T0 + M
         for i in range(4):
             await rig.idle(T0 + (i + 1) * M - 500)  # a fresh market view just before the close
             _push(rig, i, _minute_bars(i), (SPOT, USDM))
-            await asyncio.sleep(POLL * 6)
+            await rig.settle()
         # minute 1 decides; release time bounds execution, so the entry fills at minute 3's open
         entries = [
             f for f in _fills(_service(rig)) if f["role"] == "entry" and "SIG" in f["order_id"]
@@ -251,7 +247,7 @@ def test_b_stop_in_a_bar_queued_behind_its_minute_fills_in_that_minute(tmp_path:
         bars = {4: _minute_bars(4, CROSS), 5: _minute_bars(5, GAPPED), 6: _minute_bars(6)}
         for i in (4, 5, 6):  # spot second within each minute
             _push(rig, i, bars[i], (USDM, SPOT))
-            await asyncio.sleep(POLL * 2)
+            await rig.settle()  # the gate is closed: nothing polls, the bars stay queued
         assert rig.runtime.service is None
         gate.done.set()  # first poll at minute 6's close + 1.5 s: minute 4 is past its deadline
         await _all_decided(rig, 6)
@@ -405,7 +401,7 @@ def test_subscription_closed_behind_the_backlog(tmp_path: Path) -> None:
         await rig.md.stop()  # not through the supervisor: paper has not even opened yet
         assert sub.closed
         gate.done.set()
-        await _until(lambda: rig.runtime.state is PaperState.SUBSCRIPTION_LOST, "the closure")
+        await _until(rig, lambda: rig.runtime.state is PaperState.SUBSCRIPTION_LOST, "the closure")
         assert _stats(rig) == {"offered": 6, "released": 6, "late": 0, "incomplete_minutes": 0}
         assert _journal_keys(rig) == _expected_keys(range(3))
         assert sub.queue.empty()  # the sentinel was left for get(), which consumed it
@@ -429,7 +425,7 @@ def test_subscription_closed_during_bounded_iterations_releases_nothing_incomple
             await rig.minute(i)
         await rig.md.stop()
         gate.done.set()
-        await _until(lambda: rig.runtime.state is PaperState.SUBSCRIPTION_LOST, "the closure")
+        await _until(rig, lambda: rig.runtime.state is PaperState.SUBSCRIPTION_LOST, "the closure")
         assert _stats(rig) == {"offered": 6, "released": 0, "late": 0, "incomplete_minutes": 0}
         assert rig.journal() == []
         assert rig.runtime.published()[0]["consumer"]["deferrals"] == 2
@@ -450,7 +446,7 @@ def test_stream_failure_in_the_drain_stops_paper_before_the_poll(tmp_path: Path)
         sub = rig.paper_sub()
         sub.queue.put_nowait(RuntimeError("subscription broken"))
         gate.done.set()
-        await _until(lambda: rig.runtime.state is PaperState.CONSUMER_DIED, "the failure")
+        await _until(rig, lambda: rig.runtime.state is PaperState.CONSUMER_DIED, "the failure")
         assert "subscription broken" in str(rig.runtime.reason)
         assert rig.journal() == []
         await rig.supervisor.close()
@@ -480,7 +476,7 @@ def test_overflow_is_checked_after_the_drain(tmp_path: Path) -> None:
 
         sub.get_nowait = dropping  # type: ignore[method-assign]
         gate.done.set()
-        await _until(lambda: rig.runtime.state is PaperState.STOPPED_OVERFLOW, "the overflow")
+        await _until(rig, lambda: rig.runtime.state is PaperState.STOPPED_OVERFLOW, "the overflow")
         assert rig.runtime.dropped_updates == 1
         assert rig.journal() == []
         await rig.supervisor.close()

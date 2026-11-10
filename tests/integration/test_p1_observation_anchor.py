@@ -10,7 +10,6 @@ up through the store, so the unobserved minutes of a start do not break its hist
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -18,7 +17,7 @@ from typing import Any
 
 import pytest
 from m1t2_fakes import FakeMarketData
-from test_mvp2_paper import POLL, T0, GatedFactory, Rig, paper_config, run
+from test_mvp2_paper import T0, GatedFactory, Rig, paper_config, run
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "unit" / "strategies"))
 from test_live_adapter import COSTS, PARAMS, TRADE_FROM, series
@@ -63,13 +62,13 @@ def _flags(rig: Rig) -> dict[int, list[bool]]:
 
 
 async def _settled(rig: Rig) -> dict[str, Any]:
-    """The runtime's observation once it is not the transient wait for a fresh round (D-21)."""
-    for _ in range(500):
-        observation = rig.runtime.observation
-        if observation is not None and observation["code"] != "clock_resync_pending":
-            return observation
-        await asyncio.sleep(POLL)
-    raise AssertionError(f"observation stayed pending: {rig.runtime.observation}")
+    """The runtime's observation once the anchor is fixed or the gate gave its verdict at the
+    manual clock's current time (not the transient wait for a fresh round, D-21; not a verdict
+    left from an earlier manual time)."""
+    await rig.until(rig.anchor_decided, "the anchor gate to decide at the current manual time")
+    observation = rig.runtime.observation
+    assert observation is not None
+    return observation
 
 
 # ---------------------------------------------------------------- the anchor at the first poll
@@ -138,7 +137,7 @@ def test_minutes_queued_during_the_startup_wait_are_processed_unobserved(tmp_pat
             await rig.minute(i)
         assert rig.runtime.service is None
         gate.done.set()  # the first poll happens now, at minute 2's close + 1.5 s
-        await asyncio.sleep(POLL * 10)
+        await rig.settle()
         observation = rig.runtime.observation
         assert observation is not None
         assert observation["observing_from_ms"] == T0 + 4 * M
