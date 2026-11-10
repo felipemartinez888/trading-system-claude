@@ -25,6 +25,11 @@ holdout guard reads (`store.holdout.inspect_preregistration`), so a selection re
 the holdout. Whether and how a selection record may be used for validation and the holdout is
 decision D-D; adopting it needs an owner-approved change of the guard.
 
+**Draft strategies.** A search preregistration may name a strategy that is only in
+`strategies.DRAFT_REGISTRY` (implemented, awaiting an owner freeze): it is validated like any
+other, and ``DRAFT_OPEN_ITEM`` is listed among the open decisions, so `freeze` refuses until the
+owner promotes the strategy to `REGISTRY` (and no run can build it before that).
+
 The audit trail is git: every preregistration and selection record is a committed file, and the
 runner and holdout guard accept only committed, clean files (`research.prereg`).
 """
@@ -71,6 +76,8 @@ SEGMENTS = {
 }
 KINDS = ("search", "selection")
 SELECTION_RULES = ("full-development-train-v1",)
+#: open item listed (not a problem) for a strategy that is only in `strategies.DRAFT_REGISTRY`
+DRAFT_OPEN_ITEM = "strategy is a DRAFT (not runnable until an owner-approved promotion to REGISTRY)"
 REQUIRED_REJECTION = (
     "certified margin lower bound <= 0",
     "expectancy lower bound <= 0",
@@ -206,14 +213,23 @@ def _month_start(text: Any) -> bool:
     return d.day == 1
 
 
+def _builder(strategy_id: str) -> Any:
+    """`build_strategy` for runnable ids, `build_draft_strategy` for draft-only ids."""
+    from tsclaude.strategies import DRAFT_REGISTRY, REGISTRY, build_draft_strategy, build_strategy
+
+    if strategy_id not in REGISTRY and strategy_id in DRAFT_REGISTRY:
+        return build_draft_strategy
+    return build_strategy
+
+
 def configurations_of(doc: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
     """config id (content hash of the parameters, as the walk-forward uses) -> params hash."""
     from tsclaude.research.walkforward import config_id_of
-    from tsclaude.strategies import build_strategy
 
     problems: list[str] = []
     out: dict[str, str] = {}
     sid = _get(doc, "strategy.strategy_id")
+    build_strategy = _builder(str(sid))
     space = doc.get("search_space")
     if not isinstance(space, list) or not space or not all(isinstance(p, dict) for p in space):
         return {}, ["search_space must be a non-empty list of parameter objects"]
@@ -232,7 +248,7 @@ def configurations_of(doc: Mapping[str, Any]) -> tuple[dict[str, str], list[str]
 
 # ---------------------------------------------------------------- validation
 def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Validation:
-    from tsclaude.strategies import REGISTRY, build_strategy
+    from tsclaude.strategies import DRAFT_REGISTRY, REGISTRY
 
     kind = doc.get("kind") if doc.get("kind") in KINDS else None
     frozen = isinstance(doc.get("frozen"), Mapping)
@@ -266,10 +282,12 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         if not isinstance(doc.get(name), str) or not str(doc.get(name)).strip():
             p.append(f"{name} is required")
     sid = _get(doc, "strategy.strategy_id")
-    if sid not in REGISTRY:
+    if sid not in REGISTRY and sid not in DRAFT_REGISTRY:
         p.append(f"strategy.strategy_id {sid!r} is not an implemented strategy")
     else:
-        version = build_strategy(str(sid), {}).version
+        if sid not in REGISTRY:
+            v.open_decisions.append(DRAFT_OPEN_ITEM)
+        version = _builder(str(sid))(str(sid), {}).version
         if _get(doc, "strategy.version") != version:
             p.append(f"strategy.version must be the implemented version {version!r}")
         v.configurations, more = configurations_of(doc)
@@ -616,6 +634,7 @@ def make_selection_record(
 
 
 __all__ = [
+    "DRAFT_OPEN_ITEM",
     "OBJECTIVE",
     "PENDING",
     "POLICY_FIELDS",

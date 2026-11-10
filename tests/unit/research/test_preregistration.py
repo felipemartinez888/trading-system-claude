@@ -274,3 +274,67 @@ def test_the_cli_validates_and_refuses_to_freeze_the_template(
     assert out["refused"] == "freeze"
     assert any("D-C" in p for p in out["problems"])
     assert copy_path.read_text(encoding="utf-8") == TEMPLATE.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- draft strategies
+H1_DRAFT = REPO / "docs" / "research" / "H1-v2.preregistration.DRAFT.yaml"
+
+
+def _draft_doc() -> dict[str, Any]:
+    d = _decided(_doc())
+    d["strategy"] = {"strategy_id": "h1_compression_breakout", "version": "0.1.0-draft"}
+    d["search_space"] = [{"tp_r": 1.0}, {"tp_r": 0.5}]
+    return d
+
+
+def test_a_draft_strategy_validates_with_an_open_item_and_cannot_be_frozen(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, _draft_doc(), "H-DRAFT")
+    v = pr.validate_file(path)
+    assert v.ok, v.problems
+    assert v.open_decisions == [pr.DRAFT_OPEN_ITEM]  # an open item, not a problem
+    assert len(v.configurations) == 2
+    before = path.read_text(encoding="utf-8")
+    with pytest.raises(pr.PreregistrationInvalid) as exc:
+        pr.freeze(path, now_ms=0, code=CLEAN)
+    assert f"cannot freeze: {pr.DRAFT_OPEN_ITEM}" in exc.value.problems
+    assert path.read_text(encoding="utf-8") == before  # nothing was written
+    wrong = _draft_doc()
+    wrong["strategy"]["version"] = "1.0.0"
+    assert any("implemented version" in p for p in pr.validate_document(wrong).problems)
+    bad = _draft_doc()
+    bad["search_space"].append({"time_exit_bars": None})
+    assert any("search_space[2]" in p for p in pr.validate_document(bad).problems)
+    with pytest.raises(ValueError, match="unknown strategy"):
+        pr.implementation_files("h1_compression_breakout")  # not freezable code identity
+
+
+def test_the_h1_v2_draft_validates_as_a_copy_named_after_its_id(tmp_path: Path) -> None:
+    # at its draft path the stem differs from the id by design
+    assert any("does not match the file name" in p for p in pr.validate_file(H1_DRAFT).problems)
+    copy_path = tmp_path / "H1-v2.yaml"
+    shutil.copy(H1_DRAFT, copy_path)
+    v = pr.validate_file(copy_path)
+    assert v.ok, v.problems
+    assert v.kind == "search"
+    assert not v.frozen
+    assert len(v.configurations) == 24
+    assert [d.split(":")[0] for d in v.open_decisions] == [
+        "trial_budget.counting", "holdout_procedure", "risk_compatibility", pr.DRAFT_OPEN_ITEM,
+    ]  # fmt: skip
+    doc = pr.load(copy_path)
+    assert "SOLUSDT" not in doc["universe"]["symbols"]
+    assert doc["walk_forward"]["n_min"] == 300
+    assert doc["walk_forward"]["time_exit_required"] is True
+    assert all(isinstance(c["time_exit_bars"], int) for c in doc["search_space"])
+    # the embargo covers one maximum scheduled holding period of every configuration
+    from tsclaude.strategies import build_draft_strategy
+
+    longest = max(
+        build_draft_strategy("h1_compression_breakout", c).max_holding_ms()  # type: ignore[attr-defined]
+        for c in doc["search_space"]
+    )
+    assert doc["walk_forward"]["embargo_minutes"] * 60_000 >= longest
+    with pytest.raises(pr.PreregistrationInvalid, match="cannot freeze"):
+        pr.freeze(copy_path, now_ms=0, code=CLEAN)

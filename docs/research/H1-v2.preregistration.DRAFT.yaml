@@ -1,0 +1,141 @@
+# H1-v2: DRAFT search preregistration for owner review. NOT frozen, NOT in preregistrations/,
+# NOT usable by any run. Schema tsc-prereg-v1 (structure copied from preregistrations/TEMPLATE.yaml).
+#
+# File name vs prereg_id: this draft lives at docs/research/H1-v2.preregistration.DRAFT.yaml, so its
+# stem does not match `prereg_id: H1-v2`. The id matches the file name stem only once the file is
+# copied to preregistrations/H1-v2.yaml (an owner act); `tsclaude prereg validate` on this path
+# reports the mismatch by design. Validate a copy named H1-v2.yaml instead.
+#
+# No result exists for H1: no backtest, walk-forward or validation run of `h1_compression_breakout`
+# has been made, and no observed profit shaped any value below. The grid is the H1-v1 grid
+# (2 x 2 x 2 x 3 = 24) with the audit's structural fixes; it was not tuned.
+#
+# The strategy is implemented as a DRAFT (`strategies.DRAFT_REGISTRY`, version 0.1.0-draft):
+# `validate` lists "strategy is a DRAFT ..." as an open item and `freeze` refuses until the owner
+# approves its promotion to `strategies.REGISTRY` (H1-10: implement first, then freeze).
+#
+# ---------------------------------------------------------------------------------------------
+# Audit findings on H1-v1 (docs/MVP_CLOSURE_HANDOFF.md §5) and how this draft handles each:
+#
+# H1-1  (blocking) cost filter vs compression. NOT RESOLVED HERE: waits on the owner's P&L-free
+#       feasibility count on development data (`tsclaude backtest feasibility --draft --strategy
+#       h1_compression_breakout --grid ...` for interval 15m and 1h, spot; USD-M needs the deferred
+#       import). The decision timeframe/market is then chosen from candidate counts per stage and
+#       year only (no outcome). The strategy takes `interval: 15m | 1h` with the same rules so both
+#       are measured identically. If 1h is chosen, `interval` changes in every entry and the
+#       embargo must be re-derived (see walk_forward below). max_cost_r stays 0.2: the design is
+#       changed, not the threshold.
+# H1-2  (blocking) configuration sent to validation: selection_rule full-development-train-v1 (the
+#       configuration selected by the objective on the whole development segment, only if the
+#       stitched out-of-sample verdict is positive).
+# H1-3  (blocking) holdout unlock for a search preregistration: holdout_procedure PENDING, owner
+#       decision D-D (two-stage form: this search file, then a committed selection record naming
+#       the selected strategy_hash; `tsclaude prereg select`).
+# H1-4  (blocking) trial budget: trial_budget.max_configurations 24 is enforced by `validate`
+#       (the search space has exactly 24); what counts (configurations vs registry rows) is
+#       trial_budget.counting PENDING, owner decision D-C.
+# H1-5  (blocking) live risk gate: risk_compatibility PENDING, owner decision D-E. With the live
+#       floor min_rr_net 1.5 (configs/risk.yaml) every tp_r < 1.5 is INCOMPATIBLE per
+#       research/live_compat.py, and tp_r 1.5 is too (gross 1.5 cannot stay >= 1.5 after costs):
+#       all 24 configurations are rejected live on every trade unless D-E changes the floor or the
+#       geometries. ADR-0012 requires the 0.5-1.5 R geometries, so they are kept.
+# H1-6  (major) 741-bar EMA warm-up: replaced by a finite window, close of the last closed 1h bar
+#       > simple mean of the last trend_n = 50 closed 1h closes, built causally from the 15m window
+#       (complete, hour-aligned groups only; the forming hour is never used). Warm-up 206 15m bars
+#       (51.5 h) on 15m, 111 bars on 1h; both far below max_backfill_days 30.
+# H1-7  (major) unbounded holding period: time_exit_bars 48 is required (an int, never null);
+#       walk_forward.time_exit_required true; embargo derived below.
+# H1-8  (major) SOLUSDT: excluded from the universe pending owner decision D-F (SOL gap handling).
+# H1-9  (major) holdout months outside the accepted data (M2 accepted 2022-01..2025-12, D-22):
+#       PREREQUISITE, owner decision D-F must accept the 2026 holdout months before any grade A.
+#       Not settled by this file.
+# H1-10 (minor) order: the strategy is implemented (draft, no runs) before the freeze; `freeze`
+#       hashes the implementation.
+# H1-11 (minor) unpinned inputs: OPEN. Before the freeze: pin data.dataset_ids (exact ids), record
+#       the cost-model version and the configs/backtest.yaml hash, replace the UNVERIFIED
+#       instrument filters with loaded exchange filters, and set decision_latency_ms from the
+#       recorded live release latencies (p95). The schema has no field for the last three; the
+#       manifests record them, the owner checks them at freeze.
+# H1-12 (minor) drawdown criterion: added as a PROPOSED numeric rejection criterion (below); the
+#       owner confirms or replaces the number before the freeze.
+# ---------------------------------------------------------------------------------------------
+schema: tsc-prereg-v1
+prereg_id: H1-v2
+kind: search
+title: "H1 compression -> expansion breakout, long only, spot (DRAFT v2)"
+rationale: >
+  Volatility clusters: quiet periods end in expansions, and a close beyond the prior range with
+  abnormal volume, in the direction of the closed-hour trend, is the observable start of one. After
+  15m (or 1h, pending H1-1) volatility compression the break continues far enough to reach the
+  take-profit before the stop or the time exit often enough to beat the break-even win rate net of
+  costs. Costs make small expansions unprofitable, so the cost filter (max_cost_r) is part of the
+  rule, not a tuning knob. Long only on spot: shorts need USD-M history and funding (D-02, D-22).
+  Own hypothesis (RESEARCH_PROTOCOL §8); bracket_reference results are not H1 evidence.
+strategy:
+  strategy_id: h1_compression_breakout
+  version: 0.1.0-draft
+search_space:        # 24 configurations = rank_max x vol_z_min x stop_atr x tp_r (2 x 2 x 2 x 3)
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 0.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 1.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+universe:
+  market: spot
+  # SOLUSDT excluded pending owner decision D-F (its gaps make most training windows grade X, WF-3)
+  symbols: [BTCUSDT, ETHUSDT, DOGEUSDT, XRPUSDT]
+data:                # D-05; fixed, cannot be moved by a preregistration
+  development: ['2022-01-01', '2025-01-01']
+  validation: ['2025-01-01', '2026-01-01']
+  holdout: ['2026-01-01', '2026-10-01']   # D-F: the 2026 months must be accepted first (H1-9)
+  dataset_ids: null  # H1-11: pin the exact dataset ids before the freeze
+walk_forward:
+  anchor: auto
+  initial_train_months: 12
+  test_months: 3
+  # Embargo from the required time exit (H1-7), interval 15m:
+  #   fill within 1 validity bar after the decision, then the time exit after time_exit_bars bars
+  #   max scheduled holding = (time_exit_bars + 1) x 15 min = (48 + 1) x 15 = 735 min
+  #   embargo 1440 min >= 735 min; the 705 min margin covers exits deferred by candles without
+  #   trades and short data gaps (book: `_hold_position`).
+  #   If H1-1 selects 1h: (48 + 1) x 60 = 2940 min -> the embargo must be raised (e.g. 4320).
+  embargo_minutes: 1440
+  time_exit_required: true
+  n_min: 300         # the certification floor (research/stats/certify.py)
+  min_oos_coverage: 1.0
+objective: certified_margin_lcb_then_p_lcb   # ADR-0012, fixed
+selection_rule: full-development-train-v1     # H1-2
+trial_budget:
+  max_configurations: 24
+  max_registry_trials: null
+  counting: PENDING          # owner decision D-C: configurations | registry_rows (H1-4)
+holdout_procedure: PENDING   # owner decision D-D: two-stage preregistration (H1-3)
+risk_compatibility: PENDING  # owner decision D-E: live floor 1.5 rejects every tp_r here (H1-5)
+rejection_criteria:
+  - certified margin lower bound <= 0
+  - expectancy lower bound <= 0
+  - fewer than 300 effective trades
+  - cost stress x1.5 not certified
+  - no edge over the random-entry control
+  - any integrity problem (grade X)
+  - "validation max drawdown > 0.20 of peak equity (PROPOSED, H1-12; owner to confirm)"
+max_loss_r_policy: L-10 default
