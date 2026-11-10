@@ -432,3 +432,67 @@ def test_the_ledger_rescore_count_is_validated_and_never_lowered(
     ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(ResumeRefused, match="rescore trial count"):
         _walk(_env(data), data)
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@example.invalid", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", *args],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+
+def _committed_prereg(repo: Path, **budget: Any) -> str:
+    """A frozen, committed search preregistration matching this module's walk-forward."""
+    import yaml
+
+    from tsclaude.research import preregistration as pr
+
+    doc = pr.load(Path(__file__).resolve().parents[3] / "preregistrations" / "TEMPLATE.yaml")
+    doc.update(
+        prereg_id="H-RUN", search_space=list(GRID.values()),
+        holdout_procedure="two-stage-selection-record",
+        risk_compatibility="live-floor-kept-geometries-dropped",
+    )  # fmt: skip
+    doc["universe"]["symbols"] = ["BTCUSDT"]
+    doc["walk_forward"].update(anchor="2024-01-01", end="2024-03-01", initial_train_months=1,
+                               test_months=1, embargo_minutes=1440)  # fmt: skip
+    doc["trial_budget"].update({"counting": "configurations", **budget})
+    (repo / "preregistrations").mkdir(parents=True)
+    path = repo / "preregistrations" / "H-RUN.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    pr.freeze(path, now_ms=0, code={"commit": "test", "dirty": False})
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "prereg")
+    return "H-RUN"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_walk_forward_under_a_preregistration_must_run_exactly_its_plan(tmp_path: Path) -> None:
+    """Review M2 (overnight): the run-side conformance path, refused before anything runs."""
+    data = tmp_path / "d"
+    write_lake(data, [(Market.SPOT, "BTCUSDT", synthetic_rows(DATA_START, END))])
+    repo = tmp_path / "repo"
+    pid = _committed_prereg(repo)
+    env = _env(data, repo_root=repo)
+    with pytest.raises(WalkForwardError, match=r"not the preregistered walk-forward.*n_min"):
+        _walk(env, data, prereg_id=pid, final_selection_enabled=True)  # n_min 5, not 300
+    with pytest.raises(WalkForwardError, match="final_selection"):
+        _walk(env, data, prereg_id=pid, n_min=300)
+    assert not env.runs_dir.exists()
+    assert env.trials.n_trials("bracket_reference") == 0
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_registry_rows_budget_in_the_preregistration_caps_the_run(tmp_path: Path) -> None:
+    data = tmp_path / "d"
+    write_lake(data, [(Market.SPOT, "BTCUSDT", synthetic_rows(DATA_START, END))])
+    repo = tmp_path / "repo"
+    pid = _committed_prereg(repo, counting="registry_rows", max_registry_trials=2)
+    env = _env(data, repo_root=repo)
+    with pytest.raises(WalkForwardError, match="above --max-new-trials 2"):
+        _walk(env, data, prereg_id=pid, n_min=300, final_selection_enabled=True)
+    assert not env.runs_dir.exists()

@@ -27,7 +27,7 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | P1-5 | Research status lists walk-forward verdicts | `597ebf8` | `test_research_status.py` 18 passed | IMPLEMENTED, TESTED |
 | Map | `docs/MVP_SEMANTIC_MAP.md` (Sonnet agent, grep-verified symbols) | `f10daad` | — | written |
 | Queue | `docs/MVP_TASK_QUEUE.md` | `f1a604f` | — | written |
-| M6-1 | Evaluation export v1, 11 schemas, verifier, stdlib scorer, CLI | `2d7191c` `088f3a3` `e63743b` | `tests/unit/evaluation` 44 passed, 1 skipped (fastapi) | IMPLEMENTED, TESTED locally; CI pending |
+| M6-1 | Evaluation export v1, 11 schemas, verifier, stdlib scorer, CLI | `2d7191c` `088f3a3` `e63743b` | `tests/unit/evaluation` 41 passed, 1 skipped (fastapi), plus the import guard 3 | IMPLEMENTED, TESTED locally; CI pending |
 | P0 | M3 acceptance request | this commit | — | written; **D-A is the owner's** |
 
 ## M0–M6 status (no acceptance is claimed here)

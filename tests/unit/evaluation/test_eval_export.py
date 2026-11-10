@@ -573,3 +573,23 @@ def test_fill_time_rejections_are_counted_by_reason() -> None:
     got = scorer_mod.score_session(lines)["books"]["baseline"]["rejections_by_reason"]
     assert got == {"r0": 1, "r1": 2}
     assert list(got) == ["r0", "r1"]
+
+
+def test_a_prefix_export_verifies_but_says_it_does_not_cover_the_store(
+    built: Built, tmp_path: Path
+) -> None:
+    """Overnight review M5: a valid prefix is not the whole session; the report says so."""
+    with EventStore(built.path) as store:
+        export_store(store, tmp_path / "halted", upto_seq=built.halted_head_seq)
+        full_head, _ = store.head
+        prefix = verify_export(tmp_path / "halted", store=store).to_dict()
+        export_store(store, tmp_path / "full")
+        whole = verify_export(tmp_path / "full", store=store).to_dict()
+    assert prefix["ok"] is True
+    assert prefix["store_head_seq"] == full_head
+    assert prefix["events_after_head"] == full_head - built.halted_head_seq > 0
+    assert prefix["covers_whole_store"] is False
+    assert whole["covers_whole_store"] is True
+    alone = verify_export(tmp_path / "full").to_dict()
+    assert alone["store_checked"] is False
+    assert alone["covers_whole_store"] is None

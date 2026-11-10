@@ -92,3 +92,10 @@ is not derivable: no regime label is recorded).
 - Not engineering: agreeing the protocol and the export format with the other team, then freezing
   it (hash into the manifest). Daily chain-head evidence commits and the analytics / agent-value
   parts of M6 are post-MVP and not started.
+
+## Review follow-up (overnight Fable review, M5)
+- `verify` against a store now reports `store_head_seq`, `events_after_head` and `covers_whole_store`: a
+  valid prefix export (`--upto-seq`) verifies, but the report says it does not cover later events.
+- **Without a store** (`--no-store`) only internal consistency is checked. The hashes are unkeyed, so a
+  fully re-chained forgery cannot be told apart from a genuine export; the store comparison (or the
+  committed chain-head evidence) is the control.

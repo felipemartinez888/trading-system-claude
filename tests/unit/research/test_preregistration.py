@@ -38,8 +38,8 @@ def _decided(doc: dict[str, Any]) -> dict[str, Any]:
     """The template with the three owner decisions filled in (for tests only)."""
     d = copy.deepcopy(doc)
     d["trial_budget"]["counting"] = "configurations"
-    d["holdout_procedure"] = "two-stage (test value)"
-    d["risk_compatibility"] = "live rules wired into backtests (test value)"
+    d["holdout_procedure"] = "two-stage-selection-record"
+    d["risk_compatibility"] = "live-floor-kept-geometries-dropped"
     return d
 
 
@@ -79,6 +79,12 @@ def test_the_template_id_is_refused_by_every_run() -> None:
         (lambda d: d["search_space"].append({"tp_r": 1.0}), "repeats a configuration"),
         (lambda d: d["universe"].update(symbols=["BTCUSDT", "BTCUSDT"]), "twice"),
         (lambda d: d.update(max_loss_r_policy="lower"), "max_loss_r_policy"),
+        (lambda d: d["walk_forward"].update(end="2025-06-01"), "walk_forward.end"),
+        # a typo or placeholder is never taken as an owner decision (review B2)
+        (lambda d: d.update(holdout_procedure="TBD"), "is not a decision"),
+        (lambda d: d.update(holdout_procedure=""), "is not a decision"),
+        (lambda d: d.update(risk_compatibility="pending"), "is not a decision"),
+        (lambda d: d["trial_budget"].update(counting=False), "is not a decision"),
     ],
 )
 def test_invalid_preregistrations_are_reported(tmp_path: Path, change: Any, message: str) -> None:
@@ -122,6 +128,14 @@ def test_a_frozen_file_detects_edits_and_implementation_changes(
     edited = pr.load(path)
     edited["walk_forward"]["test_months"] = 6
     assert any("edited after it was frozen" in p for p in pr.validate_document(edited).problems)
+    # the frozen block itself is sealed (review M4)
+    tampered = pr.load(path)
+    tampered["frozen"]["code_commit"] = "other"
+    assert any("frozen block was edited" in p for p in pr.validate_document(tampered).problems)
+    # an engine change is reported, not enforced
+    monkeypatch.setattr(pr, "engine_sha256", lambda: "1" * 64)
+    assert pr.validate_file(path).ok
+    assert any("engine changed" in n for n in pr.validate_file(path).notes)
     # a change of the strategy code since the freeze
     monkeypatch.setattr(pr, "implementation_sha256", lambda _sid: "0" * 64)
     assert any("implementation changed" in p for p in pr.validate_file(path).problems)
@@ -168,6 +182,9 @@ def test_a_selection_record_links_a_frozen_search_to_one_strategy_hash(tmp_path:
     rpath.write_text(json.dumps(_report(doc)), encoding="utf-8")
     record = pr.make_selection_record(search, rpath, prereg_id="H-S-SEL1")
     assert record["holdout_procedure"] == pr.PENDING  # D-D stays the owner's
+    # review B1: the holdout guard reads a top-level strategy_hash; a record never has one
+    assert "strategy_hash" not in record
+    assert record["selected"]["strategy_hash"]
     assert record["parent"]["content_sha256"] == pr.content_sha256(doc)
     out = _write(tmp_path, record, "H-S-SEL1")
     v = pr.validate_file(out)
@@ -181,12 +198,23 @@ def test_a_selection_record_links_a_frozen_search_to_one_strategy_hash(tmp_path:
     assert any("parent" in p for p in pr.validate_file(out).problems)
 
 
+def test_a_hand_written_selection_record_with_a_top_level_hash_is_invalid(tmp_path: Path) -> None:
+    search, doc = _frozen(tmp_path)
+    rpath = tmp_path / "walkforward.json"
+    rpath.write_text(json.dumps(_report(doc)), encoding="utf-8")
+    record = pr.make_selection_record(search, rpath, prereg_id="H-S-SEL2")
+    record["strategy_hash"] = record["selected"]["strategy_hash"]
+    v = pr.validate_file(_write(tmp_path, record, "H-S-SEL2"))
+    assert any("must not have a top-level strategy_hash" in p for p in v.problems)
+
+
 @pytest.mark.parametrize(
     ("over", "message"),
     [
         ({"oos": {"verdict": "NO_EDGE_DEMONSTRATED"}}, "not positive"),
         ({"prereg_id": "OTHER"}, "not a run of this preregistration"),
         ({"checks": {"same_code": False}}, "validity checks"),
+        ({"checks": {}}, "validity checks"),
         ({"final_selection": {"status": "NOT_RUN"}}, "no final-selection candidate"),
     ],
 )
@@ -210,6 +238,21 @@ def test_walkforward_conformance_lists_every_deviation(tmp_path: Path) -> None:
         "anchor": "2022-02-01T00:00:00Z", "dataset_ids": None, "final_selection": True,
     }  # fmt: skip
     assert pr.walkforward_conformance(doc, **base) == []
+    from tsclaude.research.walkforward import plan_folds
+
+    def ms(y: int, m: int) -> int:
+        from datetime import UTC, datetime
+
+        return int(datetime(y, m, 1, tzinfo=UTC).timestamp() * 1000)
+
+    planned = [f.to_dict() for f in plan_folds(ms(2022, 2), ms(2025, 1), initial_train_months=12,
+                                              test_months=3, embargo_ms=1440 * 60_000)]  # fmt: skip
+    assert pr.walkforward_conformance(doc, **base, folds=planned) == []
+    short = [f.to_dict() for f in plan_folds(ms(2022, 2), ms(2024, 1), initial_train_months=12,
+                                            test_months=3, embargo_ms=1440 * 60_000)]  # fmt: skip
+    assert any("folds differ" in p for p in pr.walkforward_conformance(doc, **base, folds=short))
+    assert any("config hash" in p for p in pr.walkforward_conformance(
+        {**doc, "backtest_config_hash": "x"}, **base, config_hash="y"))  # fmt: skip
     bad = {**base, "test_months": 6, "n_min": 30, "symbols": ["spot:BTCUSDT"]}
     problems = pr.walkforward_conformance(doc, **bad)
     assert {p.split(" ")[0] for p in problems} == {"symbols", "test_months", "n_min"}

@@ -33,6 +33,12 @@ class VerifyReport:
     lines: int = 0
     chain_head: dict[str, Any] | None = None
     store_checked: bool = False
+    #: with a store: its head seq and how many events it holds after the export's head (a prefix
+    #: export verifies, but it does not cover those events); None without a store. Without a
+    #: store only internal consistency is checked: the hashes are unkeyed, so a fully re-chained
+    #: forgery cannot be told apart from a genuine export
+    store_head_seq: int | None = None
+    events_after_head: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +47,11 @@ class VerifyReport:
             "lines": self.lines,
             "chain_head": self.chain_head,
             "store_checked": self.store_checked,
+            "store_head_seq": self.store_head_seq,
+            "events_after_head": self.events_after_head,
+            "covers_whole_store": None
+            if self.events_after_head is None
+            else self.events_after_head == 0,
         }
 
 
@@ -56,6 +67,11 @@ def verify_export(
     if store is not None and export is not None:
         report.store_checked = True
         report.problems.extend(_against_store(root, export.manifest, store, schemas))
+        store_seq, _ = store.head
+        report.store_head_seq = int(store_seq)
+        report.events_after_head = max(
+            0, int(store_seq) - int(export.manifest["chain_head"]["seq"])
+        )
     report.ok = not report.problems
     return report
 

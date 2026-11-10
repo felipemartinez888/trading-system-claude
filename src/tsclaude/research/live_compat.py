@@ -7,7 +7,10 @@ and costs only lower it, so a geometry with ``tp_r < min_rr_net`` is rejected li
 trade, however good its backtest.
 
 This module answers that statically, with the live engine's own function (`cost_adjusted_rr`) on
-synthetic bracket orders, so research and live cannot drift apart:
+synthetic **long market** bracket orders with **modelled** slippage (no live spread or volume:
+the engine uses the larger of the modelled slippage and half the live spread, so a wide spread can
+still reject a trade judged COMPATIBLE here; shorts are not assessed), so research and live cannot
+drift apart:
 
 - ``INCOMPATIBLE``: no stop distance passes (``tp_r`` is at or below the floor's reach);
 - ``COMPATIBLE``: every trade the strategy can confirm passes (already at the smallest stop its own
@@ -132,7 +135,10 @@ def assess(
             "trade is rejected by the baseline book",
         )  # fmt: skip
     if at_min is not None and at_min >= m:
-        why = "every trade the strategy can confirm passes the floor"
+        why = (
+            "every long trade the strategy can confirm passes the floor at modelled slippage "
+            "(a wider live spread can still reject one)"
+        )
         return LiveCompatibility(COMPATIBLE, str(m), tp_r, str(at_min), d_min, d_min, why)
     lo, hi = (d_min or 1e-6), 0.5
     hi_rr = rr(hi)

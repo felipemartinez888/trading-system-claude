@@ -37,8 +37,8 @@ Last update: 2026-11-10 (overnight session).
 | P1-4 | Research/live risk compatibility (I-1) | engine's own RR; regression test of the 1.5 floor vs ADR-0012 geometries | IMPLEMENTED, TESTED | `7ef4ba8`; `test_live_compat.py` (11) | wiring live rules into backtests: **D-E** |
 | P1-5 | Research status lists walk-forward verdicts | invalid/insufficient shown; never "validation" | IMPLEMENTED, TESTED | `597ebf8` | — |
 | P1-6 | Wire risk rules into backtests | research evaluates what live accepts | BLOCKED | — | **D-E** |
-| P1-7 | Holdout guard integration of selection records | guard unlock via a selection record | BLOCKED (format exists, guard unchanged) | `f10daad` | **D-D** |
-| P1-8 | Independent review of P1-1…P1-5 | Fable review findings fixed | READY | — | — |
+| P1-7 | Holdout guard integration of selection records | guard unlock via a selection record | BLOCKED: a record has no top-level `strategy_hash`, so the unchanged guard cannot accept it (review B1 fix) | `f10daad`, review fix | **D-D**, then an owner-approved guard change |
+| P1-8 | Independent review of P1-1…P1-5 and M6 | Fable review findings fixed | VERIFIED locally (CHANGES REQUESTED: 2 blocking, 5 major, all fixed; CI pending) | review fixes commit | — |
 
 ## P2: hypotheses
 
@@ -55,14 +55,15 @@ Last update: 2026-11-10 (overnight session).
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| M5-1 | Agent package, mock client, schemas, budget, timeouts, mode off | every gate path tested with a mock | ACTIVE (agent) | `task/m5-agents` | — |
+| M5-1 | Agent package, mock client, schemas, budget, timeouts, mode off | every gate path tested with a mock | IMPLEMENTED, TESTED (148 passed); Fable review CHANGES REQUESTED (3 blocking budget findings) fixed | `78fdbd2`…`0605795`, fixes cherry-picked | — |
+| M5-3 | Wire the gate into the paper runtime; `agent_gated` book; Agent tab | gate called on CONFIRMED signals; book journaled and replayed | DEFERRED | — | needs new contract events (Lead) and a paper journal change; not done unattended overnight |
 | M5-2 | Measured cost/latency with a real key on live signals | the gate's last clause | BLOCKED | — | API key + live signals (D-03; paid API needs the owner) |
 
 ## P4: M6 export (MVP part)
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| M6-1 | JSONL export, schemas, verifier, independent scorer | scorer reproduces dashboard metrics from the export | ACTIVE (agent) | `task/m6-export` | — |
+| M6-1 | JSONL export, schemas, verifier, independent scorer | scorer reproduces dashboard metrics from the export | IMPLEMENTED, TESTED locally (42 passed, 1 skipped) | `2d7191c` `088f3a3` `e63743b` | real-session export: owner |
 | M6-2 | Protocol finalized with the other team | — | BLOCKED | — | D-06 (other team) |
 
 ## Owner-only (never done autonomously)

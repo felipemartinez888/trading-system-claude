@@ -25,6 +25,7 @@ data:                # D-05; fixed, cannot be moved by a preregistration
   dataset_ids: null  # or the exact dataset ids every run may read (pinning)
 walk_forward:
   anchor: auto       # or a UTC month start, e.g. '2022-02-01'
+  end: '2025-01-01'  # the last test window ends at or before this month start
   initial_train_months: 12
   test_months: 3
   embargo_minutes: 1440   # at least one maximum holding period

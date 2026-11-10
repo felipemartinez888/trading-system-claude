@@ -988,6 +988,7 @@ def _prereg_conformance(
     min_oos_coverage: float,
     dataset_ids: Sequence[str] | None,
     final_selection: bool,
+    config_hash: str | None = None,
 ) -> Mapping[str, Any]:
     """A walk-forward under ``--prereg`` must run exactly what the frozen search preregistration
     (schema tsc-prereg-v1) fixes; refused otherwise, before anything runs. Returns its budget."""
@@ -1012,6 +1013,9 @@ def _prereg_conformance(
         anchor=_iso(first.train_from_ms),
         dataset_ids=dataset_ids,
         final_selection=final_selection,
+        folds=[f.to_dict() for f in folds],
+        config_hash=config_hash,
+        path=str(Path(env.repo_root) / rel),
     )
     if problems:
         raise WalkForwardError("not the preregistered walk-forward: " + "; ".join(problems))
@@ -1294,7 +1298,7 @@ def run_walk_forward(
         prereg_budget = _prereg_conformance(
             env, prereg_id, strategy_id=strategy_id, grid=grid, symbols=symbols, folds=folds,
             n_min=n_min, min_oos_coverage=min_oos_coverage, dataset_ids=dataset_ids,
-            final_selection=final_selection_enabled,
+            final_selection=final_selection_enabled, config_hash=cfg.config_hash,
         )  # fmt: skip
     if report_dir is None and work_root is not None:
         name = plan["plan_id"] if plan["resumable"] and resume else None
@@ -1389,8 +1393,11 @@ def run_walk_forward(
             evaluator, list(grid), window=(folds[0].train_from_ms, folds[-1].test_to_ms),
             n_min=n_min, oos_verdict=oos["verdict"], last_fold=folds[-1],
         )  # fmt: skip
-    live = _live_compatibility(env, strategy_id, grid, symbols, risk_config)
-    if final is not None and final.get("selected") and live is not None:
+    try:  # informational: a failure here must never lose the report
+        live = _live_compatibility(env, strategy_id, grid, symbols, risk_config)
+    except Exception as exc:
+        live = {"error": f"{type(exc).__name__}: {exc}"}
+    if final is not None and final.get("selected") and live and "configurations" in live:
         compat = live["configurations"].get(final["selected"], {})
         final["live_compatibility"] = compat
         if not compat.get("deployable_in_baseline_book"):

@@ -19,10 +19,11 @@ hypothesis freeze is an owner decision).
 
 **Selection record** (``kind: selection``, `make_selection_record`): after a walk-forward of a
 frozen search preregistration has a positive verdict and a final-selection candidate, the record
-names the one selected strategy hash, its parent's content hash and the report's hash. It has the
-top-level ``strategy_hash`` the holdout guard reads (`store.holdout.inspect_preregistration`), so
-the existing guard needs no change; using a record for validation or an unlock still needs
-decision D-D (``holdout_procedure`` stays ``PENDING`` until the owner sets it).
+names the one selected strategy hash (``selected.strategy_hash``), its parent's content hash and
+the report's hash. It deliberately has **no top-level** ``strategy_hash``: that is the field the
+holdout guard reads (`store.holdout.inspect_preregistration`), so a selection record cannot unlock
+the holdout. Whether and how a selection record may be used for validation and the holdout is
+decision D-D; adopting it needs an owner-approved change of the guard.
 
 The audit trail is git: every preregistration and selection record is a committed file, and the
 runner and holdout guard accept only committed, clean files (`research.prereg`).
@@ -51,6 +52,16 @@ POLICY_FIELDS: dict[str, str] = {
     "trial_budget.counting": "D-C",
     "holdout_procedure": "D-D",
     "risk_compatibility": "D-E",
+}
+#: the only values each policy field may take besides PENDING: the options of its decision in
+#: DECISIONS_PENDING. Anything else (a typo, "TBD", an empty string) is a problem, never a choice.
+POLICY_VALUES: dict[str, tuple[str, ...]] = {
+    "trial_budget.counting": ("configurations", "registry_rows"),
+    "holdout_procedure": ("two-stage-selection-record",),
+    "risk_compatibility": (
+        "live-floor-kept-geometries-dropped",
+        "live-floor-replaced-for-validated",
+    ),
 }
 #: data segments fixed by D-05 (RESEARCH_PROTOCOL §2); a preregistration may not move them
 SEGMENTS = {
@@ -86,6 +97,7 @@ class Validation:
     problems: list[str] = field(default_factory=list)
     open_decisions: list[str] = field(default_factory=list)
     configurations: dict[str, str] = field(default_factory=dict)  # config id -> params hash
+    notes: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -100,6 +112,7 @@ class Validation:
             "problems": list(self.problems),
             "open_decisions": list(self.open_decisions),
             "configurations": dict(self.configurations),
+            "notes": list(self.notes),
         }
 
 
@@ -142,6 +155,28 @@ def implementation_sha256(strategy_id: str) -> str:
     parts = []
     for p in implementation_files(strategy_id):
         parts.append(f"{p.resolve().relative_to(root.resolve()).as_posix()}:{_sha_file(p)}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def engine_sha256() -> str:
+    """Every module of the packages a research run executes (contracts, features, strategies,
+    sim, risk, quality, research) and the backtest, risk and interruption configs. Recorded at
+    freeze and reported by `validate` when it changed; not enforced, because every engine bug fix
+    would otherwise void every freeze. The enforced `implementation_sha256` covers the
+    strategy's own code; the walk-forward plan id covers the exact code commit of every run."""
+    import tsclaude
+
+    pkg = Path(next(iter(tsclaude.__path__)))
+    repo = pkg.parents[1]
+    files = []
+    for sub in ("contracts", "features", "strategies", "sim", "risk", "quality", "research"):
+        files += sorted((pkg / sub).rglob("*.py"))
+    files += [repo / "configs" / n for n in ("backtest.yaml", "risk.yaml",
+                                              "exchange_interruptions.yaml")]  # fmt: skip
+    parts = []
+    for f in files:
+        if f.is_file():
+            parts.append(f"{f.resolve().relative_to(repo.resolve()).as_posix()}:{_sha_file(f)}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -218,6 +253,11 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
             p.append(f"{dotted} is required (owner decision {decision}; write {PENDING!r} if open)")
         elif value == PENDING:
             v.open_decisions.append(f"{dotted}: owner decision {decision} is open")
+        elif value not in POLICY_VALUES[dotted]:
+            p.append(
+                f"{dotted} must be {PENDING!r} or one of {list(POLICY_VALUES[dotted])} "
+                f"(owner decision {decision}); {value!r} is not a decision"
+            )
     if kind == "selection":
         _validate_selection(doc, v)
         return v
@@ -259,6 +299,9 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         anchor = wf.get("anchor")
         if anchor != "auto" and not _month_start(anchor):
             p.append("walk_forward.anchor must be 'auto' or a UTC month start YYYY-MM-01")
+        end = wf.get("end")
+        if not _month_start(end) or not "2022-01-01" < str(end) <= "2025-01-01":
+            p.append("walk_forward.end must be a UTC month start inside the development segment")
         for key, lo in (("initial_train_months", 1), ("test_months", 1), ("embargo_minutes", 1)):
             val = wf.get(key)
             if not isinstance(val, int) or isinstance(val, bool) or val < lo:
@@ -296,9 +339,6 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
     maxr = budget.get("max_registry_trials")
     if maxr is not None and (not isinstance(maxr, int) or isinstance(maxr, bool) or maxr < 1):
         p.append("trial_budget.max_registry_trials must be null or a positive integer")
-    counting = budget.get("counting")
-    if counting not in (PENDING, "configurations", "registry_rows", None):
-        p.append("trial_budget.counting must be PENDING, 'configurations' or 'registry_rows'")
     crit = doc.get("rejection_criteria")
     if not isinstance(crit, list) or not all(isinstance(c, str) for c in crit):
         p.append("rejection_criteria must be a list of strings")
@@ -317,8 +357,15 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
     return v
 
 
+def _block_sha256(block: Mapping[str, Any]) -> str:
+    body = {k: v for k, v in block.items() if k != "block_sha256"}
+    return hashlib.sha256(canonical_json(_jsonable(body)).encode("utf-8")).hexdigest()
+
+
 def _check_freeze(doc: Mapping[str, Any], v: Validation) -> None:
     fz = doc["frozen"]
+    if fz.get("block_sha256") != _block_sha256(fz):
+        v.problems.append("the frozen block was edited (its own hash differs)")
     if fz.get("content_sha256") != content_sha256(doc):
         v.problems.append("the file was edited after it was frozen (content hash differs)")
     sid = _get(doc, "strategy.strategy_id")
@@ -330,6 +377,11 @@ def _check_freeze(doc: Mapping[str, Any], v: Validation) -> None:
         v.problems.append("the strategy implementation changed since the freeze")
     if fz.get("configurations") != v.configurations:
         v.problems.append("the frozen configurations differ from the search space")
+    if fz.get("engine_sha256") not in (None, engine_sha256()):
+        v.notes.append(
+            "the research engine changed since the freeze (informational: review the commits "
+            "between the freeze and this run)"
+        )
     if v.open_decisions:
         v.problems.append("a frozen file still has open owner decisions")
 
@@ -342,9 +394,14 @@ def _validate_selection(doc: Mapping[str, Any], v: Validation) -> None:
     sel: Mapping[str, Any] = doc["selected"] if isinstance(doc.get("selected"), Mapping) else {}
     if not sel.get("config_id") or not isinstance(sel.get("params"), Mapping):
         p.append("selected.config_id and selected.params are required")
-    sh = doc.get("strategy_hash")
+    if "strategy_hash" in doc:
+        p.append(
+            "a selection record must not have a top-level strategy_hash: that field lets the "
+            "holdout guard unlock (decision D-D); use selected.strategy_hash"
+        )
+    sh = sel.get("strategy_hash")
     if not isinstance(sh, str) or len(sh) < 8:
-        p.append("strategy_hash (the selected configuration's) is required")
+        p.append("selected.strategy_hash is required")
     wf: Mapping[str, Any] = (
         doc["walk_forward"] if isinstance(doc.get("walk_forward"), Mapping) else {}
     )
@@ -383,10 +440,10 @@ def _check_selection_parent(doc: Mapping[str, Any], v: Validation, folder: Path)
         v.problems.append("the selected configuration is not in the parent's search space")
         return
     sid = _get(pdoc, "strategy.strategy_id")
-    if build_strategy(str(sid), dict(sel["params"])).params_hash != doc["strategy_hash"]:
-        v.problems.append("strategy_hash is not the selected parameters' hash")
-    elif pv.configurations[sel["config_id"]] != doc["strategy_hash"]:
-        v.problems.append("strategy_hash differs from the parent's frozen configuration")
+    if build_strategy(str(sid), dict(sel["params"])).params_hash != sel["strategy_hash"]:
+        v.problems.append("selected.strategy_hash is not the selected parameters' hash")
+    elif pv.configurations[sel["config_id"]] != sel["strategy_hash"]:
+        v.problems.append("selected.strategy_hash differs from the parent's frozen configuration")
 
 
 # ---------------------------------------------------------------- freeze
@@ -412,7 +469,10 @@ def freeze(path: Path | str, *, now_ms: int, code: Mapping[str, Any]) -> dict[st
         "implementation_sha256": implementation_sha256(str(_get(doc, "strategy.strategy_id"))),
         "configurations": v.configurations,
         "code_commit": code["commit"],
+        # informational: every module the research engine runs (not enforced, see the docstring)
+        "engine_sha256": engine_sha256(),
     }
+    block["block_sha256"] = _block_sha256(block)
     doc["frozen"] = block
     Path(path).write_text(
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8"
@@ -435,9 +495,14 @@ def walkforward_conformance(
     anchor: str,
     dataset_ids: Sequence[str] | None,
     final_selection: bool,
+    folds: Sequence[Mapping[str, Any]] = (),
+    config_hash: str | None = None,
+    path: str = "<memory>",
 ) -> list[str]:
-    """Why a walk-forward does not run exactly what a frozen search preregistration fixed."""
-    v = validate_document(doc)
+    """Why a walk-forward does not run exactly what a frozen search preregistration fixed.
+    ``folds`` are the run's folds as ``Fold.to_dict()``; they must equal the folds the
+    preregistration's walk-forward plan produces (anchor, end, lengths, embargo)."""
+    v = validate_document(doc, path=path)
     problems = [f"preregistration: {x}" for x in v.problems]
     if v.kind != "search" or not v.frozen:
         problems.append("the preregistration is not a frozen search preregistration")
@@ -464,6 +529,31 @@ def walkforward_conformance(
     for name, got, want in checks:
         if got != want:
             problems.append(f"{name} is {got!r}, the preregistration fixes {want!r}")
+    if folds:
+        from tsclaude.research.walkforward import plan_folds
+
+        first_train = folds[0]["train"][0]
+        start = datetime.strptime(first_train, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        end = datetime.strptime(str(wf["end"]), "%Y-%m-%d").replace(tzinfo=UTC)
+        expected = [
+            f.to_dict()
+            for f in plan_folds(
+                int(start.timestamp() * 1000), int(end.timestamp() * 1000),
+                initial_train_months=int(wf["initial_train_months"]),
+                test_months=int(wf["test_months"]),
+                embargo_ms=int(wf["embargo_minutes"]) * 60_000,
+            )
+        ]  # fmt: skip
+        if list(folds) != expected:
+            problems.append(
+                f"the folds differ from the preregistered plan (anchor {first_train}, end "
+                f"{wf['end']}): {len(folds)} run folds vs {len(expected)} planned"
+            )
+    if isinstance(doc.get("max_loss_r_policy"), Mapping):
+        problems.append("a max_loss_r override is not supported by the walk-forward yet")
+    fixed_cfg = doc.get("backtest_config_hash")
+    if fixed_cfg is not None and config_hash is not None and fixed_cfg != config_hash:
+        problems.append(f"backtest config hash {config_hash} differs from the fixed {fixed_cfg}")
     budget = doc["trial_budget"]
     if len(grid) > int(budget["max_configurations"]):
         problems.append("the grid exceeds trial_budget.max_configurations")
@@ -493,8 +583,9 @@ def make_selection_record(
         problems.append("the report has no final-selection candidate")
     if final.get("rule") != sdoc.get("selection_rule"):
         problems.append("the report's selection rule is not the preregistered one")
-    if not all((report.get("checks") or {}).values()):
-        problems.append("the report's validity checks did not all pass")
+    checks = report.get("checks")
+    if not isinstance(checks, dict) or not checks or not all(checks.values()):
+        problems.append("the report's validity checks are missing or did not all pass")
     if problems:
         raise PreregistrationInvalid(problems)
     record = {
@@ -502,8 +593,11 @@ def make_selection_record(
         "prereg_id": prereg_id,
         "kind": "selection",
         "parent": {"prereg_id": sdoc["prereg_id"], "content_sha256": content_sha256(sdoc)},
-        "selected": {"config_id": final["selected"], "params": dict(final["params"])},
-        "strategy_hash": final["strategy_hash"],
+        "selected": {
+            "config_id": final["selected"],
+            "params": dict(final["params"]),
+            "strategy_hash": final["strategy_hash"],
+        },
         "walk_forward": {
             "plan_id": (report.get("plan") or {}).get("plan_id"),
             "report_sha256": hashlib.sha256(raw).hexdigest(),
@@ -514,6 +608,8 @@ def make_selection_record(
         "risk_compatibility": sdoc.get("risk_compatibility"),
     }
     v = validate_document(record)
+    if v.ok:  # the same links a stored record is checked against
+        _check_selection_parent(record, v, Path(search_path).parent)
     if not v.ok:
         raise PreregistrationInvalid(v.problems)
     return record
@@ -523,6 +619,7 @@ __all__ = [
     "OBJECTIVE",
     "PENDING",
     "POLICY_FIELDS",
+    "POLICY_VALUES",
     "REQUIRED_REJECTION",
     "SCHEMA",
     "SEGMENTS",
@@ -530,6 +627,7 @@ __all__ = [
     "Validation",
     "configurations_of",
     "content_sha256",
+    "engine_sha256",
     "freeze",
     "implementation_files",
     "implementation_sha256",
