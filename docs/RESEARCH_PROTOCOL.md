@@ -50,7 +50,8 @@ WF-1, WF-2, WF-4, WF-6, 2026-11-10; owner policy choices stay open in
   (windows, embargo, segment, configuration, preregistration, code); any failure voids the verdict.
 - **Coverage.** The stitched set must cover the planned test period (`min_oos_coverage`, default 1.0,
   meaning all of it); below that the verdict is `INSUFFICIENT_OOS_EVIDENCE`. With anchored windows, one
-  train-window gap removes every later fold. A preregistration may set a lower floor, before any result.
+  train-window gap removes every later fold. A lower floor is accepted only from a committed preregistration (`--prereg`) that declares the same
+  `min_oos_coverage`; the floor is part of the plan id, and an earlier report is never overwritten.
 - **Warm-up.** The anchor must leave every run's warm-up inside gap-free stored data; earlier anchors
   are refused before anything is recorded.
 - **Comparable selection.** Every fold is rescored with one trial count, fixed when the walk-forward
@@ -61,7 +62,9 @@ WF-1, WF-2, WF-4, WF-6, 2026-11-10; owner policy choices stay open in
   let out-of-sample results shape the next attempt.
 - **Resume.** A restarted walk-forward reuses completed runs only after verifying them against its
   progress ledger (hashes, trial key, window, preregistration, code commit); anything else refuses the
-  resume. Reuse never changes the trial count.
+  resume. A reused run's trial must be in the registry the verdict counts from (a missing or restored
+  `state.db` refuses the resume), so reuse never changes the trial count. The plan's rescore count is
+  validated and never taken below what the registry implies.
 
 ## 4. Statistics
 

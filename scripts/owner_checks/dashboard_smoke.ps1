@@ -7,7 +7,8 @@
 #
 # What it does, from the checkout it is run in:
 #   1. rebuilds the dashboard bundle from this checkout (an old bundle would hide the new panels);
-#   2. starts the app on http://127.0.0.1:8765/ in the background, waits for /api/health;
+#   2. refuses if anything already answers on the smoke port (default 8799, not the app's usual
+#      8765, so your real app is never touched), starts the app there, waits for /api/health;
 #   3. saves /api/research/status and /api/paper/status to the smoke folder and prints them;
 #   4. opens the dashboard so you can look; you then press Quit in the dashboard (a clean stop).
 # Output: <Runs>\smoke-<stamp>\summary.json. A PASS is evidence that the branch dashboard renders,
@@ -17,7 +18,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\owner_checks\dashboard_smoke.ps1
 param(
     [string]$Runs = 'C:\Users\felip\tsc_runs',
-    [int]$Port = 8765,
+    [int]$Port = 8799,
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
@@ -28,10 +29,14 @@ New-Item -ItemType Directory -Path $data -Force | Out-Null
 $summary = [ordered]@{
     started_utc = (Get-Date).ToUniversalTime().ToString('o')
     checkout = (Get-Location).Path
-    git_head = (& git rev-parse HEAD 2>$null)
-    git_dirty = [bool](& git status --porcelain --untracked-files=no 2>$null)
+    git_head = ''
+    git_dirty = $null
     checks = [ordered]@{}
 }
+try {
+    $summary.git_head = (git rev-parse HEAD 2>&1 | Out-String).Trim()
+    $summary.git_dirty = [bool]((git status --porcelain --untracked-files=no 2>&1 | Out-String).Trim())
+} catch { $summary.git_head = 'unknown' }
 function Save-Summary {
     $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'summary.json') -Encoding utf8
 }
@@ -58,13 +63,20 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { exit 3 }
 }
 
+$base = "http://127.0.0.1:$Port"
+$busy = $false
+try { Invoke-RestMethod "$base/api/health" -TimeoutSec 2 | Out-Null; $busy = $true } catch { }
+if ($busy) {
+    Check 'port_free' $false "something already answers on $base; stop it or use -Port"
+    exit 5
+}
 $env:TSC_DATA_DIR = $data
 $env:PYTHONFAULTHANDLER = '1'
 $log = Join-Path $out 'app.log'
 $err = Join-Path $out 'app.err.log'
 $proc = Start-Process -FilePath 'uv' -ArgumentList ($uvRun + @('tsclaude', 'app', '--no-browser', '--port', "$Port")) `
     -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -WindowStyle Hidden
-$base = "http://127.0.0.1:$Port"
+$null = $proc.Handle  # keeps the exit code readable after the process ends
 $up = $false
 for ($i = 0; $i -lt 90 -and -not $proc.HasExited; $i++) {
     try { Invoke-RestMethod "$base/api/health" -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep -Seconds 1 }
@@ -72,6 +84,7 @@ for ($i = 0; $i -lt 90 -and -not $proc.HasExited; $i++) {
 Check 'app_started' $up $(if ($up) { "listening on $base" } else { "no answer from $base/api/health; see $err" })
 if (-not $up) { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }; exit 4 }
 
+try {
 $research = Invoke-RestMethod "$base/api/research/status"
 $research | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $out 'research_status.json') -Encoding utf8
 $state = $research.status.value.state
@@ -94,11 +107,13 @@ Write-Host '     or waiting (for example a PC clock more than 1 s off); paper is
 Write-Host '  3. Then press Quit in the dashboard. This window waits up to 10 minutes.' -ForegroundColor Cyan
 Start-Process $base
 $proc.WaitForExit(600000) | Out-Null
-if (-not $proc.HasExited) {
-    Stop-Process -Id $proc.Id -Force
-    Check 'clean_quit' $false 'not quit within 10 minutes; the process was stopped'
-} else {
-    Check 'clean_quit' $true "app exited with code $($proc.ExitCode)"
+} finally {
+    if (-not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force
+        Check 'clean_quit' $false 'the app was still running; it was stopped'
+    } else {
+        Check 'clean_quit' ($proc.ExitCode -eq 0) "app exited with code $($proc.ExitCode)"
+    }
 }
 $answer = Read-Host 'Did the research panel and the Paper page render? (y/n)'
 Check 'owner_visual_check' ($answer -match '^[yY]') "owner answered '$answer'"

@@ -81,6 +81,10 @@ It runs the following, writing each output to `C:\Users\felip\tsc_runs\mvp-evide
 Options: `-SkipRecovery -SkipPaper -SkipBacktest -PaperHours 0.5`.
 
 ## 5. Research commands
+Run them from the branch checkout. If your lake is in another folder, point to it first (NORMAL PowerShell):
+`$env:TSC_DATA_DIR = 'C:\Users\felip\Projects\trading-system-claude\data'`. Every backtest and walk-forward
+run writes `runs\` and permanent trial records into that folder.
+
 - **Backtest one configuration.** Every run is a recorded trial. Holdout ranges are refused without an owner unlock.
   ```powershell
   uv run tsclaude backtest run --strategy bracket_reference --symbols spot:BTCUSDT --from 2024-01-01 --to 2024-04-01
@@ -98,11 +102,16 @@ Options: `-SkipRecovery -SkipPaper -SkipBacktest -PaperHours 0.5`.
   - **If the PC restarts, run the same command again.** It resumes: completed runs are verified and reused, nothing is counted twice. A record that does not verify stops it (exit 6) rather than being trusted. `--no-resume` starts over in a new folder. Resume needs a clean checkout (no uncommitted changes).
   - **Verdicts:** `NO_EDGE_DEMONSTRATED`, `INSUFFICIENT_OOS_EVIDENCE` (also when less than `--min-oos-coverage` of the planned test period was tested; default all of it), `INVALID_OOS_EVIDENCE` (a test run failed integrity), `OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY`.
   - None of them is "validated": validation (2025) and the sealed holdout come after, once, preregistered. `--final-selection` only proposes a candidate marked PENDING GOVERNANCE.
-  - The report and progress are in `data\walkforward\<plan id>\` (`walkforward.json`, `progress.jsonl`).
-- **Feasibility count (no P&L).** Counts, per symbol and year, the decision bars that pass each entry stage of a strategy, before any outcome exists. Development segment only; it records no trial.
+  - The report and progress are in `<data folder>\walkforward\<plan id>\` (`walkforward.json`, `progress.jsonl`).
+- **Feasibility count (no P&L).** Counts, per symbol and year, the decision bars that pass each entry stage of a strategy, before any outcome exists. Development segment only; it records no trial. The probe grid compares the reference's 15m defaults with a 1h variant (handoff H1-1):
   ```powershell
-  uv run tsclaude backtest feasibility --strategy bracket_reference --symbols spot:BTCUSDT,spot:ETHUSDT `
-    --from 2022-02-01 --to 2025-01-01
+  uv run tsclaude backtest feasibility --strategy bracket_reference --grid docs\research\grids\feasibility_h1_probe.json `
+    --symbols spot:BTCUSDT,spot:ETHUSDT,spot:SOLUSDT,spot:DOGEUSDT,spot:XRPUSDT --from 2022-03-01 --to 2025-01-01
+  ```
+- **Mechanics dry run of the walk-forward on real data** (handoff B2): the REFERENCE strategy, BTC only, two configurations. Its result is never evidence; it adds about 21 permanent trial rows to the `bracket_reference` family only. Roughly half an hour on the owner PC (an estimate from one 90 s run); if the PC restarts, run it again and it resumes.
+  ```powershell
+  uv run tsclaude backtest walkforward --strategy bracket_reference --grid docs\research\grids\bracket_reference_dryrun.json `
+    --symbols spot:BTCUSDT --hypothesis B2-DRYRUN
   ```
 - **Replay a recorded paper session** (read-only; it copies the store):
   ```powershell
