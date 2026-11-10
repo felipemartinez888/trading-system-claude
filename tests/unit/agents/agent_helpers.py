@@ -10,6 +10,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from tsclaude.agents.budget import (
+    CallOutcome,
+    CostBasis,
+    CostEntry,
+    EntryKind,
+    read_ledger,
+)
 from tsclaude.agents.client import MockClient, MockStep
 from tsclaude.agents.config import AgentMode, AgentsConfig, LoadedConfig, PacketConfig, Pricing
 from tsclaude.agents.gate import AgentGate
@@ -210,3 +217,53 @@ def make_gate(
         clock=clock or ManualClock(DECISION_MS + 1_000),
         data_dir=data_dir,
     )
+
+
+def settlements(path: Path) -> list[CostEntry]:
+    return [e for e in read_ledger(path) if e.kind is EntryKind.SETTLEMENT]
+
+
+def ledger_pair(
+    at_ms: int, cost: str, call_id: str = "c1", settle: bool = True, reserved: str | None = None
+) -> list[CostEntry]:
+    """A reservation (worst case `reserved`, default = cost) and, optionally, its settlement."""
+    common: dict[str, Any] = {
+        "call_id": call_id,
+        "at_ms": at_ms,
+        "day": at_ms // 86_400_000,
+        "review_key": "k",
+        "signal_id": "s",
+        "role": "analyst",
+        "attempt": 0,
+        "model": "m",
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cached_input_tokens": 0,
+        "latency_ms": 5,
+    }
+    out = [
+        CostEntry(
+            kind=EntryKind.RESERVATION,
+            cost_usd=Decimal(reserved or cost),
+            cost_basis=CostBasis.RESERVED,
+            outcome=CallOutcome.PENDING,
+            **common,
+        )
+    ]
+    if settle:
+        out.append(
+            CostEntry(
+                kind=EntryKind.SETTLEMENT,
+                cost_usd=Decimal(cost),
+                cost_basis=CostBasis.MEASURED,
+                outcome=CallOutcome.OK,
+                **common,
+            )
+        )
+    return out
+
+
+def write_ledger(path: Path, entries: list[CostEntry]) -> None:
+    with path.open("a", encoding="utf-8") as fh:
+        for e in entries:
+            fh.write(e.to_json() + "\n")

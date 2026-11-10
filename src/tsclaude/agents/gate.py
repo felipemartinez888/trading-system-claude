@@ -23,10 +23,12 @@ the baseline book and keep the signal out of the ``agent_gated`` book.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -37,10 +39,21 @@ from tsclaude.contracts.signals import AgentReviewState, RunMode, SignalRecord, 
 from tsclaude.contracts.timeutil import WallClock
 
 from .breaker import BreakerState, CircuitBreaker
-from .budget import CallOutcome, CostBasis, CostEntry, CostLedger, DailyBudget, cost_of, q
+from .budget import (
+    MS_PER_DAY,
+    CallOutcome,
+    CostBasis,
+    CostEntry,
+    CostLedger,
+    DailyBudget,
+    EntryKind,
+    cost_of,
+    q,
+)
 from .cache import ReviewCache, review_key
 from .client import (
     AgentClient,
+    ClientError,
     ClientTimeout,
     ClientUnavailable,
     CompletionRequest,
@@ -87,18 +100,26 @@ class _Run:
     cost: Decimal = Decimal(0)
 
 
+class ClientCrashed(ClientError):
+    """The client raised something that is not an `Exception` (e.g. SystemExit in its thread)."""
+
+
 def call_with_deadline(
     client: AgentClient, request: CompletionRequest, timeout_s: float
 ) -> CompletionResponse:
     """Run the call in a daemon thread; give up after `timeout_s` (the thread is abandoned: a
-    client that ignores its own timeout can delay nothing but itself)."""
+    client that ignores its own timeout can delay nothing but itself). A non-`Exception` raised
+    inside the worker becomes `ClientCrashed`, so it is charged and handled like any client bug
+    and never escapes `AgentGate.review`."""
     box: dict[str, Any] = {}
 
     def run() -> None:
         try:
             box["ok"] = client.complete(request)
-        except BaseException as exc:  # re-raised in the caller's thread
+        except Exception as exc:
             box["err"] = exc
+        except BaseException as exc:  # never re-raise a worker's SystemExit/KeyboardInterrupt
+            box["err"] = ClientCrashed(type(exc).__name__)
 
     worker = threading.Thread(target=run, name=f"agent-{request.role}", daemon=True)
     worker.start()
@@ -106,7 +127,10 @@ def call_with_deadline(
     if worker.is_alive():
         raise ClientTimeout(f"no reply within {timeout_s:g} s")
     if "err" in box:
-        raise box["err"]
+        err: Exception = box["err"]
+        raise err
+    if "ok" not in box:
+        raise ClientCrashed("worker ended without a result")
     result: CompletionResponse = box["ok"]
     return result
 
@@ -193,6 +217,7 @@ class AgentGate:
             "remaining_today_usd": str(self.budget.remaining()),
             "calls_today": self.ledger.calls_on(self.budget.today()),
             "ledger_error": self.ledger.error,
+            "over_reservation_calls": self.ledger.over_reservations(),
             "breaker": str(self.breaker.state),
             "consecutive_failures": self.breaker.consecutive_failures,
             "cached_reviews": len(self.cache),
@@ -241,8 +266,16 @@ class AgentGate:
             return done(AgentReviewState.AI_UNAVAILABLE, f"packet refused: {exc}")
 
         analyst_p, skeptic_p = self.prompts[Role.ANALYST], self.prompts[Role.SKEPTIC]
+        # LIVE and indicative (REPLAY/BACKTEST) reviews never share a cache entry: the
+        # `indicative` label and the agent_gated eligibility depend on the class
+        run_class = "live" if signal.run_mode is RunMode.LIVE else "indicative"
         key = review_key(
-            packet.packet_hash, analyst_p.ref, skeptic_p.ref, self.config.model, SYNTHESIS_VERSION
+            packet.packet_hash,
+            analyst_p.ref,
+            skeptic_p.ref,
+            self.config.model,
+            SYNTHESIS_VERSION,
+            run_class,
         )
         if not reevaluate and (cached := self.cache.get(key)) is not None:
             return AgentOutcome(
@@ -257,7 +290,33 @@ class AgentGate:
 
         if not self.breaker.allow():
             return done(AgentReviewState.AI_UNAVAILABLE, "circuit breaker open")
+        settled = False
+        try:
+            outcome, success = self._reviewed(signal, risk_passed, packet, key, start, done)
+            if success is None:
+                self.breaker.release_trial()  # budget refusal: not an API failure
+            elif success:
+                self.breaker.record_success()
+            else:
+                self.breaker.record_failure()
+            settled = True
+            return outcome
+        finally:
+            if not settled:  # an unexpected exception: never leave a half-open trial in flight
+                self.breaker.record_failure()
 
+    def _reviewed(
+        self,
+        signal: SignalRecord,
+        risk_passed: bool,
+        packet: EvidencePacket,
+        key: str,
+        start: float,
+        done: Callable[..., AgentOutcome],
+    ) -> tuple[AgentOutcome, bool | None]:
+        """The paid part. Returns the outcome and True (success) / False (failure) / None
+        (budget refusal) for the breaker."""
+        analyst_p, skeptic_p = self.prompts[Role.ANALYST], self.prompts[Role.SKEPTIC]
         run = _Run(signal.signal_id, key)
         analyst_user = _analyst_user(packet)
         # both calls must fit before the first is made (no half-paid review)
@@ -272,8 +331,7 @@ class AgentGate:
         )
         ok, why = self.budget.can_afford(reserve)
         if not ok:
-            self.breaker.release_trial()
-            return done(AgentReviewState.BUDGET_EXHAUSTED, why)
+            return done(AgentReviewState.BUDGET_EXHAUSTED, why), None
 
         try:
             analyst: AnalystOutput = self._call(
@@ -286,11 +344,8 @@ class AgentGate:
                 lambda t: validate_skeptic(t, packet),
             )
         except _Stop as stop:
-            if stop.state is AgentReviewState.BUDGET_EXHAUSTED:  # not an API failure
-                self.breaker.release_trial()
-            else:
-                self.breaker.record_failure()
-            return done(stop.state, stop.reason, run)
+            budget = stop.state is AgentReviewState.BUDGET_EXHAUSTED
+            return done(stop.state, stop.reason, run), (None if budget else False)
 
         synthesis = synthesize(analyst, skeptic)
         now = self.clock.now_ms()
@@ -315,8 +370,7 @@ class AgentGate:
             indicative=signal.run_mode is not RunMode.LIVE,
         )
         self.cache.put(review)
-        self.breaker.record_success()
-        return AgentOutcome(
+        outcome = AgentOutcome(
             AgentReviewState.REVIEWED,
             synthesis.explanation,
             risk_passed,
@@ -325,6 +379,7 @@ class AgentGate:
             calls=run.calls,
             latency_ms=review.latency_ms,
         )
+        return outcome, True
 
     def _call(
         self,
@@ -348,79 +403,124 @@ class AgentGate:
         worst = worst_case_cost(prompt.text + user, cfg.max_output_tokens, cfg.pricing)
         last_reason = ""
         for attempt in range(1 + cfg.max_retries):
-            ok, why = self.budget.can_afford(worst)
+            t0 = self.timer()
+            at = self.clock.now_ms()
+            call_id = f"{run.key[:16]}-{prompt.role}-{attempt}-{uuid.uuid4().hex[:12]}"
+            # reserve the worst case BEFORE the call (atomic check-and-append); a crash during
+            # the call leaves it on the books
+            ok, why = self.budget.try_reserve(
+                self._entry(
+                    EntryKind.RESERVATION,
+                    call_id,
+                    at,
+                    run,
+                    prompt,
+                    attempt,
+                    None,
+                    worst,
+                    CostBasis.RESERVED,
+                    0,
+                    CallOutcome.PENDING,
+                )
+            )
             if not ok:
                 raise _Stop(AgentReviewState.BUDGET_EXHAUSTED, why)
-            t0 = self.timer()
             run.calls += 1
+
+            settle = functools.partial(self._settle, run, prompt, call_id, at, attempt, t0)
+
             try:
                 response = call_with_deadline(client, request, cfg.per_call_timeout_s)
             except ClientTimeout:
-                self._record(run, prompt, attempt, None, worst, CostBasis.WORST_CASE, t0, "timeout")
+                settle(None, worst, CostBasis.WORST_CASE, CallOutcome.TIMEOUT)
                 last_reason = f"{prompt.role} call timed out"
                 continue
             except ClientUnavailable:
-                self._record(
-                    run, prompt, attempt, None, Decimal(0), CostBasis.NOT_BILLED, t0, "down"
-                )
+                settle(None, Decimal(0), CostBasis.NOT_BILLED, CallOutcome.API_DOWN)
                 last_reason = f"{prompt.role} API unavailable"
                 continue
-            except Exception as exc:  # unexpected client error: no retry
-                self._record(run, prompt, attempt, None, worst, CostBasis.WORST_CASE, t0, "error")
+            except Exception as exc:  # unexpected client error (incl. ClientCrashed): no retry
+                settle(None, worst, CostBasis.WORST_CASE, CallOutcome.ERROR)
                 raise _Stop(
                     AgentReviewState.AI_UNAVAILABLE,
                     f"{prompt.role} client error: {type(exc).__name__}",
                 ) from None
             cost = cost_of(response.usage, cfg.pricing)
+            if cost > worst:
+                log.warning("agent call cost above its reservation (over-reservation alert)")
             try:
                 output = validate(response.text)
             except OutputInvalid as exc:
-                self._record(run, prompt, attempt, response.usage, cost, None, t0, "invalid")
+                settle(response.usage, cost, CostBasis.MEASURED, CallOutcome.OUTPUT_INVALID)
                 raise _Stop(
                     AgentReviewState.AGENT_OUTPUT_INVALID, f"{prompt.role}: {exc}"
                 ) from None
-            self._record(run, prompt, attempt, response.usage, cost, None, t0, "ok")
+            settle(response.usage, cost, CostBasis.MEASURED, CallOutcome.OK)
             return output
         raise _Stop(AgentReviewState.AI_UNAVAILABLE, last_reason)
 
-    def _record(
+    def _settle(
         self,
+        run: _Run,
+        prompt: Prompt,
+        call_id: str,
+        at: int,
+        attempt: int,
+        t0: float,
+        usage: Usage | None,
+        cost: Decimal,
+        basis: CostBasis,
+        outcome: CallOutcome,
+    ) -> None:
+        run.cost += cost
+        self.ledger.settle(
+            self._entry(
+                EntryKind.SETTLEMENT,
+                call_id,
+                at,
+                run,
+                prompt,
+                attempt,
+                usage,
+                cost,
+                basis,
+                self._ms_since(t0),
+                outcome,
+            )
+        )
+
+    def _entry(
+        self,
+        kind: EntryKind,
+        call_id: str,
+        at: int,
         run: _Run,
         prompt: Prompt,
         attempt: int,
         usage: Usage | None,
         cost: Decimal,
-        basis: CostBasis | None,
-        t0: float,
-        what: str,
-    ) -> None:
-        outcome = {
-            "ok": CallOutcome.OK,
-            "invalid": CallOutcome.OUTPUT_INVALID,
-            "timeout": CallOutcome.TIMEOUT,
-            "down": CallOutcome.API_DOWN,
-            "error": CallOutcome.ERROR,
-        }[what]
-        now = self.clock.now_ms()
+        basis: CostBasis,
+        latency_ms: int,
+        outcome: CallOutcome,
+    ) -> CostEntry:
         u = usage or Usage(0, 0, 0)
-        run.cost += cost
-        self.ledger.append(
-            CostEntry(
-                at_ms=now,
-                day=now // 86_400_000,
-                review_key=run.key,
-                signal_id=run.signal_id,
-                role=str(prompt.role),
-                attempt=attempt,
-                model=self.config.model,
-                input_tokens=u.input_tokens,
-                output_tokens=u.output_tokens,
-                cached_input_tokens=u.cached_input_tokens,
-                cost_usd=q(cost),
-                cost_basis=basis or CostBasis.MEASURED,
-                latency_ms=self._ms_since(t0),
-                outcome=outcome,
-            )
+        return CostEntry(
+            kind=kind,
+            call_id=call_id,
+            at_ms=at,
+            day=at // MS_PER_DAY,
+            review_key=run.key,
+            signal_id=run.signal_id,
+            role=str(prompt.role),
+            attempt=attempt,
+            model=self.config.model,
+            input_tokens=u.input_tokens,
+            output_tokens=u.output_tokens,
+            cached_input_tokens=u.cached_input_tokens,
+            cost_usd=q(cost),
+            cost_basis=basis,
+            latency_ms=latency_ms,
+            outcome=outcome,
         )
 
     @property

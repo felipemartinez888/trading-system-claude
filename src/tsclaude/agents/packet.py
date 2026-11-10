@@ -36,6 +36,7 @@ PACKET_SCHEMA_VERSION = "packet-v1"
 _DECIMALS = 4
 _LABEL_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")  # short lowercase labels only
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+_DIGIT_RUN_RE = re.compile(r"\d{4,}")  # labels with a year/date-like digit run are dropped
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 _QUOTES = ("FDUSD", "USDT", "USDC", "BUSD", "TUSD", "BTC", "ETH", "BNB", "EUR", "TRY")
@@ -107,7 +108,7 @@ def _scalar(value: object) -> float | int | str | bool | None:
         if not math.isfinite(f) or abs(f) >= _EPOCH_LIKE:
             return None
         return value if isinstance(value, int) else _r(f)
-    if isinstance(value, str) and _LABEL_RE.fullmatch(value):
+    if isinstance(value, str) and _LABEL_RE.fullmatch(value) and not _DIGIT_RUN_RE.search(value):
         return value
     return None
 
@@ -157,6 +158,8 @@ def build_packet(inputs: PacketInputs, config: PacketConfig) -> EvidencePacket:
             raise PacketError("bar after the decision time (look-ahead) refused")
     if any(b2.close_time_ms <= b1.close_time_ms for b1, b2 in pairwise(bars)):
         raise PacketError("bars are not strictly increasing in time")
+    if sig.decision_time_ms - bars[-1].close_time_ms >= sig.timeframe.ms:
+        raise PacketError("stale bars: the last bar is not the decision bar")
     bars = bars[-config.max_bars :]
 
     def rel(price: float) -> float:

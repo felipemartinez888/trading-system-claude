@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .budget import MS_PER_DAY, LedgerUnreadable, q, read_ledger
+from .budget import MS_PER_DAY, LedgerUnreadable, calls, over_reservations, q, read_ledger, spent_on
 from .config import load_config
 from .gate import LEDGER_FILE
 from .prompt_registry import Role, load_prompt
@@ -33,15 +33,19 @@ def agent_status(config_path: Path, agents_dir: Path, now_ms: int) -> dict[str, 
     except LedgerUnreadable as exc:
         ledger = {"error": f"cost ledger unreadable ({exc})"}
     else:
-        today = [e for e in entries if e.day == day]
-        spent = q(sum((e.cost_usd for e in today), Decimal(0)))
+        per_call = calls(entries)
+        spent = spent_on(entries, day)
         ledger = {
             "error": None,
-            "calls_today": len(today),
+            "calls_today": sum(1 for c in per_call.values() if c.day == day),
+            "unsettled_today": sum(
+                1 for c in per_call.values() if c.day == day and c.settled is None
+            ),
             "spent_today_usd": str(spent),
             "remaining_today_usd": str(max(Decimal(0), q(cfg.daily_cap_usd - spent))),
-            "calls_total": len(entries),
-            "spent_total_usd": str(q(sum((e.cost_usd for e in entries), Decimal(0)))),
+            "calls_total": len(per_call),
+            "spent_total_usd": str(q(sum((c.spend for c in per_call.values()), Decimal(0)))),
+            "over_reservation_calls": over_reservations(entries),
         }
     return {
         "mode": str(cfg.mode),

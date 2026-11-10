@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 DEFAULT_CONFIG_PATH = Path("configs/agents.yaml")
 
@@ -62,6 +62,17 @@ class AgentsConfig(BaseModel):
     breaker_cooldown_s: float = Field(default=600.0, gt=0)
     packet: PacketConfig = PacketConfig()
 
+    @model_validator(mode="after")
+    def _priced_when_on(self) -> Self:
+        # zero prices would make every call free and the cap meaningless
+        p = self.pricing
+        if (
+            self.mode is not AgentMode.OFF
+            and min(p.input_per_mtok, p.output_per_mtok, p.cached_input_per_mtok) <= 0
+        ):
+            raise ValueError("pricing must be > 0 unless mode is off")
+        return self
+
 
 # Used whenever the file cannot be trusted: mode off, with harmless budget values.
 OFF_CONFIG = AgentsConfig(
@@ -99,6 +110,27 @@ def parse_config(raw: Any, source: str = "<memory>") -> LoadedConfig:
     return LoadedConfig(cfg, source)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys (PyYAML keeps the last one silently)."""
+
+
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    keys: set[Any] = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node)
+        if key in keys:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        keys.add(key)
+    return loader.construct_mapping(node)
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> LoadedConfig:
     """Load and validate; never raises. Invalid or missing -> mode off with errors."""
     source = str(path)
@@ -109,9 +141,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> LoadedConfig:
             OFF_CONFIG, source, (f"cannot read config: {type(exc).__name__}; agents forced off",)
         )
     try:
-        raw = yaml.safe_load(text)
+        raw = yaml.load(text, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
     except yaml.YAMLError as exc:
-        return LoadedConfig(
-            OFF_CONFIG, source, (f"YAML error: {type(exc).__name__}; agents forced off",)
-        )
+        problem = getattr(exc, "problem", None) or type(exc).__name__
+        return LoadedConfig(OFF_CONFIG, source, (f"YAML error: {problem}; agents forced off",))
     return parse_config(raw, source)

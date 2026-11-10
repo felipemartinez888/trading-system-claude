@@ -21,12 +21,13 @@ from agent_helpers import (
     make_gate,
     make_inputs,
     make_signal,
+    settlements,
     skeptic_payload,
     valid_pair,
 )
 
 from tsclaude.agents.breaker import BreakerState
-from tsclaude.agents.budget import MS_PER_DAY, CallOutcome, CostBasis, read_ledger
+from tsclaude.agents.budget import MS_PER_DAY, CallOutcome, CostBasis
 from tsclaude.agents.client import MockClient, MockStep, Usage
 from tsclaude.agents.config import AgentMode, load_config
 from tsclaude.agents.gate import CACHE_FILE, LEDGER_FILE, AgentGate
@@ -104,7 +105,7 @@ def test_valid_review_approves_and_records_cost_and_latency(tmp_path: Path) -> N
     assert review.analyst_prompt.startswith("analyst-v1@")
     assert review.cost_usd > 0
     assert out.latency_ms >= 0
-    entries = read_ledger(tmp_path / LEDGER_FILE)
+    entries = settlements(tmp_path / LEDGER_FILE)
     assert [(e.role, e.outcome, e.cost_basis) for e in entries] == [
         ("analyst", CallOutcome.OK, CostBasis.MEASURED),
         ("skeptic", CallOutcome.OK, CostBasis.MEASURED),
@@ -195,7 +196,7 @@ def test_timeout_twice_is_ai_unavailable_and_charged_worst_case(tmp_path: Path) 
     assert out.state is S.AI_UNAVAILABLE
     assert out.verdict is None
     assert out.calls == 2  # one bounded retry
-    entries = read_ledger(tmp_path / LEDGER_FILE)
+    entries = settlements(tmp_path / LEDGER_FILE)
     assert [e.outcome for e in entries] == [CallOutcome.TIMEOUT, CallOutcome.TIMEOUT]
     assert all(e.cost_basis is CostBasis.WORST_CASE and e.cost_usd > 0 for e in entries)
 
@@ -226,7 +227,7 @@ def test_api_down_is_ai_unavailable_and_not_billed(tmp_path: Path) -> None:
     out = _review(make_gate(client, data_dir=tmp_path))
     assert out.state is S.AI_UNAVAILABLE
     assert out.calls == 2
-    entries = read_ledger(tmp_path / LEDGER_FILE)
+    entries = settlements(tmp_path / LEDGER_FILE)
     assert all(e.outcome is CallOutcome.API_DOWN and e.cost_usd == 0 for e in entries)
 
 

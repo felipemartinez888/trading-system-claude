@@ -3,12 +3,18 @@ snapshot behind GET /api/agents/status. No network, and the fake key below is no
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
-from agent_helpers import DECISION_MS, make_config, make_gate, make_inputs, make_signal
+from agent_helpers import (
+    DECISION_MS,
+    ledger_pair,
+    make_config,
+    make_gate,
+    make_inputs,
+    make_signal,
+    write_ledger,
+)
 
-from tsclaude.agents.budget import CallOutcome, CostBasis, CostEntry, CostLedger
 from tsclaude.agents.config import AgentMode
 from tsclaude.agents.gate import LEDGER_FILE
 from tsclaude.agents.real_client import AnthropicClientStub, api_key_present, build_client
@@ -63,31 +69,19 @@ def test_status_from_repo_config_is_off_with_empty_ledger(tmp_path: Path) -> Non
 
 
 def test_status_reports_spend_today_and_invalid_config(tmp_path: Path) -> None:
-    ledger = CostLedger(tmp_path / LEDGER_FILE)
-    for day_offset, cost in ((0, "0.0123"), (-1, "0.5")):
-        at = DECISION_MS + day_offset * 86_400_000
-        ledger.append(
-            CostEntry(
-                at_ms=at,
-                day=at // 86_400_000,
-                review_key="k",
-                signal_id="s",
-                role="analyst",
-                attempt=0,
-                model="m",
-                input_tokens=1,
-                output_tokens=1,
-                cached_input_tokens=0,
-                cost_usd=Decimal(cost),
-                cost_basis=CostBasis.MEASURED,
-                latency_ms=5,
-                outcome=CallOutcome.OK,
-            )
-        )
+    write_ledger(
+        tmp_path / LEDGER_FILE,
+        [
+            *ledger_pair(DECISION_MS, "0.0123", "today"),
+            *ledger_pair(DECISION_MS - 86_400_000, "0.5", "yesterday"),
+            *ledger_pair(DECISION_MS, "0", "pending", settle=False, reserved="0.02"),
+        ],
+    )
     snap = agent_status(REPO_CONFIG, tmp_path, DECISION_MS)
-    assert snap["ledger"]["calls_today"] == 1
-    assert snap["ledger"]["spent_today_usd"] == "0.01230000"
-    assert snap["ledger"]["calls_total"] == 2
+    assert snap["ledger"]["calls_today"] == 2
+    assert snap["ledger"]["unsettled_today"] == 1  # its reservation counts as spent
+    assert snap["ledger"]["spent_today_usd"] == "0.03230000"
+    assert snap["ledger"]["calls_total"] == 3
 
     bad = tmp_path / "bad.yaml"
     bad.write_text("mode: confirmed\nunknown: 1\n", encoding="utf-8")

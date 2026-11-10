@@ -1,4 +1,4 @@
-"""Review cache keyed by ``hash(packet, prompt versions + hashes, model, synthesis version)``.
+"""Review cache keyed by ``hash(run class, packet, prompt refs, model, synthesis version)``.
 
 Re-displaying a review never re-calls the API (SIGNALS_AND_AGENTS §3). Only completed reviews are
 cached; failures are not (a later attempt may succeed). A deliberate re-evaluation bypasses the
@@ -20,10 +20,17 @@ from .review import AgentReview
 
 
 def review_key(
-    packet_hash: str, analyst_ref: str, skeptic_ref: str, model: str, synthesis_version: str
+    packet_hash: str,
+    analyst_ref: str,
+    skeptic_ref: str,
+    model: str,
+    synthesis_version: str,
+    run_class: str,
 ) -> str:
+    """`run_class` is ``live`` or ``indicative``: a review is never served across the two."""
     material = canonical_json(
         {
+            "run_class": run_class,
             "packet": packet_hash,
             "analyst": analyst_ref,
             "skeptic": skeptic_ref,
