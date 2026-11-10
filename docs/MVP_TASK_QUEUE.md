@@ -31,14 +31,14 @@ Last update: 2026-11-10 (overnight session).
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| P1-1 | Preregistration schema, validate, freeze, selection records, template | policy fields PENDING; freeze refuses open decisions and edits after freeze | IMPLEMENTED, TESTED | `f10daad`; `test_preregistration.py` (30); CI pending | freezing a hypothesis: owner |
-| P1-2 | Walk-forward conformance to a frozen preregistration | any deviation refused before running | IMPLEMENTED, TESTED | `f10daad` | — |
+| P1-1 | Preregistration schema, validate, freeze, selection records, template | policy fields PENDING; freeze refuses open decisions and edits after freeze; a frozen file pins anchor and backtest config; unknown keys refused | VERIFIED (CI `42780296915` on the review fixes; re-review N2/N5 fixes `93846a0` local, CI pending) | `f10daad` `afcd1a2` `93846a0`; `test_preregistration.py` | freezing a hypothesis: owner |
+| P1-2 | Walk-forward conformance to a frozen preregistration | any deviation refused before running, folds and config hash included | IMPLEMENTED, TESTED (re-review N2: folds and config were not pinned under `anchor: auto`; fixed `93846a0`) | `f10daad` `93846a0` | — |
 | P1-3 | Trial-budget enforcement from the preregistration | registry-rows cap applied | IMPLEMENTED | `f10daad` | the counting rule is **D-C** |
 | P1-4 | Research/live risk compatibility (I-1) | engine's own RR; regression test of the 1.5 floor vs ADR-0012 geometries | IMPLEMENTED, TESTED | `7ef4ba8`; `test_live_compat.py` (11) | wiring live rules into backtests: **D-E** |
 | P1-5 | Research status lists walk-forward verdicts | invalid/insufficient shown; never "validation" | IMPLEMENTED, TESTED | `597ebf8` | — |
 | P1-6 | Wire risk rules into backtests | research evaluates what live accepts | BLOCKED | — | **D-E** |
 | P1-7 | Holdout guard integration of selection records | guard unlock via a selection record | BLOCKED: a record has no top-level `strategy_hash`, so the unchanged guard cannot accept it (review B1 fix) | `f10daad`, review fix | **D-D**, then an owner-approved guard change |
-| P1-8 | Independent review of P1-1…P1-5 and M6 | Fable review findings fixed | VERIFIED locally (CHANGES REQUESTED: 2 blocking, 5 major, all fixed; CI pending) | review fixes commit | — |
+| P1-8 | Independent review of P1-1…P1-5 and M6 | Fable review findings fixed | VERIFIED: review fixes in CI `42780296915` 7/7; Fable re-review CHANGES REQUESTED (N2 folds not pinned, N5 unknown keys), fixed `93846a0` | `afcd1a2` `93846a0` | — |
 
 ## P2: hypotheses
 
@@ -55,7 +55,7 @@ Last update: 2026-11-10 (overnight session).
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| M5-1 | Agent package, mock client, schemas, budget, timeouts, mode off | every gate path tested with a mock | IMPLEMENTED, TESTED (148 passed); Fable review CHANGES REQUESTED (3 blocking budget findings) fixed | `78fdbd2`…`0605795`, fixes cherry-picked | — |
+| M5-1 | Agent package, mock client, schemas, budget, timeouts, mode off | every gate path tested with a mock | VERIFIED (mock scope): review fixes in CI `42780296915` 7/7; Fable re-review CHANGES REQUESTED (N1 three ledger corruptions raised; N3 mutants; N4 Windows lock), fixed `8200ffe`, 156 passed locally | `78fdbd2`…`0605795`, `59b10b0` `494ae3c` `6bbb0e3` `8200ffe` | — |
 | M5-3 | Wire the gate into the paper runtime; `agent_gated` book; Agent tab | gate called on CONFIRMED signals; book journaled and replayed | DEFERRED | — | needs new contract events (Lead) and a paper journal change; not done unattended overnight |
 | M5-2 | Measured cost/latency with a real key on live signals | the gate's last clause | BLOCKED | — | API key + live signals (D-03; paid API needs the owner) |
 

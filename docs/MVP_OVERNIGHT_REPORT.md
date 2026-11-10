@@ -33,6 +33,7 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | Review | Fable review of P1 + M6: CHANGES REQUESTED (2 blocking: a selection record could unlock the holdout; free-text policy values) | fixes `afcd1a2` | prereg 37, evaluation 42 + 1 skipped, resume run-side 2 | fixed |
 | M5-1 | Agent layer, mock client, advise-only, budget, breaker, cache, mode off, status API | `78fdbd2`…`0605795` + review fixes | `tests/unit/agents` 148 passed | IMPLEMENTED, TESTED; Fable review CHANGES REQUESTED (budget not a hard cap) fixed; not wired into the runtime |
 | H1 | Draft H1 strategy (separate DRAFT_REGISTRY: no trial possible), `--draft` feasibility, H1-v2 draft | `0030114` `fec95ba` `ba69590` `a23d0db` | 45 + 10 + 2 | IMPLEMENTED, TESTED; causality audit CONDITIONAL PASS: the embargo was not checked against the holding period, fixed `78ed753` |
+| Re-review | Fable re-review of every fix commit: CHANGES REQUESTED, narrow. Nothing failed open (gate not wired, no preregistration frozen). N1: three malformed ledger lines raised instead of refusing. N2: `anchor: auto` left the folds free and the config hash was optional | `8200ffe` (N1, N3 tests, N4 bounded Windows lock), `93846a0` (N2 freeze pins anchor and backtest config hash; N5 unknown keys refused) | agents 156 passed; prereg + resume 66 passed; full unit suite 1887 passed, 2 skipped, 16 failed from missing pytest-asyncio/httpx in this container only (CI has them) | IMPLEMENTED, TESTED; CI pending on the push |
 
 ## M0–M6 status (no acceptance is claimed here)
 | Milestone | State |
@@ -41,7 +42,7 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | M2 | **ACCEPTED, limited scope** (D-22) |
 | M3 | Gate VERIFIED technically; formal acceptance open (D-A, [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md)) |
 | M4 | Tooling IMPLEMENTED and TESTED; no preregistration frozen, no hypothesis implemented as runnable, no real-data research run |
-| M5 | Mock-testable part IMPLEMENTED and TESTED (148 passed, reviewed, fixed); runtime wiring, `agent_gated` book and Agent tab DEFERRED; the real-key clause BLOCKED (paid API, owner) |
+| M5 | Mock-testable part IMPLEMENTED and TESTED (156 passed; two review rounds, findings fixed); runtime wiring, `agent_gated` book and Agent tab DEFERRED; the real-key clause BLOCKED (paid API, owner) |
 | M6 (export) | IMPLEMENTED, TESTED (CI `42776226802`); **verified on three real recorded sessions**: the stdlib scorer reproduces all 9 session-end ledger hashes from the export alone. Not accepted: D-06 (format agreed with the other team) and the gate's wider dashboard metrics remain |
 
 ## Research readiness
@@ -95,8 +96,10 @@ D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H ([DECISIONS_PENDING](DECISIONS_PEN
 | `42770742512` | `9ef847a` | 7/7 green: python ubuntu 1965 passed, windows 1963 |
 | `42775771210` | `597ebf8` | **failed**: mypy strict on `research/preregistration.py` (fixed in `6c9d57c`) |
 | `42776226802` | `45cf45a` | 7/7 green: python ubuntu 2166 passed, windows 2164; frontend vitest + build both OS (covers preregistration tooling, live compatibility, status, M6, M5 first version, the walk-forward table) |
-| later | `2658aa4` and after | see the last checkpoint |
+| `42780296915` | `2658aa4` | 7/7 green (M5 review fixes, prereg review fixes, embargo, H1 draft) |
+| later | `93846a0` | see the last checkpoint |
 
 ## Checkpoints
 - 2026-11-10 ~02:30 local: `e63743b` + this report.
 - 2026-11-10 ~04:00 local: `95ae656` (M5 review fixes, H1 draft + causality fixes, prereg review fixes, agent status card, semantic map update).
+- 2026-11-10 ~06:30 local: `93846a0` (re-review fixes N1–N5, M6 real-session evidence, agent status card, morning actions); pushed, CI below.
