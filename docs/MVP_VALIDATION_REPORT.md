@@ -66,7 +66,7 @@ acceptance or formal (Target C) MVP acceptance.
 | 8 | Simulate paper orders safely | ⚠️ partial | Real: benchmark book 3 simulated entries in each of 3 sessions (2026-11-06, 2026-11-09 ×2). Strategy books never traded in a real session. No order endpoint exists (paper only) |
 | 9 | Inspect trades, positions, PnL | ✅ shown (benchmark) | Paper page (books, fills, activity) |
 | 10 | Restart and recover | ✅ shown (real, Windows) | Recovery of the PC-restart session: downtime gap detected and backfilled, paper restored and resumed, `verify-replay` PASS on 3,498 batches (§7 run 3). Attempt 1 died natively (0xC0000005, non-deterministic, §7) |
-| 11 | Reproducible backtest / replay | ⚠️ partial | **Replay, real:** PASS ×3: 1 h on 2026-11-06; 25 min on 2026-11-09, replayed on Linux; recovery, 3,498 batches. **Backtest:** reproducibility test green in CI (synthetic lake). **Pending:** a real-data backtest run twice (owner step 4) |
+| 11 | Reproducible backtest / replay | ✅ shown (real) | **Replay, real:** PASS ×3: 1 h on 2026-11-06; 25 min on 2026-11-09, replayed on Linux; recovery, 3,498 batches. **Backtest, real data:** two runs of `bracket_reference` on spot BTCUSDT 2024-Q1 (canonical lake) gave **identical metrics hashes**, `metrics_verified: true` (§9). Those runs had 0 trades, so real-data *trade-level* reproducibility comes from the synthetic CI test |
 | 12 | Review test evidence and limitations | ✅ | This report, [MVP_LIMITATIONS](MVP_LIMITATIONS.md) |
 | 13 | Stop safely | ✅ shown | Stage B: two clean Stops plus quit. 2026-11-09: console-window close recorded as a clean stop with session-end evidence. Recovery run: clean `app_shutdown` |
 
@@ -74,13 +74,13 @@ acceptance or formal (Target C) MVP acceptance.
 | Item | State |
 |---|---|
 | Mandatory core functions implemented | ✅ except the formal M4/M5/M6 scope (Target C) |
-| Integration scenarios verified | ⚠️ 6, 8 and 11 partial (§4); 1–5, 7, 9, 10, 12, 13 shown |
+| Integration scenarios verified | ⚠️ 6 and 8 partial: strategy books never traded in a real session; strategy-to-fill is covered by the deterministic Target A tests, as the owner decided on 2026-11-06. All others shown |
 | Applicable safety gates | ⚠️ M3 literal gates open; paper-only isolation holds (no order code, no keys; safety-guard CI job green) |
 | Relevant regression tests executed successfully | ✅ CI `42754283876` on `ceb393c`: 7/7 green (ubuntu 1873, windows 1871 passed). CI `42756815061` on `54af1ef` (review fixes): 7/7 green (ubuntu 1880, windows 1878 passed) |
 | Paper isolated from real trading | ✅ by construction (no signed endpoints, no keys; CLAUDE.md rule 2; safety guards in CI) |
 | Dashboard reflects system state | ✅ for the parts shown. New: research status and actionable blockers |
 | Recovery tested | ✅ tests and **real Windows crash recovery** (§7 run 3). One non-deterministic native crash in an earlier attempt is recorded |
-| Reproducible backtest / replay evidence | ✅ replay: 3 real sessions, one replayed across OS. ⚠️ backtest: synthetic reproducibility in CI only; real-data double run pending |
+| Reproducible backtest / replay evidence | ✅ replay: 3 real sessions, one replayed across OS. ✅ backtest: a real-data double run with identical metrics hashes (0 trades); trade-level reproducibility on the synthetic lake in CI |
 | Startup/shutdown procedure | ✅ [MVP_USER_GUIDE](MVP_USER_GUIDE.md) |
 | Limitations transparent | ✅ [MVP_LIMITATIONS](MVP_LIMITATIONS.md) |
 | Independent final review, no critical blocker | ✅ run (Fable, fresh context, read-only, on `ceb393c`): **APPROVE WITH NOTES** for the code. Its one blocking item, recording the native recovery crash before declaring a status, is done (§7). Its non-blocking findings are fixed (§8) |
@@ -164,3 +164,35 @@ acceptance or formal (Target C) MVP acceptance.
   4. **VALIDATED now requires a holdout-segment grade A** (an A on another segment does not count). Tests added.
   5. **The evidence script's step exit was only the live code.** It is now the first non-zero of live, replay and chain, so a native crash is never hidden. Faulthandler is on for child processes.
   6. **Report wording:** pending/running items updated; heartbeat timing made precise; inferred and persisted Stage C details separated.
+
+## 9. Real-data reference backtest, run twice (`mvp-evidence-20261109-2312`, 23:12 local)
+- **Run:** `tsclaude backtest run --strategy bracket_reference --symbols spot:BTCUSDT --from 2024-01-01 --to 2024-04-01` on the canonical lake (development segment), run twice, about 90 s each.
+- **Result:** both `ok`, **identical `metrics_sha256` `a9d1e677…d76ef`**, `metrics_verified: true`. The trial registry shows one trial key with `evaluations: 2` (`n_trials` stays 1), so re-running an identical configuration is not a new trial.
+- **0 trades:** grade C, "insufficient: 0 trade(s)". With default parameters the REFERENCE strategy confirmed no entry in BTC 2024-Q1, consistent with the live sessions. It stays REFERENCE / NOT VALIDATED: the research status is still `NO_VALIDATED_STRATEGY`.
+- **Pre-existing traceability defect found by this run** (runner code, not changed in this session):
+  - The registry records `first_run_id` / `last_run_id` as `bt-<stamp>-<trial_key[:8]>` (`research/runner.py:903`).
+  - The run directory is `bt-<stamp>-<manifest_hash[:10]>` (`:1020`). The registry's run ids therefore never name an existing run.
+  - Trial counting, keyed by `trial_key`, is unaffected, and manifest → trial navigation works (`manifest.trials.trial_key`).
+  - **Fix:** after the run, update the row's last-seen `run_id` with the real id; the registry rules allow updating last-seen fields.
+
+## 10. Final status
+**MVP FUNCTIONAL — VALIDATION INCOMPLETE.**
+
+**Shown with evidence:**
+- start, dashboard, public data, canonical updates;
+- the reference strategy evaluated live (warmed up, 0 proposals);
+- risk fail-closed (tests);
+- safe simulated orders (benchmark, real);
+- inspection pages;
+- **real crash recovery on Windows**;
+- reproducible replay (3 real sessions, one across OS) and real-data backtest (identical hashes);
+- safe stop (quit, Ctrl+C path, console close);
+- CI 7/7 green twice in a row;
+- independent review APPROVE WITH NOTES, findings fixed.
+
+**Not yet shown, so not VALIDATED:**
+1. A strategy book trading in a real session. Not controllable in short runs: no real signal occurred. The deterministic Target A tests carry it, per the owner's 2026-11-06 decision.
+2. The literal M3 gates, which need the owner's formal acceptance.
+3. A stable platform: the owner PC showed hardware-like instability, recorded in §7, out of scope.
+
+**Research:** there is **no validated strategy**. The research workflow exists and rejects honestly, and the first real candidate (H1-v1) waits on the owner's review of its preregistration draft.

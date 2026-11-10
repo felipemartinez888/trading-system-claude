@@ -73,11 +73,11 @@ Companion documents:
 | F2 | F | MVP docs (these 4) | Opus | ✅ first version | — |
 | F3 | F | Final independent acceptance review | **Fable** subagent | ✅ APPROVE WITH NOTES; findings fixed | MVP_VALIDATION_REPORT §8 |
 | F4 | F | Native crash (0xC0000005) when recovering the PC-restart session on Windows | Owner retry with faulthandler + Opus | ✅ not reproduced (non-deterministic); recovery PASS on retry (3,498 batches, identical hashes) | MVP_VALIDATION_REPORT §7 |
-| F5 | F | Real-data reference backtest run twice (reproducibility) | Owner (step 4 of the script) | 🔄 pending | — |
+| F5 | F | Real-data reference backtest run twice (reproducibility) | Owner (step 4 of the script) | ✅ identical metrics hashes (0 trades); found a pre-existing trial-registry run-id defect | MVP_VALIDATION_REPORT §9 |
 
 **Next engineering actions**, in order:
-1. The real-data backtest double run (F5, about 10 min, owner).
-2. Owner review: merge `task/mvp-integration`; the H1-v1 preregistration draft.
+1. Owner review: merge `task/mvp-integration`; the H1-v1 preregistration draft; formal decision on the M3 literal gates.
+2. Fix the trial-registry run-id traceability defect (MVP_VALIDATION_REPORT §9).
 3. Implement H1 after the freeze, then the first real-data walk-forward.
 4. A longer supervised paper session, to give the strategy books a chance to trade.
 4. Next research step: H1 (compression → expansion breakout) preregistration and strategy, then the first real-data walk-forward.

@@ -15,6 +15,8 @@
   - Top-10 coverage incomplete;
   - B01–B12 deferred (D-15).
 - **Costs** are the configured VIP0 model with fixed slippage; spreads before live capture are modeled, not observed.
+- **Trial registry run ids** do not match run directories (pre-existing, `research/runner.py:903` vs `:1020`). Counting is unaffected; the fix is in MVP_VALIDATION_REPORT §9.
+- **The reference strategy traded 0 times** in real-data BTC 2024-Q1 with default parameters. It is a pipeline reference, not a research subject.
 
 ## Paper runtime and recovery
 - **Restart equivalence is not guaranteed** (P-1; seeds 13073 and 465923499). An entry can fill in a minute that a downtime overlaps.
