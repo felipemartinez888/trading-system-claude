@@ -20,7 +20,8 @@ acceptance or formal (Target C) MVP acceptance.
 | Local branch | `f1658fe` | **1562 passed** (+38 new), the same 53 + 54 environment failures (the set is identical, checked by diff), 9 skipped | New tests: research status 15, operator hints 23 |
 | Local walk-forward | `1c40da2` | `tests/unit/research/test_walkforward.py` **17 passed**; `tests/unit/backtest/test_walkforward_runner.py` **1 passed** (synthetic lake through `run_backtest`) | Includes the train-only selection canary |
 | CI `42751246117` | `f1658fe` | frontend ubuntu ✅, frontend windows ✅, M2 cross-OS ubuntu ✅ / windows ✅, safety guards ✅; python jobs **cancelled** by the next push | The vitest run covers the research panel and the Paper hint |
-| CI `42752436724` | `28b4fe7` | frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅; **python (ubuntu, windows): pending at the time of writing** | To be recorded |
+| CI `42752436724` | `28b4fe7` | **python ubuntu: 1867 passed, 0 failed** (ruff lint, ruff format, mypy strict also green); **python windows: 1864 passed, 1 failed**: the pre-existing flake `test_mvp2_paper.py::test_p4_incomplete_backfill_stays_awaiting_and_processes_nothing` (`RUNNING is AWAITING_BACKFILL`, §6); frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | First CI run covering the new API, hints, research status and walk-forward code |
+| CI `42754283876` | `ceb393c` (flake fix included) | frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅; python ubuntu/windows: pending at the time of writing | To be recorded |
 | Pre-existing CI flakes (before this session) | `954c7c6`, `1dec031`, `1acd38a` | 1–3 paper-runtime failures per run, Windows (jobs `129324514607`, `129332534067`, `129342046002`) and once Ubuntu (`129307675701`) | Being root-caused (§6) |
 
 ## 3. Owner runs read in this session (artifacts in `C:\Users\felip\tsc_runs`)
@@ -56,7 +57,7 @@ acceptance or formal (Target C) MVP acceptance.
 | 7 | Enforce risk rules | ✅ tests | Risk fault-injection tests green in CI (`42322235295`); literal M3 gate not accepted |
 | 8 | Simulate paper orders safely | ⚠️ partial | Real 1 h session 2026-11-06: 3 simulated benchmark entries; strategy books never exercised in a real session. No order endpoint exists (paper only) |
 | 9 | Inspect trades, positions, PnL | ✅ shown (benchmark) | Paper page (books, fills, activity) |
-| 10 | Restart and recover | ⚠️ partial | Restart tests and runbook. Stage B second Start (gap recovered). **Pending:** crash-recovery run on a copy of the session the PC restart ended (owner evidence step 2) |
+| 10 | Restart and recover | ⚠️ partial / **open defect** | Restart tests and runbook; Stage B second Start (gap recovered). The first crash-recovery attempt on a copy of the PC-restart session **died natively (0xC0000005)** at market-data store creation, with the chain intact. Retry with faulthandler pending (§7) |
 | 11 | Reproducible backtest / replay | ⚠️ partial | Replay: real 1 h `verify-replay` PASS (2026-11-06); synthetic backtest reproducibility test green. **Pending:** first real-data backtest, run twice (owner evidence step 4) |
 | 12 | Review test evidence and limitations | ✅ | This report, [MVP_LIMITATIONS](MVP_LIMITATIONS.md) |
 | 13 | Stop safely | ✅ shown | Stage B: two clean Stops plus quit; `safe_to_close_store: true` in the dev profile (owner) |
@@ -81,4 +82,30 @@ acceptance or formal (Target C) MVP acceptance.
   - the anchor is None or exactly one minute late (`test_p1_observation_anchor`, `test_d21_fresh_clock_round`, `test_mvp3_reference_paper`);
   - or the state is read before the first poll (`test_mvp2_paper::test_p4_incomplete_backfill...`).
 - **Working hypothesis:** the tests wait fixed real-time intervals (`asyncio.sleep(POLL * k)`) against a manual clock. Plain CPU load (6 parallel runs, 2 cores) did not reproduce it.
-- **In progress:** a Fable subagent in a separate worktree, branch `fix/paper-runtime-test-determinism`, is proving the cause with injected latency, ruling a production race in or out, and making the tests deterministic without weakening assertions. Its result will be reviewed before any merge.
+- **Root cause proven** by a Fable subagent in a separate worktree (branch `fix/paper-runtime-test-determinism`) and re-verified independently on this branch:
+  - The tests slept a fixed real time and then asserted, or moved the manual clock, before the consumer's poll had run. When the event loop stalled, the anchor came out later or not at all.
+  - An opt-in latency fixture (`TSC_TEST_LATENCY_MS`, off by default) reproduces it on the 4 affected files that run locally (73 tests).
+
+  | Tests | No latency | 40 ms per event-store commit | 80 ms slower clock round |
+  |---|---|---|---|
+  | Old (`1160a71`) | — | **13 failed / 60 passed**, the same assertions as CI | — |
+  | Fixed (`ceb393c`) | **73 passed** | **73 passed** | **73 passed** |
+
+- **No production defect found.**
+  - The anchor is fixed with no await between the snapshot, `now` and `observe_from`, so a late poll can only give a later anchor.
+  - The observed flag depends only on `open_time >= anchor`.
+  - Noted for the Lead: `RUNNING` is published between `_open()` and the first poll, even when that poll then turns `AWAITING_BACKFILL`. Nothing is processed in that window.
+- **Fix:** tests only (`a3ba353`, `ceb393c`). The tests now wait for what the consumer did (a completed quiet poll with the anchor gate decided at the current manual time), bounded at 60 s; no assertion was weakened.
+- **Residual:** `test_retries_back_off_and_are_capped` still asserts real-time gaps (≤ 0.31 s). It was left as it is: loosening it is a Lead decision.
+
+## 7. Owner evidence run `mvp-evidence-20261109-2201` (started 22:01 local, branch base `1160a71`)
+- **Clock pre-check:** worst offset 0.0101 s, then 0.0099 s before the paper step: PASS.
+- **Crash-recovery step** (a copy of `paper-20261109-125923`, the session the PC restart ended):
+  - **The process died with exit code `0xC0000005` (access violation)** about 4 s after start.
+  - The last log line was `supervisor start: creating service`: the market-data store opening the copied database (`LiveBarStore`: SQLite connection, `PRAGMA journal_mode=WAL`, schema).
+  - `verify-chain` afterwards: **ok, 85 events**; the hash chain survived the PC restart and the native crash.
+  - `verify-replay`: INCONCLUSIVE (no session-end evidence, expected).
+  - **Not reproduced on Linux:** the same database copy opens and builds the service without a crash (Python 3.13.18, SQLite 3.53.1), and `PRAGMA integrity_check` returns ok.
+  - **Next:** one bounded retry with `PYTHONFAULTHANDLER=1`, which prints the Python stack on an access violation. A crash at the same point would be a deterministic, data- or Windows-specific defect; no crash would point to the open hardware issue.
+- **Fresh paper session** (`paper-20261109-2201`, 1 h): started normally after the crash. Results pending.
+- **Reference backtest twice:** pending.

@@ -26,9 +26,18 @@
   - Sync before each session (MVP_USER_GUIDE §2).
 - **The strategy books have never been exercised in a real session.** The real 1 h replay (2026-11-06) traded the benchmark book only.
 
+## Open defect under investigation
+- **Native crash while recovering a session the PC restart ended** (2026-11-09, owner evidence run).
+  - Exit code `0xC0000005` about 4 s after start, at `supervisor start: creating service`, while the live-bar store opened the copied database.
+  - The same copy opens fine on Linux, and SQLite's integrity check passes.
+  - Next: one retry with `PYTHONFAULTHANDLER=1` (MVP_VALIDATION_REPORT §7). Recovery after an unclean end stays unproven on Windows until then.
+- **Status detail:** `RUNNING` is published from `_open()` until the first poll, even when that poll then turns `AWAITING_BACKFILL`. Nothing is processed in that window.
+
 ## Platform and environment
 - **Owner PC restarts:** hardware (WHEA), open, out of scope here; one occurred during a paper session on 2026-11-09. Sessions survive by design, but such runs are interrupted.
-- **CI flakes:** paper-runtime tests fail intermittently in CI (1–3 per run, mostly Windows). A fix is in progress (validation report §6); until it lands, a red Windows job must be read test by test.
+- **CI flakes:** the paper-runtime timing flakes are root-caused and fixed in tests (validation report §6).
+  - One timing test still asserts real-time gaps (`test_retries_back_off_and_are_capped`, ≤ 0.31 s).
+  - Loosening it is a Lead decision, so it can still fail on a stalled runner.
 - **No local Python test run of fastapi/pyarrow/hypothesis tests in the agent container:** package installs are blocked there, so CI is the authoritative run.
 - **Not formally accepted:** the M1 2-hour gate and M0 acceptance.
 - **Not implemented** (outside the engineering MVP, Target C):
