@@ -31,7 +31,7 @@ Last update: 2026-11-10 (overnight session).
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| P1-1 | Preregistration schema, validate, freeze, selection records, template | policy fields PENDING; freeze refuses open decisions and edits after freeze; a frozen file pins anchor and backtest config; unknown keys refused | VERIFIED (CI `42780296915` on the review fixes; re-review N2/N5 fixes `93846a0` local, CI pending) | `f10daad` `afcd1a2` `93846a0`; `test_preregistration.py` | freezing a hypothesis: owner |
+| P1-1 | Preregistration schema, validate, freeze, selection records, template | policy fields PENDING; freeze refuses open decisions and edits after freeze; a frozen file pins anchor and backtest config; unknown keys refused | VERIFIED (CI `42786327337` 7/7 incl. re-review N2/N5 fixes `93846a0`; closure R1/R2 `1d253e2`) | `f10daad` `afcd1a2` `93846a0`; `test_preregistration.py` | freezing a hypothesis: owner |
 | P1-2 | Walk-forward conformance to a frozen preregistration | any deviation refused before running, folds and config hash included | IMPLEMENTED, TESTED (re-review N2: folds and config were not pinned under `anchor: auto`; fixed `93846a0`) | `f10daad` `93846a0` | — |
 | P1-3 | Trial-budget enforcement from the preregistration | registry-rows cap applied | IMPLEMENTED | `f10daad` | the counting rule is **D-C** |
 | P1-4 | Research/live risk compatibility (I-1) | engine's own RR; regression test of the 1.5 floor vs ADR-0012 geometries | IMPLEMENTED, TESTED | `7ef4ba8`; `test_live_compat.py` (11) | wiring live rules into backtests: **D-E** |
@@ -55,7 +55,7 @@ Last update: 2026-11-10 (overnight session).
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| M5-1 | Agent package, mock client, schemas, budget, timeouts, mode off | every gate path tested with a mock | VERIFIED (mock scope): review fixes in CI `42780296915` 7/7; Fable re-review CHANGES REQUESTED (N1 three ledger corruptions raised; N3 mutants; N4 Windows lock), fixed `8200ffe`, 156 passed locally | `78fdbd2`…`0605795`, `59b10b0` `494ae3c` `6bbb0e3` `8200ffe` | — |
+| M5-1 | Agent package, mock client, schemas, budget, timeouts, mode off | every gate path tested with a mock | VERIFIED (mock scope): review fixes in CI `42780296915` 7/7; Fable re-review CHANGES REQUESTED (N1 three ledger corruptions raised; N3 mutants; N4 Windows lock), fixed `8200ffe` (CI `42786327337` 7/7); closure R3/R4 `1d253e2`, 157 passed locally | `78fdbd2`…`0605795`, `59b10b0` `494ae3c` `6bbb0e3` `8200ffe` | — |
 | M5-3 | Wire the gate into the paper runtime; `agent_gated` book; Agent tab | gate called on CONFIRMED signals; book journaled and replayed | DEFERRED | — | needs new contract events (Lead) and a paper journal change; not done unattended overnight |
 | M5-2 | Measured cost/latency with a real key on live signals | the gate's last clause | BLOCKED | — | API key + live signals (D-03; paid API needs the owner) |
 

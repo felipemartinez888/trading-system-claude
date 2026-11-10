@@ -33,7 +33,8 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | Review | Fable review of P1 + M6: CHANGES REQUESTED (2 blocking: a selection record could unlock the holdout; free-text policy values) | fixes `afcd1a2` | prereg 37, evaluation 42 + 1 skipped, resume run-side 2 | fixed |
 | M5-1 | Agent layer, mock client, advise-only, budget, breaker, cache, mode off, status API | `78fdbd2`…`0605795` + review fixes | `tests/unit/agents` 148 passed | IMPLEMENTED, TESTED; Fable review CHANGES REQUESTED (budget not a hard cap) fixed; not wired into the runtime |
 | H1 | Draft H1 strategy (separate DRAFT_REGISTRY: no trial possible), `--draft` feasibility, H1-v2 draft | `0030114` `fec95ba` `ba69590` `a23d0db` | 45 + 10 + 2 | IMPLEMENTED, TESTED; causality audit CONDITIONAL PASS: the embargo was not checked against the holding period, fixed `78ed753` |
-| Re-review | Fable re-review of every fix commit: CHANGES REQUESTED, narrow. Nothing failed open (gate not wired, no preregistration frozen). N1: three malformed ledger lines raised instead of refusing. N2: `anchor: auto` left the folds free and the config hash was optional | `8200ffe` (N1, N3 tests, N4 bounded Windows lock), `93846a0` (N2 freeze pins anchor and backtest config hash; N5 unknown keys refused) | agents 156 passed; prereg + resume 66 passed; full unit suite 1887 passed, 2 skipped, 16 failed from missing pytest-asyncio/httpx in this container only (CI has them) | IMPLEMENTED, TESTED; CI pending on the push |
+| Re-review | Fable re-review of every fix commit: CHANGES REQUESTED, narrow. Nothing failed open (gate not wired, no preregistration frozen). N1: three malformed ledger lines raised instead of refusing. N2: `anchor: auto` left the folds free and the config hash was optional | `8200ffe` (N1, N3 tests, N4 bounded Windows lock), `93846a0` (N2 freeze pins anchor and backtest config hash; N5 unknown keys refused) | agents 156 passed; prereg + resume 66 passed; full unit suite 1887 passed, 2 skipped, 16 failed from missing pytest-asyncio/httpx in this container only (CI has them) | VERIFIED: CI `42786327337` 7/7 on `b6f9522` |
+| Closure | Fable closure review of `8200ffe` `93846a0`: CONDITIONAL PASS, 0 blocking, no fail-open path. R1 the folds were still planned from the run's own first fold (and no folds passed); R2 nested key typos (`data.dataset_id`) accepted; R3 a mid-review lock timeout gave AI_UNAVAILABLE, counted against the breaker, and `snapshot()` raised; R4 the lock test would hang on a regression | `1d253e2` | agents 157 + prereg 44 passed locally (new tests fail on the previous code); run-side prereg 4 passed | IMPLEMENTED, TESTED; CI on the final push |
 
 ## M0–M6 status (no acceptance is claimed here)
 | Milestone | State |
@@ -97,9 +98,11 @@ D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H ([DECISIONS_PENDING](DECISIONS_PEN
 | `42775771210` | `597ebf8` | **failed**: mypy strict on `research/preregistration.py` (fixed in `6c9d57c`) |
 | `42776226802` | `45cf45a` | 7/7 green: python ubuntu 2166 passed, windows 2164; frontend vitest + build both OS (covers preregistration tooling, live compatibility, status, M6, M5 first version, the walk-forward table) |
 | `42780296915` | `2658aa4` | 7/7 green (M5 review fixes, prereg review fixes, embargo, H1 draft) |
-| later | `93846a0` | see the last checkpoint |
+| `42786327337` | `b6f9522` | 7/7 green: python ubuntu 2284 passed, windows 2282; frontend both OS (re-review fixes N1–N5) |
+| final | `1d253e2` + docs | see the last checkpoint |
 
 ## Checkpoints
 - 2026-11-10 ~02:30 local: `e63743b` + this report.
 - 2026-11-10 ~04:00 local: `95ae656` (M5 review fixes, H1 draft + causality fixes, prereg review fixes, agent status card, semantic map update).
-- 2026-11-10 ~06:30 local: `93846a0` (re-review fixes N1–N5, M6 real-session evidence, agent status card, morning actions); pushed, CI below.
+- 2026-11-10 ~06:30 local: `b6f9522` (re-review fixes N1–N5, M6 real-session evidence, agent status card, morning actions); CI `42786327337` 7/7.
+- 2026-11-10 ~08:30 local: closure-review fixes `1d253e2` and this report; pushed (final HEAD), CI in progress at the time of writing.
