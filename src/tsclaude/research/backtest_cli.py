@@ -1,4 +1,4 @@
-"""`tsclaude backtest run | show | list | trials | walkforward` (M2-T4; walk-forward: MVP).
+"""`tsclaude backtest run | show | list | trials | walkforward | feasibility` (M2-T4; MVP; M4).
 
 ``run`` reads the lake only through `LakeReader` with the holdout guard backed by the event store
 (a range touching the sealed holdout is refused unless ``--prereg`` names a recorded unlock for
@@ -425,3 +425,6 @@ def register(sub: Any) -> None:
     wf.add_argument("--config", default=str(DEFAULT_CONFIG))
     wf.add_argument("--repo-root", default=".")
     wf.set_defaults(func=_cmd_walkforward)
+    from tsclaude.research.feasibility_cli import register_feasibility
+
+    register_feasibility(bsub)
