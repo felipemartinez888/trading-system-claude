@@ -17,6 +17,7 @@ import type {
   PaperFillsResponse,
   PaperStatusResponse,
   QuitResponse,
+  ResearchStatusResponse,
   SignalsResponse,
   StatusResponse,
   StreamsHealthResponse,
@@ -111,6 +112,8 @@ export const api = {
   newPaperSession: (note: string, requestId: string) =>
     post<NewPaperSessionResult>("/api/paper/session/new", { note, request_id: requestId }),
   backtests: (signal?: AbortSignal) => get<BacktestsResponse>("/api/backtests", signal),
+  researchStatus: (signal?: AbortSignal) =>
+    get<ResearchStatusResponse>("/api/research/status", signal),
   backtest: (runId: string, signal?: AbortSignal) =>
     get<BacktestDetailResponse>(`/api/backtests/${encodeURIComponent(runId)}`, signal),
 };

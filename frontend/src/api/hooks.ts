@@ -30,6 +30,7 @@ export const queryKeys = {
   paperFills: ["paper", "fills"] as const,
   paperActivity: ["paper", "activity"] as const,
   backtests: ["backtests"] as const,
+  researchStatus: ["research", "status"] as const,
 };
 
 /** Paper values change at most once per 1m bar; the labels say how fresh they are. */
@@ -162,6 +163,14 @@ export function useNewPaperSessionMutation() {
     onSettled: () => {
       void client.invalidateQueries({ queryKey: queryKeys.paperStatus });
     },
+  });
+}
+
+export function useResearchStatus() {
+  return useQuery({
+    queryKey: queryKeys.researchStatus,
+    queryFn: ({ signal }) => api.researchStatus(signal),
+    refetchInterval: 60_000,
   });
 }
 

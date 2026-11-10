@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useBacktest, useBacktests } from "../api/hooks";
 import type { BacktestSummary, Sourced } from "../api/types";
 import { ProvenanceBadge } from "../components/ProvenanceBadge";
+import { ResearchStatusBanner } from "../components/ResearchStatusBanner";
 import { ValidationBadge, validationStatus } from "../components/ValidationBadge";
 import { NOT_AVAILABLE, formatUtc, pct, pick, shortHash, show } from "../format";
 
@@ -249,6 +250,7 @@ export function BacktestsPage() {
         the research protocol (A credible … X invalid); a backtest is not evidence of future
         performance, and only grade A counts as validated.
       </p>
+      <ResearchStatusBanner />
       {list.isError ? (
         <p className="bad" role="alert">
           Backtests could not be loaded: {String(list.error)}
