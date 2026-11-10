@@ -732,3 +732,46 @@ def test_entry_kinds_other_than_market_are_mirrored() -> None:
     assert sub.payload["price"] == "999.5"
     assert svc.session.lifecycle.status(sid(1)) in (SignalStatus.OPEN, SignalStatus.CONFIRMED)
     assert ETH  # both instruments were delivered
+
+
+def test_agent_gated_uses_the_baseline_risk_engine_at_submit_and_fill() -> None:
+    bars = two_symbol_bars(10)
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1)]})
+    w = worker(mock_client(approve()), bars)
+    svc, journal = new_service(gated_config(), strat, w)
+    run(svc, bars, list(range(10)), wait=w)
+    w.close()
+    books = svc.session.sim.books
+    assert books[AGENT_GATED].risk_hook is svc.session.hook
+    assert books[AGENT_GATED].config == books[BASELINE].config
+    assert books[AGENT_GATED].kill_switch_drawdown == books[BASELINE].kill_switch_drawdown
+    checks = [
+        (r["stage"], r["allow"])
+        for b in journal.batches()
+        for r in b[0].payload.get("risk", [])
+        if r["book"] == AGENT_GATED
+    ]
+    assert checks == [("submit", True), ("fill", True)]  # recorded, so replay recomputes them
+
+
+def test_an_outcome_is_applied_only_at_a_release_after_it_was_available() -> None:
+    # the live service journals an outcome at the start of the poll that releases the next
+    # bars, so release >= availability always holds there; this drives the rule directly
+    bars = two_symbol_bars(10)
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1, valid_bars=8)]})
+    held = HeldReviewer(worker(mock_client(approve()), bars))
+    svc, journal = new_service(gated_config(), strat, held)
+    for i in range(2):
+        step_minute(svc, bars, i)
+    payload = held.results[sid(1)]
+    held.order.clear()  # the service never sees it: journaled by hand below
+    later = minute(5) + 30_000
+    journal.append(svc.session.agent_review(payload, later))
+    for i in range(2, 10):
+        step_minute(svc, bars, i)
+    batches = journal.batches()
+    [(adm_i, adm)] = entries(batches, str(EventType.AGENT_GATED_ADMISSION))
+    assert adm.payload["released_at_ms"] >= later
+    head = batches[adm_i][0].payload
+    assert head["bar"]["open_time_ms"] == minute(5)  # released at close(5) + 1.5 s
+    assert replay(gated_config(), batches).ledger_hashes() == svc.ledger_hashes()
