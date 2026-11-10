@@ -133,4 +133,5 @@ CI runs the same commands on Ubuntu and Windows for every push to `task/**`.
 | Paper UNAVAILABLE "required history window is not complete" | History budget paused | Stop, Start again in the same data folder (resumes) |
 | Paper AWAITING_BACKFILL | Minutes missing after a restart | Wait; nothing is traded meanwhile |
 | Dashboard shows "bundle not built" | Node build missing | `pnpm --dir frontend install; pnpm --dir frontend build` |
+| `pnpm install` stops with `ERR_PNPM_IGNORED_BUILDS` (esbuild) | A checkout from before `frontend/pnpm-workspace.yaml` was added, on pnpm 11 or later | Update the checkout; see [frontend/README](../frontend/README.md) "pnpm versions" |
 | PC restarted during a run | Hardware/OS event | Start again in the same folder; the gap is shown and backfilled where possible |

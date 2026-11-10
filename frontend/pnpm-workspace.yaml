@@ -1,0 +1,17 @@
+# pnpm settings for the dashboard. One project, not a monorepo.
+#
+# `packages` is required by pnpm 9 (the version CI pins): it refuses a pnpm-workspace.yaml
+# without it ("packages field missing or empty"). Newer versions accept it unchanged.
+packages:
+  - "."
+
+# esbuild (a dependency of vite and vitest) needs its install script to fetch its native binary.
+# pnpm 10 and later block dependency install scripts unless they are approved.
+#   - pnpm >= 10.26 reads `allowBuilds` here.
+#   - pnpm 11 and later read only this. They ignore the "pnpm" field of package.json, so the
+#     `pnpm.onlyBuiltDependencies` entry there no longer applies.
+#   - pnpm 10.0 to 10.25 read package.json's `pnpm.onlyBuiltDependencies`, which is kept.
+#   - pnpm 9 runs every install script and ignores both.
+# Keep the two lists identical. tests/unit/test_frontend_toolchain.py checks that they are.
+allowBuilds:
+  esbuild: true

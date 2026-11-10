@@ -11,6 +11,26 @@ pnpm build       # typecheck + vite build -> ../src/tsclaude/web/static
 pnpm watch       # rebuild on change; reload http://127.0.0.1:8765/ served by `tsclaude app`
 ```
 
+## pnpm versions and reproducibility
+
+- **Build-script approval.** esbuild must run its install script. `pnpm-workspace.yaml`
+  approves it with `allowBuilds` (read by pnpm 10.26 and later; pnpm 11 and later read only this),
+  and `package.json` keeps `pnpm.onlyBuiltDependencies` for pnpm 10.0 to 10.25. pnpm 9, which CI
+  pins, runs every install script. `tests/unit/test_frontend_toolchain.py` keeps both lists equal.
+  With these files no manual `pnpm approve-builds` is needed. If pnpm still reports
+  `ERR_PNPM_IGNORED_BUILDS`, another dependency gained an install script. Review it before
+  adding it to both lists.
+- **No lock file is committed yet** (owner decision D-G). `pnpm install` resolves the newest
+  versions inside the `package.json` ranges, so two installs on different days can differ. A
+  `pnpm-lock.yaml` written by a local install is yours. It is not part of the repository until
+  D-G is decided.
+- **Versions in use:**
+  - CI pins pnpm 9 (`.github/workflows/ci.yml`);
+  - the owner's PC runs pnpm 12.
+
+  A committed lock file is reproducible only with one pnpm version everywhere. Choosing that
+  version, and pinning it with `packageManager` so CI and the launcher use it too, is part of D-G.
+
 Rules (CLAUDE.md, ADR-0010, DASHBOARD.md):
 
 - Every displayed value comes from the API together with its `provenance`. Render it with
