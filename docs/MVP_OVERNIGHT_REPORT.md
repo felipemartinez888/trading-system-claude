@@ -50,6 +50,41 @@ walk-forward once D-C, D-E and D-F1 are decided and the owner freezes a revised 
 1.5)**, as are all ADR-0012 geometries of the reference (regression tests in `test_live_compat.py` and
 the H1 tests), so D-E decides whether any H1 result could ever trade in the baseline book.
 
+## First recommended next actions (owner, morning)
+All **NORMAL PowerShell** (no Administrator). Nothing below trades, sends an order or uses a paid API.
+
+1. **Update the branch checkout and run the dashboard smoke check (A6, 5 minutes).** It uses an empty,
+   separate data folder and port 8799, so your real app and data are untouched.
+   ```powershell
+   cd C:\Users\felip\Projects\trading-system-claude
+   git fetch origin task/mvp-integration
+   if (Test-Path ..\tsc-mvp) { git -C ..\tsc-mvp checkout --detach origin/task/mvp-integration } else { git worktree add --detach ..\tsc-mvp origin/task/mvp-integration }
+   cd ..\tsc-mvp
+   powershell -ExecutionPolicy Bypass -File scripts\owner_checks\dashboard_smoke.ps1
+   ```
+2. **H1-1 feasibility count on real development data** (P&L-free, records no trial; writes only
+   `<data>\feasibility\`). It compares the draft H1 rules on 15m and 1h:
+   ```powershell
+   cd C:\Users\felip\Projects\tsc-mvp
+   $env:TSC_DATA_DIR = 'C:\Users\felip\Projects\trading-system-claude\data'
+   uv run tsclaude backtest feasibility --draft --strategy h1_compression_breakout `
+     --grid docs\research\grids\feasibility_h1_draft_probe.json `
+     --symbols spot:BTCUSDT,spot:ETHUSDT,spot:DOGEUSDT,spot:XRPUSDT --from 2022-03-01 --to 2025-01-01
+   ```
+3. **Decide D-C, D-E and D-F1** ([DECISIONS_PENDING](DECISIONS_PENDING.md)); D-A (M3 acceptance) can be
+   decided independently ([M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md)). D-E matters most: under the
+   current live floor, every H1-v2 configuration is rejected by the baseline book.
+4. Optional: the walk-forward mechanics dry run (REFERENCE strategy, about half an hour, about 21 permanent
+   trial rows in the `bracket_reference` family only) and an M6 export of a **copy** of a recorded session:
+   ```powershell
+   cd C:\Users\felip\Projects\tsc-mvp
+   uv run tsclaude backtest walkforward --strategy bracket_reference --grid docs\research\grids\bracket_reference_dryrun.json --symbols spot:BTCUSDT --hypothesis B2-DRYRUN
+   Copy-Item C:\Users\felip\tsc_runs\paper-20261109-2201\data\state.db $env:TEMP\tsc-export.db
+   uv run tsclaude evaluation export --db $env:TEMP\tsc-export.db --out $env:TEMP\tsc-export
+   uv run tsclaude evaluation verify --export $env:TEMP\tsc-export --db $env:TEMP\tsc-export.db
+   uv run tsclaude evaluation score --export $env:TEMP\tsc-export
+   ```
+
 ## Remaining owner decisions
 D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H ([DECISIONS_PENDING](DECISIONS_PENDING.md)).
 
