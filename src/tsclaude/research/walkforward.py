@@ -1049,7 +1049,16 @@ def _describe_policy(cfg: BacktestConfig) -> dict[str, Any]:
 def _exit_mix(evaluator: RunnerEvaluator) -> dict[str, Any]:
     """Per phase and configuration: exits by reason summed over the plan's runs (base book) and
     the share of time exits (mathematical audit F3, A7: a 2-3 R target can need more bars than
-    the time exit allows). Read from each run's own metrics; never used by selection."""
+    the time exit allows). Read from each run's own metrics; never used by selection.
+    Informational: an unexpected metrics shape gives an ``error`` entry, never a lost report
+    (the trials are already recorded when the report is assembled)."""
+    try:
+        return _exit_mix_of(evaluator)
+    except Exception as exc:  # diagnostic only
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _exit_mix_of(evaluator: RunnerEvaluator) -> dict[str, Any]:
     counts: dict[tuple[str, str], dict[str, int]] = {}
     runs: dict[tuple[str, str], int] = {}
     for (phase, _index, config), run in sorted(evaluator.by_key.items()):
@@ -1076,7 +1085,7 @@ def _power_reading(oos: Mapping[str, Any], cfg: BacktestConfig) -> dict[str, Any
 
     try:  # informational: never loses the report
         return read_power(oos, alpha=cfg.alpha, power=cfg.min_power)
-    except (ValueError, TypeError) as exc:
+    except Exception as exc:  # diagnostic only
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 

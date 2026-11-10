@@ -646,6 +646,20 @@ def test_rehearsal_of_the_first_experiment_pipeline_on_synthetic_data(tmp_path: 
                                         wf.INVALID_OOS_EVIDENCE}  # fmt: skip
     assert env.trials.n_trials("bracket_reference") > 0  # the rehearsal's trials are recorded
     # diagnostics of the mathematical audit (F3, F4) are in the report, outside selection
-    assert set(report["exit_mix"]) >= {"train"}
-    assert all("time_exit_share" in v for v in report["exit_mix"]["train"].values())
+    from tsclaude.sim.fills import ExitReason
+
+    mix = report["exit_mix"]
+    assert "error" not in mix
+    assert set(mix) >= {"train"}
+    assert set(mix["train"]) == set(grid)
+    reasons = {e.value for e in ExitReason}
+    for phase in mix.values():
+        for row in phase.values():
+            assert set(row["exit_reasons"]) <= reasons  # read from the real run metrics
+            assert sum(row["exit_reasons"].values()) == row["trades"]
+            share = row["time_exit_share"]
+            assert share is None if row["trades"] == 0 else 0.0 <= share <= 1.0
+    assert all(row["runs"] == len(folds) for row in mix["train"].values())
     assert "power_reading" in report
+    if report["power_reading"] is not None:
+        assert "error" not in report["power_reading"]

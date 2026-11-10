@@ -1,9 +1,10 @@
 """``tsclaude backtest power-plan``: statistical-power planning from a P&L-free feasibility count.
 
 Reads one ``feasibility.json`` (no lake, no trial registry, no market data), plans the
-walk-forward folds the preregistration would use, and prints the upper bound of out-of-sample
-trades and the smallest win-rate margin each take-profit geometry could certify with 80 % power
-at the trial-corrected level (`research.power_plan`). Records nothing. Exit codes: 0 ok, 2 refused.
+walk-forward folds the preregistration would use, and prints the candidates inside the test
+windows and the smallest win-rate margin each take-profit geometry could certify with 80 % power
+at the trial-corrected level (`research.power_plan`; optimistic, see there). Records nothing.
+Exit codes: 0 ok, 2 refused.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ def _floats(text: str) -> list[float]:
 def cmd_power_plan(args: argparse.Namespace) -> int:
     from tsclaude.contracts.timeutil import MS_PER_MINUTE
     from tsclaude.research.backtest_cli import parse_time
-    from tsclaude.research.power_plan import oos_share_of, plan_from_feasibility
+    from tsclaude.research.power_plan import plan_from_feasibility, test_windows_of
     from tsclaude.research.walkforward import plan_folds
 
     try:
@@ -39,11 +40,10 @@ def cmd_power_plan(args: argparse.Namespace) -> int:
             anchor, end, initial_train_months=args.initial_train_months,
             test_months=args.test_months, embargo_ms=args.embargo_minutes * MS_PER_MINUTE,
         )  # fmt: skip
-        share = oos_share_of(folds, int(rng["from_ms"]), int(rng["to_ms"]))
         result: dict[str, Any] = plan_from_feasibility(
-            feas, oos_share=share, configurations=args.configurations, folds=len(folds),
+            feas, test_windows=test_windows_of(folds), configurations=args.configurations,
             geometries=[(f"{b:g}R", b) for b in args.tp_r], cost_r=args.max_cost_r,
-            alpha=args.alpha,
+            alpha=args.alpha, prior_family_rows=args.prior_family_rows,
         )  # fmt: skip
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"ok": False, "refused": "power_plan", "error": f"{exc}"}))
@@ -56,7 +56,7 @@ def cmd_power_plan(args: argparse.Namespace) -> int:
 def register_power_plan(bsub: Any) -> None:
     pp = bsub.add_parser(
         "power-plan",
-        help="P&L-free power planning from a feasibility.json (upper bounds; records nothing)",
+        help="P&L-free power planning from a feasibility.json (optimistic; records nothing)",
     )
     pp.add_argument(
         "--feasibility", required=True, help="a feasibility.json written by feasibility"
@@ -70,4 +70,8 @@ def register_power_plan(bsub: Any) -> None:
     pp.add_argument("--tp-r", type=_floats, default=[2.0, 2.5, 3.0], help="e.g. 2,2.5,3")
     pp.add_argument("--max-cost-r", type=float, default=0.2)
     pp.add_argument("--alpha", type=float, default=0.05)
+    pp.add_argument(
+        "--prior-family-rows", type=int, default=0,
+        help="registry rows already recorded for the strategy family (H1 today: 0)",
+    )  # fmt: skip
     pp.set_defaults(func=cmd_power_plan)

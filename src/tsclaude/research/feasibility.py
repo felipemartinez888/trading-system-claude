@@ -38,11 +38,17 @@ Diagnostics (feasibility-v2, all P&L-free, all from the same stage flags; mathem
 - ``stage_filter``: per stage, the cumulative count, the pass rate from the previous stage, and the
   **marginal** count (bars passing that stage when every *structural* stage passes, whatever the
   other conditions say) and the **leave-one-out** count (bars passing every stage except that
-  one): how binding each condition is;
+  one): how binding each condition is. For a stage whose failure makes ``diagnose`` mark every
+  later stage False (H1: warm-up, defined features, valid stop) leave-one-out is degenerate (it
+  equals the candidate count);
+- ``candidates_by_utc_month``: last-stage candidates (all symbols) by the ``YYYY-MM`` of the
+  decision bar's close, so a power plan can count candidates inside the test windows instead of
+  assuming they are spread evenly (`research.power_plan`);
 - ``ablation_ladder`` (only for a strategy with a declared ladder, `ABLATION_LADDERS`): candidate
-  counts for each rung of nested condition sets, e.g. H1 trend → + breakout → + compression →
-  + volume. These are the candidate pools a conditional random control would draw from. They are
-  counts, not controls: no outcome is evaluated and nothing here enters selection.
+  counts, overall and by UTC hour, for each rung of nested condition sets, e.g. H1 trend →
+  + breakout → + compression → + volume. These are the candidate pools a conditional random
+  control would draw from. They are counts, not controls: no outcome is evaluated and nothing here
+  enters selection.
 
 Structural stages (`STRUCTURAL_STAGES`) are the ones that make a bar evaluable at all (warm-up,
 defined features, a valid stop) and the cost filter, which every rung keeps.
@@ -336,7 +342,7 @@ def count_feasibility(
         log.hour_decisions[hour] += 1
         if all(d.stages[n] for n in names):
             log.hour_candidates[hour] += 1
-        diag.add(d.stages, hour)
+        diag.add(d.stages, hour, utc_month(d.decision_ms))
 
     years = range(utc_year(from_ms), utc_year(to_ms - 1) + 1)
     per_symbol: dict[str, Any] = {}
@@ -400,8 +406,15 @@ def count_feasibility(
 
 
 def utc_hour(ms: int) -> int:
-    """UTC hour of a decision bar's close time (= the hour the bar opened in, for <= 1h bars)."""
+    """UTC hour of a decision bar's close time. Close times end at ``hh:59:59.999`` for bars of
+    up to one hour, so this is the hour the bar opened in."""
     return (ms // 3_600_000) % HOURS
+
+
+def utc_month(ms: int) -> str:
+    """``YYYY-MM`` of a decision bar's close time, UTC."""
+    t = datetime.fromtimestamp(ms / 1000, tz=UTC)
+    return f"{t.year:04d}-{t.month:02d}"
 
 
 def busiest_share(by_hour: Sequence[int], k: int = BUSIEST_HOURS) -> float | None:
@@ -425,10 +438,12 @@ class _Diagnostics:
         self.marginal = [0] * len(self.names)
         self.leave_one_out = [0] * len(self.names)
         self.rungs = [0] * len(self.ladder)
+        self.rung_hours = [[0] * HOURS for _ in self.ladder]
         self.hour_decisions = [0] * HOURS
         self.hour_cumulative = [[0] * HOURS for _ in self.names]
+        self.month_candidates: dict[str, int] = {}
 
-    def add(self, stages: Mapping[str, bool], hour: int) -> None:
+    def add(self, stages: Mapping[str, bool], hour: int, month: str) -> None:
         self.decisions += 1
         self.hour_decisions[hour] += 1
         for k, name in enumerate(self.names):
@@ -436,6 +451,8 @@ class _Diagnostics:
                 break
             self.cumulative[k] += 1
             self.hour_cumulative[k][hour] += 1
+        if self.names and all(stages[n] for n in self.names):
+            self.month_candidates[month] = self.month_candidates.get(month, 0) + 1
         base = all(stages[n] for n in self.structural)
         failed = [n for n in self.names if not stages[n]]
         for k, name in enumerate(self.names):
@@ -446,6 +463,7 @@ class _Diagnostics:
         for r, (_, rung) in enumerate(self.ladder):
             if base and all(stages[c] for c in rung):
                 self.rungs[r] += 1
+                self.rung_hours[r][hour] += 1
 
     def out(self) -> dict[str, Any]:
         rows = []
@@ -474,17 +492,30 @@ class _Diagnostics:
                 else None,
                 "busiest_hours_decision_share": busiest_share(self.hour_decisions),
             },
+            "candidates_by_utc_month": dict(sorted(self.month_candidates.items())),
             "structural_stages": list(self.structural),
             "notes": (
                 "P&L-free counts from the stage flags; marginal = structural stages and that "
-                "stage pass; leave_one_out = every stage except that one passes. Not used by "
-                "selection or certification"
+                "stage pass; leave_one_out = every stage except that one passes. A stage whose "
+                "failure makes the strategy mark every later stage False (H1: warmup_ready, "
+                "features_defined, stop_valid) has leave_one_out equal to the candidate count, "
+                "which carries no information. by_utc_hour.cumulative is per stage in stage "
+                "order; ablation_ladder[].by_utc_hour is per rung. Not used by selection or "
+                "certification"
             ),
         }
         if self.ladder:
             out["ablation_ladder"] = [
-                {"rung": label, "conditions": list(rung), "candidates": n}
-                for (label, rung), n in zip(self.ladder, self.rungs, strict=True)
+                {
+                    "rung": label,
+                    "conditions": list(rung),
+                    "candidates": n,
+                    "by_utc_hour": list(hours),
+                    "busiest_hours_share": busiest_share(hours),
+                }
+                for (label, rung), n, hours in zip(
+                    self.ladder, self.rungs, self.rung_hours, strict=True
+                )
             ]
         return out
 

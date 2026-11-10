@@ -168,6 +168,7 @@ def test_output_key_set_has_no_outcome_fields(march: tuple[Path, list[str]]) -> 
         "decision_bars",
         "stage_filter",
         "by_utc_hour",
+        "candidates_by_utc_month",
         "structural_stages",
         "notes",
     }  # fmt: skip  (the reference strategy declares no ablation ladder)
@@ -479,11 +480,11 @@ def test_stage_filter_marginal_and_leave_one_out_on_known_flags() -> None:
     def flags(**kw: bool) -> dict[str, bool]:
         return {**s, **kw}
 
-    diag.add(flags(), 3)  # all pass
-    diag.add(flags(a=False), 3)  # only a fails
-    diag.add(flags(b=False), 4)  # only b fails
-    diag.add(flags(a=False, b=False), 5)  # both fail
-    diag.add(flags(cost_ok=False), 5)  # structural failure: no marginal, no rung
+    diag.add(flags(), 3, "2024-01")  # all pass
+    diag.add(flags(a=False), 3, "2024-01")  # only a fails
+    diag.add(flags(b=False), 4, "2024-02")  # only b fails
+    diag.add(flags(a=False, b=False), 5, "2024-02")  # both fail
+    diag.add(flags(cost_ok=False), 5, "2024-02")  # structural failure: no marginal, no rung
     out = diag.out()
     rows = {r["stage"]: r for r in out["stage_filter"]}
     # cumulative in stage order: bar 5 passes a and b before failing cost_ok
@@ -496,7 +497,13 @@ def test_stage_filter_marginal_and_leave_one_out_on_known_flags() -> None:
     assert rows["cost_ok"]["leave_one_out"] == 2  # all pass, or only cost_ok fails
     assert rows["cost_ok"]["structural"] is True
     assert [r["candidates"] for r in out["ablation_ladder"]] == [2, 1]
+    # rung "a" passes on bars 1 (hour 3) and 3 (hour 4); rung "a+b" on bar 1 only
+    a_hours, ab_hours = (r["by_utc_hour"] for r in out["ablation_ladder"])
+    assert (a_hours[3], a_hours[4], sum(a_hours)) == (1, 1, 2)
+    assert (ab_hours[3], sum(ab_hours)) == (1, 1)
+    assert out["ablation_ladder"][1]["busiest_hours_share"] == 1.0
     assert out["by_utc_hour"]["cumulative"]["cost_ok"][3] == 1
+    assert out["candidates_by_utc_month"] == {"2024-01": 1}  # the one full pass
     with pytest.raises(ValueError, match="unknown stages"):
         _Diagnostics(names, (("x", ("nope",)),))
 
@@ -512,7 +519,7 @@ def test_the_h1_draft_declares_an_ablation_ladder_over_its_own_stages() -> None:
     rungs = [set(r) for _, r in ladder]
     assert all(a < b for a, b in itertools.pairwise(rungs))  # strictly nested
     # the last rung plus the structural stages is the full CONFIRMED rule
-    assert rungs[-1] | (STRUCTURAL_STAGES & stages) == stages - {"warmup_ready"} | {"warmup_ready"}
+    assert rungs[-1] | (STRUCTURAL_STAGES & stages) == stages
 
 
 def test_the_h1_ladder_ends_at_the_confirmed_count(tmp_path: Path) -> None:
@@ -525,6 +532,69 @@ def test_the_h1_ladder_ends_at_the_confirmed_count(tmp_path: Path) -> None:
     out = count_feasibility(
         _reader(data_dir), h1, [SPOT_BTC], ms(2024, 3, 5), ms(2024, 3, 20), costs_for=COSTS_FOR
     )
-    rungs = [r["candidates"] for r in out["diagnostics"]["ablation_ladder"]]
+    ladder = out["diagnostics"]["ablation_ladder"]
+    rungs = [r["candidates"] for r in ladder]
     assert rungs[-1] == _cum(out)[-1] > 0
     assert all(a >= b for a, b in itertools.pairwise(rungs))
+    for r in ladder:  # counts only (no outcome field), the hourly split sums to the rung
+        assert set(r) == {"rung", "conditions", "candidates", "by_utc_hour", "busiest_hours_share"}
+        assert sum(r["by_utc_hour"]) == r["candidates"]
+    assert (
+        ladder[-1]["by_utc_hour"]
+        == out["diagnostics"]["by_utc_hour"]["cumulative"][out["stages"][-1]]
+    )
+    keys = _all_keys(out["diagnostics"])
+    for word in ("pnl", "equity", "win", "trade", "exit", "expectancy", "return", "price", "r_"):
+        assert not [k for k in keys if word in k.lower()], word
+
+
+def test_utc_hour_of_15m_and_1h_close_times() -> None:
+    """Review M1: the hour comes from the close time; a bar closing at hh:59:59.999 belongs to
+    hour hh (the hour it opened in), and the next bar to hh + 1."""
+    from tsclaude.research.feasibility import utc_hour, utc_month
+
+    hour = 3_600_000
+    day = ms(2024, 3, 2)
+    for k in range(24):
+        open_1h = day + k * hour
+        assert utc_hour(open_1h + hour - 1) == k  # 1h bar: closes at k:59:59.999
+        for q in range(4):  # 15m bars inside the hour
+            assert utc_hour(open_1h + (q + 1) * 15 * 60_000 - 1) == k
+        assert utc_hour(open_1h + hour) == (k + 1) % 24  # the next bar's first millisecond
+    assert utc_month(ms(2024, 3, 1) - 1) == "2024-02"
+    assert utc_month(ms(2024, 3, 1)) == "2024-03"
+    assert utc_month(ms(2025, 1, 1) - 1) == "2024-12"
+
+
+def test_busiest_share_and_the_candidate_share_use_the_last_stage() -> None:
+    """Review M1: non-uniform values, so a shifted or quietest-hours share would fail."""
+    from tsclaude.research.feasibility import _Diagnostics, busiest_share
+
+    by_hour = [0] * 24
+    by_hour[13], by_hour[14], by_hour[2] = 50, 30, 20
+    assert busiest_share(by_hour) == 1.0
+    by_hour = [1] * 24
+    by_hour[13] = 19  # 42 in all; six busiest = 19 + 5 x 1
+    assert busiest_share(by_hour) == pytest.approx(24 / 42)
+    assert busiest_share([0] * 24) is None
+    names = ("warmup_ready", "a", "cost_ok")
+    diag = _Diagnostics(names, ())
+    every = dict.fromkeys(names, True)
+    for h in range(24):  # every hour has a decision bar that fails "a"
+        diag.add({**every, "a": False}, h, "2024-03")
+    for _ in range(3):  # candidates only at hour 13
+        diag.add(every, 13, "2024-03")
+    hours = diag.out()["by_utc_hour"]
+    assert hours["busiest_hours_candidate_share"] == 1.0  # from the last stage
+    assert hours["busiest_hours_decision_share"] == pytest.approx(9 / 27)  # 4 + 5 x 1
+
+
+def test_month_counts_sum_to_the_candidates(march: tuple[Path, list[str]]) -> None:
+    data_dir, _ = march
+    out = count_feasibility(
+        _reader(data_dir), fast_strategy(max_cost_r=0.3), [SPOT_BTC], ms(2024, 3, 2),
+        ms(2024, 3, 6), costs_for=COSTS_FOR,
+    )  # fmt: skip
+    months = out["diagnostics"]["candidates_by_utc_month"]
+    assert sum(months.values()) == _cum(out)[-1]
+    assert set(months) <= {"2024-03"}
