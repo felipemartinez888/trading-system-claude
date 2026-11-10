@@ -210,7 +210,9 @@ uv run tsclaude backtest power-plan --feasibility "<1h file>" --anchor 2022-02-0
 uv run tsclaude backtest power-plan --feasibility "<1h file>" --anchor 2022-02-01 --embargo-minutes 4320 --tp-r 2.5,3,3.5
 Remove-Item Env:\TSC_DATA_DIR
 ```
-Send the two `feasibility.json` files (the power plans can be re-derived from them).
+The 1h lines use the draft's 1h embargo (4,320 minutes; a 1h time exit needs at least 2,940), the
+15m lines its default of 1,440 (at least 735). Send the two `feasibility.json` files (the power
+plans can be re-derived from them).
 
 **What to read in the output:**
 - the per-stage counts and `stage_filter`;

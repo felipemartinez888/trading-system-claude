@@ -36,7 +36,11 @@ merges a branch.
 - Before the review fixes: `tests/unit/backtest tests/unit/research tests/unit/strategies
   tests/unit/evaluation` 604 passed, 2 skipped (pyarrow, fastapi), exit 0.
 - After the fixes: feasibility 27 passed, power plan 12, number pinning 8, the rehearsal passes with
-  the stronger exit-mix assertions; the full unit result is in the metrics row.
+  the stronger exit-mix assertions. Full unit suite on `0fdf1e1`: 1941 passed, 2 skipped, 16 failed.
+  The 16 are the known environment-only failures (11 async tests without pytest-asyncio, 5 without
+  httpx; CI has both). Before this session: 1901 passed with the same 16.
+- `ruff check`, `ruff format --check` (src, tests, scripts) and `mypy --strict` on the changed modules
+  are clean (apart from the known missing yaml stubs).
 - Mutants: the reviewer ran 17 (13 killed, 4 survived). After the fixes all four are killed, plus four
   new ones on the fix code: no month clipping, no prior family rows, no per-rung hour count, and a
   constant floor flag. The month-clipping mutant survived the first version of the new tests; a
