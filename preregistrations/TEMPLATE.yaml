@@ -3,6 +3,7 @@
 # The TEMPLATE id itself is refused by every run. Fields set to PENDING are owner decisions that
 # are still open (DECISIONS_PENDING: D-C, D-D, D-E); `freeze` refuses while any is PENDING.
 # Freezing a hypothesis is an owner decision: freeze, review the diff, then the owner commits.
+# `freeze --config configs/backtest.yaml` pins that config's hash: every run must use it.
 schema: tsc-prereg-v1
 prereg_id: TEMPLATE
 kind: search
@@ -24,7 +25,7 @@ data:                # D-05; fixed, cannot be moved by a preregistration
   holdout: ['2026-01-01', '2026-10-01']
   dataset_ids: null  # or the exact dataset ids every run may read (pinning)
 walk_forward:
-  anchor: auto       # or a UTC month start, e.g. '2022-02-01'
+  anchor: auto       # freeze requires a UTC month start, e.g. '2022-02-01' (pins the folds)
   end: '2025-01-01'  # the last test window ends at or before this month start
   initial_train_months: 12
   test_months: 3

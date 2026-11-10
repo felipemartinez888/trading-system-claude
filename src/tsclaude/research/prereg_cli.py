@@ -1,10 +1,11 @@
 """`tsclaude prereg validate | freeze | select` (M4-T1 deliverable 1).
 
 ``validate`` checks a preregistration against schema ``tsc-prereg-v1`` and lists the owner
-decisions still open; ``freeze`` writes the frozen block into the file (refused while any problem or
-open owner decision remains; committing the file is the owner's act); ``select`` writes a selection
-record for a walk-forward report's final-selection candidate (its holdout procedure stays PENDING,
-decision D-D). Exit codes: 0 ok, 2 invalid or refused.
+decisions still open; ``freeze`` writes the frozen block into the file and pins the backtest config
+hash (refused while any problem or open owner decision remains, or with ``anchor: auto``;
+committing the file is the owner's act); ``select`` writes a selection record for a walk-forward
+report's final-selection candidate (its holdout procedure stays PENDING, decision D-D).
+Exit codes: 0 ok, 2 invalid or refused.
 """
 
 from __future__ import annotations
@@ -30,12 +31,23 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 def _cmd_freeze(args: argparse.Namespace) -> int:
     from tsclaude.contracts.timeutil import SystemClock
     from tsclaude.research.preregistration import PreregistrationInvalid, freeze
-    from tsclaude.research.runner import git_version
+    from tsclaude.research.runner import BacktestConfig, git_version
 
+    cfg_path = Path(args.config)
+    if not cfg_path.is_file():
+        _print({"ok": False, "refused": "freeze", "problems": [f"{cfg_path} does not exist"]})
+        return 2
     try:
-        block = freeze(Path(args.file), now_ms=SystemClock().now_ms(), code=git_version())
+        cfg_hash = BacktestConfig.load(cfg_path).config_hash
+        block = freeze(
+            Path(args.file), now_ms=SystemClock().now_ms(), code=git_version(),
+            backtest_config_hash=cfg_hash,
+        )  # fmt: skip
     except PreregistrationInvalid as exc:
         _print({"ok": False, "refused": "freeze", "problems": exc.problems})
+        return 2
+    except (OSError, ValueError, TypeError) as exc:  # an unreadable backtest config
+        _print({"ok": False, "refused": "freeze", "problems": [f"backtest config: {exc}"]})
         return 2
     _print({"ok": True, "frozen": block, "next": "review the diff, then commit the file"})
     return 0
@@ -69,6 +81,10 @@ def register(sub: Any) -> None:
     v.set_defaults(func=_cmd_validate)
     f = psub.add_parser("freeze", help="freeze a search preregistration (then commit it)")
     f.add_argument("file")
+    f.add_argument(
+        "--config", default="configs/backtest.yaml",
+        help="the backtest config every run of this preregistration must use (its hash is pinned)",
+    )  # fmt: skip
     f.set_defaults(func=_cmd_freeze)
     s = psub.add_parser("select", help="selection record for a walk-forward's candidate")
     s.add_argument("--search", required=True, help="the frozen search preregistration")

@@ -467,7 +467,12 @@ def _committed_prereg(repo: Path, **budget: Any) -> str:
     (repo / "preregistrations").mkdir(parents=True)
     path = repo / "preregistrations" / "H-RUN.yaml"
     path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
-    pr.freeze(path, now_ms=0, code={"commit": "test", "dirty": False})
+    pr.freeze(
+        path,
+        now_ms=0,
+        code={"commit": "test", "dirty": False},
+        backtest_config_hash=TEST_CONFIG.config_hash,
+    )
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "prereg")

@@ -75,6 +75,23 @@ SEGMENTS = {
     "holdout": ["2026-01-01", "2026-10-01"],
 }
 KINDS = ("search", "selection")
+#: the only keys a file may have; an unknown key (a typo such as ``backtest_config_hsh``) would
+#: otherwise silently disable what it meant to fix (re-review N5)
+SEARCH_KEYS = frozenset({
+    "schema", "prereg_id", "kind", "title", "rationale", "strategy", "search_space", "universe",
+    "data", "walk_forward", "objective", "selection_rule", "trial_budget", "holdout_procedure",
+    "risk_compatibility", "rejection_criteria", "max_loss_r_policy", "min_oos_coverage",
+    "backtest_config_hash", "frozen",
+})  # fmt: skip
+SELECTION_KEYS = frozenset({
+    "schema", "prereg_id", "kind", "parent", "selected", "walk_forward", "trial_budget",
+    "holdout_procedure", "risk_compatibility",
+})  # fmt: skip
+WALK_FORWARD_KEYS = frozenset({
+    "anchor", "end", "initial_train_months", "test_months", "embargo_minutes",
+    "time_exit_required", "n_min", "min_oos_coverage",
+})  # fmt: skip
+_HEX64 = frozenset("0123456789abcdef")
 SELECTION_RULES = ("full-development-train-v1",)
 #: open item listed (not a problem) for a strategy that is only in `strategies.DRAFT_REGISTRY`
 DRAFT_OPEN_ITEM = "strategy is a DRAFT (not runnable until an owner-approved promotion to REGISTRY)"
@@ -301,6 +318,10 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         p.append(f"prereg_id {pid!r} does not match the file name {Path(path).name!r}")
     if kind is None:
         p.append(f"kind must be one of {list(KINDS)}")
+    else:
+        unknown = sorted(set(doc) - (SEARCH_KEYS if kind == "search" else SELECTION_KEYS))
+        if unknown:
+            p.append(f"unknown top-level keys {unknown} (a typo is never ignored)")
     for dotted, decision in POLICY_FIELDS.items():
         value = _get(doc, dotted)
         if value is None:
@@ -352,6 +373,9 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
     if not wf:
         p.append("walk_forward is required")
     else:
+        unknown_wf = sorted(set(wf) - WALK_FORWARD_KEYS)
+        if unknown_wf:
+            p.append(f"unknown walk_forward keys {unknown_wf}")
         anchor = wf.get("anchor")
         if anchor != "auto" and not _month_start(anchor):
             p.append("walk_forward.anchor must be 'auto' or a UTC month start YYYY-MM-01")
@@ -378,6 +402,9 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         "min_oos_coverage"
     ):
         p.append("min_oos_coverage, if given at the top level, must equal walk_forward's")
+    fixed_cfg = doc.get("backtest_config_hash")
+    if fixed_cfg is not None and not _is_hex64(fixed_cfg):
+        p.append("backtest_config_hash must be null or a sha256 hex digest")
     if doc.get("objective") != OBJECTIVE:
         p.append(f"objective must be {OBJECTIVE!r} (ADR-0012)")
     if doc.get("selection_rule") not in SELECTION_RULES:
@@ -414,6 +441,10 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
     return v
 
 
+def _is_hex64(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX64
+
+
 def _block_sha256(block: Mapping[str, Any]) -> str:
     body = {k: v for k, v in block.items() if k != "block_sha256"}
     return hashlib.sha256(canonical_json(_jsonable(body)).encode("utf-8")).hexdigest()
@@ -434,6 +465,14 @@ def _check_freeze(doc: Mapping[str, Any], v: Validation) -> None:
         v.problems.append("the strategy implementation changed since the freeze")
     if fz.get("configurations") != v.configurations:
         v.problems.append("the frozen configurations differ from the search space")
+    if _get(doc, "walk_forward.anchor") == "auto":
+        v.problems.append(
+            "a frozen file must fix walk_forward.anchor (with 'auto' the folds are not pinned)"
+        )
+    if not _is_hex64(fz.get("backtest_config_hash")):
+        v.problems.append("the frozen block must pin the backtest config hash")
+    elif doc.get("backtest_config_hash") not in (None, fz["backtest_config_hash"]):
+        v.problems.append("backtest_config_hash differs from the frozen block's")
     if fz.get("engine_sha256") not in (None, engine_sha256()):
         v.notes.append(
             "the research engine changed since the freeze (informational: review the commits "
@@ -504,12 +543,31 @@ def _check_selection_parent(doc: Mapping[str, Any], v: Validation, folder: Path)
 
 
 # ---------------------------------------------------------------- freeze
-def freeze(path: Path | str, *, now_ms: int, code: Mapping[str, Any]) -> dict[str, Any]:
+def freeze(
+    path: Path | str, *, now_ms: int, code: Mapping[str, Any], backtest_config_hash: str
+) -> dict[str, Any]:
     """Validate and freeze a search preregistration in place; refused with any problem or open
-    owner decision. Returns the frozen block. Committing the file is the owner's act."""
+    owner decision. Returns the frozen block. Committing the file is the owner's act.
+
+    The frozen block pins the walk-forward completely: the anchor must be a concrete month start
+    (``auto`` would let a run pick its own first fold) and ``backtest_config_hash`` (costs,
+    instruments, statistics settings of ``configs/backtest.yaml``) is recorded, so every run must
+    use that exact config (re-review N2)."""
     doc = load(path)
     v = validate_document(doc, path=str(path))
     problems = list(v.problems)
+    if _get(doc, "walk_forward.anchor") == "auto":
+        problems.append(
+            "cannot freeze with walk_forward.anchor 'auto': fix the first train month "
+            "(YYYY-MM-01) so the folds are pinned"
+        )
+    if not _is_hex64(backtest_config_hash):
+        problems.append("cannot freeze without the backtest config hash")
+    elif doc.get("backtest_config_hash") not in (None, backtest_config_hash):
+        problems.append(
+            f"the file fixes backtest_config_hash {doc['backtest_config_hash']}, the current "
+            f"config is {backtest_config_hash}"
+        )
     if v.kind != "search":
         problems.append("only a search preregistration is frozen (a selection record is made)")
     if v.frozen:
@@ -526,6 +584,7 @@ def freeze(path: Path | str, *, now_ms: int, code: Mapping[str, Any]) -> dict[st
         "implementation_sha256": implementation_sha256(str(_get(doc, "strategy.strategy_id"))),
         "configurations": v.configurations,
         "code_commit": code["commit"],
+        "backtest_config_hash": backtest_config_hash,
         # informational: every module the research engine runs (not enforced, see the docstring)
         "engine_sha256": engine_sha256(),
     }
@@ -581,8 +640,8 @@ def walkforward_conformance(
          None if pins is None else sorted(pins)),
         ("final_selection", final_selection, True),
     ]  # fmt: skip
-    if wf["anchor"] != "auto":
-        checks.append(("anchor", anchor, f"{wf['anchor']}T00:00:00Z"))
+    # a frozen file has a concrete anchor (validation refuses 'auto' once frozen)
+    checks.append(("anchor", anchor, f"{wf['anchor']}T00:00:00Z"))
     for name, got, want in checks:
         if got != want:
             problems.append(f"{name} is {got!r}, the preregistration fixes {want!r}")
@@ -608,9 +667,9 @@ def walkforward_conformance(
             )
     if isinstance(doc.get("max_loss_r_policy"), Mapping):
         problems.append("a max_loss_r override is not supported by the walk-forward yet")
-    fixed_cfg = doc.get("backtest_config_hash")
-    if fixed_cfg is not None and config_hash is not None and fixed_cfg != config_hash:
-        problems.append(f"backtest config hash {config_hash} differs from the fixed {fixed_cfg}")
+    fixed_cfg = doc["frozen"].get("backtest_config_hash")
+    if config_hash is None or config_hash != fixed_cfg:
+        problems.append(f"backtest config hash {config_hash} differs from the frozen {fixed_cfg}")
     budget = doc["trial_budget"]
     if len(grid) > int(budget["max_configurations"]):
         problems.append("the grid exceeds trial_budget.max_configurations")
@@ -680,7 +739,9 @@ __all__ = [
     "POLICY_VALUES",
     "REQUIRED_REJECTION",
     "SCHEMA",
+    "SEARCH_KEYS",
     "SEGMENTS",
+    "SELECTION_KEYS",
     "PreregistrationInvalid",
     "Validation",
     "configurations_of",

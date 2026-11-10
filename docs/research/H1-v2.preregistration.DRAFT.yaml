@@ -109,7 +109,8 @@ data:                # D-05; fixed, cannot be moved by a preregistration
   holdout: ['2026-01-01', '2026-10-01']   # D-F: the 2026 months must be accepted first (H1-9)
   dataset_ids: null  # H1-11: pin the exact dataset ids before the freeze
 walk_forward:
-  anchor: auto
+  anchor: auto       # freeze refuses 'auto': fix the first train month (after the
+                     # strategy warm-up) so the folds are pinned (re-review N2)
   end: '2025-01-01'  # the last test window ends at or before this month start
   initial_train_months: 12
   test_months: 3

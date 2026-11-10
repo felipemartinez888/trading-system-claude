@@ -20,6 +20,7 @@ from tsclaude.research.prereg import PreregistrationRefused, check_preregistrati
 REPO = Path(__file__).resolve().parents[3]
 TEMPLATE = REPO / "preregistrations" / "TEMPLATE.yaml"
 CLEAN = {"commit": "abc123", "dirty": False}
+CFG = "c" * 64  # a backtest config hash (any sha256 hex digest)
 
 
 def _doc() -> dict[str, Any]:
@@ -40,6 +41,7 @@ def _decided(doc: dict[str, Any]) -> dict[str, Any]:
     d["trial_budget"]["counting"] = "configurations"
     d["holdout_procedure"] = "two-stage-selection-record"
     d["risk_compatibility"] = "live-floor-kept-geometries-dropped"
+    d["walk_forward"]["anchor"] = "2022-02-01"  # a frozen file pins its folds (re-review N2)
     return d
 
 
@@ -107,11 +109,13 @@ def test_the_file_name_must_match_the_id(tmp_path: Path) -> None:
 def test_freeze_refuses_open_decisions_and_unidentified_code(tmp_path: Path) -> None:
     path = _write(tmp_path, _doc(), "H-T")
     with pytest.raises(pr.PreregistrationInvalid) as exc:
-        pr.freeze(path, now_ms=0, code=CLEAN)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
     assert sum("cannot freeze: " in p for p in exc.value.problems) == 3
     decided = _write(tmp_path, _decided(_doc()), "H-D")
     with pytest.raises(pr.PreregistrationInvalid, match="unidentified code"):
-        pr.freeze(decided, now_ms=0, code={"commit": "abc", "dirty": True})
+        pr.freeze(
+            decided, now_ms=0, code={"commit": "abc", "dirty": True}, backtest_config_hash=CFG
+        )
     assert "frozen" not in pr.load(decided)  # nothing was written
 
 
@@ -119,14 +123,14 @@ def test_a_frozen_file_detects_edits_and_implementation_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _write(tmp_path, _decided(_doc()), "H-F")
-    block = pr.freeze(path, now_ms=1_700_000_000_000, code=CLEAN)
+    block = pr.freeze(path, now_ms=1_700_000_000_000, code=CLEAN, backtest_config_hash=CFG)
     assert block["code_commit"] == "abc123"
     assert block["content_sha256"] == pr.content_sha256(pr.load(path))
     v = pr.validate_file(path)
     assert v.ok, v.problems
     assert v.frozen
     with pytest.raises(pr.PreregistrationInvalid, match="already frozen"):
-        pr.freeze(path, now_ms=0, code=CLEAN)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
     # an edit after the freeze
     edited = pr.load(path)
     edited["walk_forward"]["test_months"] = 6
@@ -154,7 +158,7 @@ def test_the_implementation_hash_covers_strategy_features_and_adapter() -> None:
 
 def _frozen(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     path = _write(tmp_path, _decided(_doc()), "H-S")
-    pr.freeze(path, now_ms=0, code=CLEAN)
+    pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
     return path, pr.load(path)
 
 
@@ -239,6 +243,7 @@ def test_walkforward_conformance_lists_every_deviation(tmp_path: Path) -> None:
         "symbols": ["spot:BTCUSDT", "spot:ETHUSDT"], "initial_train_months": 12,
         "test_months": 3, "embargo_minutes": 1440, "n_min": 300, "min_oos_coverage": 1.0,
         "anchor": "2022-02-01T00:00:00Z", "dataset_ids": None, "final_selection": True,
+        "config_hash": CFG,
     }  # fmt: skip
     assert pr.walkforward_conformance(doc, **base) == []
     from tsclaude.research.walkforward import plan_folds
@@ -254,13 +259,100 @@ def test_walkforward_conformance_lists_every_deviation(tmp_path: Path) -> None:
     short = [f.to_dict() for f in plan_folds(ms(2022, 2), ms(2024, 1), initial_train_months=12,
                                             test_months=3, embargo_ms=1440 * 60_000)]  # fmt: skip
     assert any("folds differ" in p for p in pr.walkforward_conformance(doc, **base, folds=short))
-    assert any("config hash" in p for p in pr.walkforward_conformance(
-        {**doc, "backtest_config_hash": "x"}, **base, config_hash="y"))  # fmt: skip
+    for other in ("d" * 64, None):  # another config, or none reported: refused (re-review N2)
+        assert any("config hash" in p for p in pr.walkforward_conformance(
+            doc, **{**base, "config_hash": other}))  # fmt: skip
     bad = {**base, "test_months": 6, "n_min": 30, "symbols": ["spot:BTCUSDT"]}
     problems = pr.walkforward_conformance(doc, **bad)
     assert {p.split(" ")[0] for p in problems} == {"symbols", "test_months", "n_min"}
     unfrozen = _decided(_doc())
     assert any("not a frozen" in p for p in pr.walkforward_conformance(unfrozen, **base))
+
+
+def test_a_frozen_file_pins_its_folds_and_backtest_config(tmp_path: Path) -> None:
+    """Re-review N2: with ``anchor: auto`` any first fold conformed and the config hash was
+    compared only if the file declared one. A frozen file now fixes both."""
+    auto = _decided(_doc())
+    auto["walk_forward"]["anchor"] = "auto"
+    path = _write(tmp_path, auto, "H-AUTO")
+    with pytest.raises(pr.PreregistrationInvalid, match="anchor 'auto'"):
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+    with pytest.raises(pr.PreregistrationInvalid, match="backtest config hash"):
+        pr.freeze(_write(tmp_path, _decided(_doc()), "H-NOCFG"), now_ms=0, code=CLEAN,
+                  backtest_config_hash="")  # fmt: skip
+    declared = _decided(_doc())
+    declared["backtest_config_hash"] = "d" * 64
+    with pytest.raises(pr.PreregistrationInvalid, match="the current config is"):
+        pr.freeze(_write(tmp_path, declared, "H-DECL"), now_ms=0, code=CLEAN,
+                  backtest_config_hash=CFG)  # fmt: skip
+
+    path, doc = _frozen(tmp_path)
+    assert doc["frozen"]["backtest_config_hash"] == CFG
+    grid = {cid: {} for cid in pr.configurations_of(doc)[0]}
+    base: dict[str, Any] = {
+        "strategy_id": "bracket_reference", "grid": grid,
+        "symbols": ["spot:BTCUSDT", "spot:ETHUSDT"], "initial_train_months": 12,
+        "test_months": 3, "embargo_minutes": 1440, "n_min": 300, "min_oos_coverage": 1.0,
+        "dataset_ids": None, "final_selection": True, "config_hash": CFG,
+    }  # fmt: skip
+    from datetime import UTC, datetime
+
+    from tsclaude.research.walkforward import plan_folds
+
+    def folds_from(year: int, month: int) -> list[dict[str, Any]]:
+        start = int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
+        end = int(datetime(2025, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        planned = plan_folds(
+            start, end, initial_train_months=12, test_months=3, embargo_ms=1440 * 60_000
+        )
+        return [f.to_dict() for f in planned]
+
+    ok = pr.walkforward_conformance(
+        doc, **base, anchor="2022-02-01T00:00:00Z", folds=folds_from(2022, 2)
+    )
+    assert ok == []
+    late = pr.walkforward_conformance(
+        doc, **base, anchor="2023-06-01T00:00:00Z", folds=folds_from(2023, 6)
+    )
+    assert any(p.startswith("anchor ") for p in late), late
+    # a frozen block without the pin (or a hand-edited anchor) no longer validates
+    stripped = copy.deepcopy(doc)
+    del stripped["frozen"]["backtest_config_hash"]
+    assert any("pin the backtest config" in p for p in pr.validate_document(stripped).problems)
+    unpinned = copy.deepcopy(doc)
+    unpinned["walk_forward"]["anchor"] = "auto"
+    assert any("must fix walk_forward.anchor" in p for p in pr.validate_document(unpinned).problems)
+
+
+def test_unknown_keys_are_problems_not_ignored(tmp_path: Path) -> None:
+    """Re-review N5: a typo must not silently disable the field it meant to set."""
+    doc = _doc()
+    doc["backtest_config_hsh"] = "c" * 64
+    v = pr.validate_document(doc)
+    assert any("unknown top-level keys ['backtest_config_hsh']" in p for p in v.problems)
+    doc = _doc()
+    doc["walk_forward"]["embargo_minute"] = 1440
+    assert any("unknown walk_forward keys" in p for p in pr.validate_document(doc).problems)
+    doc = _doc()
+    doc["backtest_config_hash"] = "not-a-digest"
+    assert any("sha256 hex digest" in p for p in pr.validate_document(doc).problems)
+
+
+def test_the_cli_freeze_pins_the_config_file_hash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tsclaude.cli import main
+    from tsclaude.research import runner
+    from tsclaude.research.runner import BacktestConfig
+
+    monkeypatch.setattr(runner, "git_version", lambda: CLEAN)
+    path = _write(tmp_path, _decided(_doc()), "H-CLI")
+    assert main(["prereg", "freeze", str(path), "--config", str(tmp_path / "none.yaml")]) == 2
+    assert "does not exist" in capsys.readouterr().out
+    cfg = REPO / "configs" / "backtest.yaml"
+    assert main(["prereg", "freeze", str(path), "--config", str(cfg)]) == 0
+    capsys.readouterr()
+    assert pr.load(path)["frozen"]["backtest_config_hash"] == BacktestConfig.load(cfg).config_hash
 
 
 def test_the_cli_validates_and_refuses_to_freeze_the_template(
@@ -300,7 +392,7 @@ def test_a_draft_strategy_validates_with_an_open_item_and_cannot_be_frozen(
     assert len(v.configurations) == 2
     before = path.read_text(encoding="utf-8")
     with pytest.raises(pr.PreregistrationInvalid) as exc:
-        pr.freeze(path, now_ms=0, code=CLEAN)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
     assert f"cannot freeze: {pr.DRAFT_OPEN_ITEM}" in exc.value.problems
     assert path.read_text(encoding="utf-8") == before  # nothing was written
     wrong = _draft_doc()
@@ -340,4 +432,4 @@ def test_the_h1_v2_draft_validates_as_a_copy_named_after_its_id(tmp_path: Path) 
     )
     assert doc["walk_forward"]["embargo_minutes"] * 60_000 >= longest
     with pytest.raises(pr.PreregistrationInvalid, match="cannot freeze"):
-        pr.freeze(copy_path, now_ms=0, code=CLEAN)
+        pr.freeze(copy_path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
