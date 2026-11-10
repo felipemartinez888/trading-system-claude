@@ -42,11 +42,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from tsclaude.contracts.events import canonical_json
+
+if TYPE_CHECKING:
+    from tsclaude.risk.config import RiskConfig
 
 SCHEMA = "tsc-prereg-v1"
 PENDING = "PENDING"
@@ -237,6 +240,51 @@ def _month_start(text: Any) -> bool:
     return d.day == 1
 
 
+KEEP_LIVE_FLOOR = "live-floor-kept-geometries-dropped"
+#: the risk config the repo's backtest config applies (configs/backtest.yaml ``risk_config``)
+REPO_RISK_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "risk.yaml"
+
+
+def live_floor_problems(
+    doc: Mapping[str, Any], *, risk_config: Path | None = None, risk: RiskConfig | None = None
+) -> list[str]:
+    """With ``risk_compatibility: live-floor-kept-geometries-dropped`` (D-E: keep the live floor),
+    every configuration must be COMPATIBLE with the live baseline book for every symbol of the
+    universe (`research.live_compat`, the paper engine's own reward/risk function): a
+    configuration that the live floor rejects is never searched. Fail closed: no risk config, no
+    bracket geometry or any error is a problem."""
+    from tsclaude.contracts.market import Market
+    from tsclaude.research.live_compat import COMPATIBLE, assess
+    from tsclaude.risk.config import RiskConfigError, load_risk_config
+    from tsclaude.sim.costs import CostModel
+
+    if risk is None:
+        try:
+            risk = load_risk_config(risk_config or REPO_RISK_CONFIG)
+        except RiskConfigError as exc:
+            return [f"risk_compatibility {KEEP_LIVE_FLOOR}: cannot load the risk config ({exc})"]
+    sid = str(_get(doc, "strategy.strategy_id"))
+    build = _builder(sid)
+    market = Market(str(_get(doc, "universe.market")))
+    out: list[str] = []
+    for i, params in enumerate(doc.get("search_space") or []):
+        try:
+            strategy = build(sid, params)
+            for symbol in _get(doc, "universe.symbols") or []:
+                a = assess(strategy, risk=risk, cost_model=CostModel(), market=market,
+                           symbol=str(symbol))  # fmt: skip
+                if a.status != COMPATIBLE:
+                    out.append(
+                        f"search_space[{i}] is {a.status} with the live floor min_rr_net "
+                        f"{a.min_rr_net} for {symbol} ({a.reason}); D-E keeps the floor, so "
+                        "the configuration must be dropped"
+                    )
+                    break
+        except Exception as exc:  # fail closed
+            out.append(f"search_space[{i}]: live compatibility not assessable ({exc})")
+    return out
+
+
 def _builder(strategy_id: str) -> Any:
     """`build_strategy` for runnable ids, `build_draft_strategy` for draft-only ids."""
     from tsclaude.strategies import DRAFT_REGISTRY, REGISTRY, build_draft_strategy, build_strategy
@@ -370,6 +418,13 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
         p.append("universe.symbols must be a non-empty list")
     elif len(set(symbols)) != len(symbols):
         p.append("universe.symbols lists a symbol twice")
+    if (
+        _get(doc, "risk_compatibility") == KEEP_LIVE_FLOOR
+        and market in ("spot", "usdm")
+        and isinstance(symbols, list)
+        and sid in {**REGISTRY, **DRAFT_REGISTRY}
+    ):
+        p.extend(live_floor_problems(doc))
     for seg, dates in SEGMENTS.items():
         if _get(doc, f"data.{seg}") != dates:
             p.append(f"data.{seg} must be {dates} (D-05; a preregistration cannot move it)")
@@ -555,7 +610,12 @@ def _check_selection_parent(doc: Mapping[str, Any], v: Validation, folder: Path)
 
 # ---------------------------------------------------------------- freeze
 def freeze(
-    path: Path | str, *, now_ms: int, code: Mapping[str, Any], backtest_config_hash: str
+    path: Path | str,
+    *,
+    now_ms: int,
+    code: Mapping[str, Any],
+    backtest_config_hash: str,
+    backtest_risk: RiskConfig | None = None,
 ) -> dict[str, Any]:
     """Validate and freeze a search preregistration in place; refused with any problem or open
     owner decision. Returns the frozen block. Committing the file is the owner's act.
@@ -563,10 +623,23 @@ def freeze(
     The frozen block pins the walk-forward completely: the anchor must be a concrete month start
     (``auto`` would let a run pick its own first fold) and ``backtest_config_hash`` (costs,
     instruments, statistics settings of ``configs/backtest.yaml``) is recorded, so every run must
-    use that exact config (re-review N2)."""
+    use that exact config (re-review N2).
+
+    ``backtest_risk`` is the risk config the pinned backtest config applies (``risk_policy: live``)
+    or None (``allow_all``). With ``risk_compatibility: live-floor-kept-geometries-dropped`` the
+    runs must apply the live policy (identical risk rules in backtests and Paper, D-E), and every
+    configuration must be COMPATIBLE with **that** risk config."""
     doc = load(path)
     v = validate_document(doc, path=str(path))
     problems = list(v.problems)
+    if _get(doc, "risk_compatibility") == KEEP_LIVE_FLOOR:
+        if backtest_risk is None:
+            problems.append(
+                f"risk_compatibility {KEEP_LIVE_FLOOR} needs a backtest config with "
+                "risk_policy live (the runs must apply the paper risk rules)"
+            )
+        else:
+            problems += live_floor_problems(doc, risk=backtest_risk)
     if _get(doc, "walk_forward.anchor") == "auto":
         problems.append(
             "cannot freeze with walk_forward.anchor 'auto': fix the first train month "
@@ -747,6 +820,7 @@ def make_selection_record(
 
 __all__ = [
     "DRAFT_OPEN_ITEM",
+    "KEEP_LIVE_FLOOR",
     "OBJECTIVE",
     "PENDING",
     "POLICY_FIELDS",
@@ -765,6 +839,7 @@ __all__ = [
     "holding_problems",
     "implementation_files",
     "implementation_sha256",
+    "live_floor_problems",
     "load",
     "make_selection_record",
     "max_holding_ms_of",

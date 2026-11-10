@@ -458,7 +458,8 @@ def _committed_prereg(repo: Path, **budget: Any) -> str:
     doc.update(
         prereg_id="H-RUN", search_space=list(PREREG_GRID.values()),
         holdout_procedure="two-stage-selection-record",
-        risk_compatibility="live-floor-kept-geometries-dropped",
+        # the other D-E value: these runs use the allow_all TEST_CONFIG and the synthetic 1 R grid
+        risk_compatibility="live-floor-replaced-for-validated",
     )  # fmt: skip
     doc["universe"]["symbols"] = ["BTCUSDT"]
     doc["walk_forward"].update(anchor="2024-01-01", end="2024-03-01", initial_train_months=1,

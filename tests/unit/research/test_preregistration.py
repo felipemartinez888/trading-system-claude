@@ -6,8 +6,10 @@ edited, or whose strategy code changes, no longer validates."""
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import shutil
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +18,13 @@ import yaml
 
 from tsclaude.research import preregistration as pr
 from tsclaude.research.prereg import PreregistrationRefused, check_preregistration
+from tsclaude.risk.config import load_risk_config
 
 REPO = Path(__file__).resolve().parents[3]
 TEMPLATE = REPO / "preregistrations" / "TEMPLATE.yaml"
 CLEAN = {"commit": "abc123", "dirty": False}
 CFG = "c" * 64  # a backtest config hash (any sha256 hex digest)
+RISK = load_risk_config(Path(__file__).resolve().parents[3] / "configs" / "risk.yaml")
 
 
 def _doc() -> dict[str, Any]:
@@ -78,7 +82,7 @@ def test_the_template_id_is_refused_by_every_run() -> None:
         (lambda d: d["strategy"].update(version="9.9.9"), "implemented version"),
         (lambda d: d["strategy"].update(strategy_id="h9"), "not an implemented strategy"),
         (lambda d: d["search_space"].append({"no_such": 1}), "search_space[2]"),
-        (lambda d: d["search_space"].append({"tp_r": 1.0, "time_exit_bars": 48}), "repeats a"),
+        (lambda d: d["search_space"].append({"tp_r": 2.0, "time_exit_bars": 48}), "repeats a"),
         (lambda d: d["universe"].update(symbols=["BTCUSDT", "BTCUSDT"]), "twice"),
         (lambda d: d.update(max_loss_r_policy="lower"), "max_loss_r_policy"),
         # the embargo must cover one maximum holding period (overnight H1 causality review)
@@ -109,12 +113,16 @@ def test_the_file_name_must_match_the_id(tmp_path: Path) -> None:
 def test_freeze_refuses_open_decisions_and_unidentified_code(tmp_path: Path) -> None:
     path = _write(tmp_path, _doc(), "H-T")
     with pytest.raises(pr.PreregistrationInvalid) as exc:
-        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)
     assert sum("cannot freeze: " in p for p in exc.value.problems) == 3
     decided = _write(tmp_path, _decided(_doc()), "H-D")
     with pytest.raises(pr.PreregistrationInvalid, match="unidentified code"):
         pr.freeze(
-            decided, now_ms=0, code={"commit": "abc", "dirty": True}, backtest_config_hash=CFG
+            decided,
+            now_ms=0,
+            code={"commit": "abc", "dirty": True},
+            backtest_config_hash=CFG,
+            backtest_risk=RISK,
         )
     assert "frozen" not in pr.load(decided)  # nothing was written
 
@@ -123,14 +131,16 @@ def test_a_frozen_file_detects_edits_and_implementation_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _write(tmp_path, _decided(_doc()), "H-F")
-    block = pr.freeze(path, now_ms=1_700_000_000_000, code=CLEAN, backtest_config_hash=CFG)
+    block = pr.freeze(
+        path, now_ms=1_700_000_000_000, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK
+    )
     assert block["code_commit"] == "abc123"
     assert block["content_sha256"] == pr.content_sha256(pr.load(path))
     v = pr.validate_file(path)
     assert v.ok, v.problems
     assert v.frozen
     with pytest.raises(pr.PreregistrationInvalid, match="already frozen"):
-        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)
     # an edit after the freeze
     edited = pr.load(path)
     edited["walk_forward"]["test_months"] = 6
@@ -158,7 +168,7 @@ def test_the_implementation_hash_covers_strategy_features_and_adapter() -> None:
 
 def _frozen(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     path = _write(tmp_path, _decided(_doc()), "H-S")
-    pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+    pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)
     return path, pr.load(path)
 
 
@@ -284,7 +294,7 @@ def test_a_frozen_file_pins_its_folds_and_backtest_config(tmp_path: Path) -> Non
     auto["walk_forward"]["anchor"] = "auto"
     path = _write(tmp_path, auto, "H-AUTO")
     with pytest.raises(pr.PreregistrationInvalid, match="anchor 'auto'"):
-        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)
     with pytest.raises(pr.PreregistrationInvalid, match="backtest config hash"):
         pr.freeze(_write(tmp_path, _decided(_doc()), "H-NOCFG"), now_ms=0, code=CLEAN,
                   backtest_config_hash="")  # fmt: skip
@@ -292,7 +302,7 @@ def test_a_frozen_file_pins_its_folds_and_backtest_config(tmp_path: Path) -> Non
     declared["backtest_config_hash"] = "d" * 64
     with pytest.raises(pr.PreregistrationInvalid, match="the current config is"):
         pr.freeze(_write(tmp_path, declared, "H-DECL"), now_ms=0, code=CLEAN,
-                  backtest_config_hash=CFG)  # fmt: skip
+                  backtest_config_hash=CFG, backtest_risk=RISK)  # fmt: skip
 
     path, doc = _frozen(tmp_path)
     assert doc["frozen"]["backtest_config_hash"] == CFG
@@ -392,7 +402,7 @@ H1_DRAFT = REPO / "docs" / "research" / "H1-v2.preregistration.DRAFT.yaml"
 def _draft_doc() -> dict[str, Any]:
     d = _decided(_doc())
     d["strategy"] = {"strategy_id": "h1_compression_breakout", "version": "0.1.0-draft"}
-    d["search_space"] = [{"tp_r": 1.0}, {"tp_r": 0.5}]
+    d["search_space"] = [{"tp_r": 2.0}, {"tp_r": 3.0}]  # compatible with the kept live floor
     return d
 
 
@@ -406,7 +416,7 @@ def test_a_draft_strategy_validates_with_an_open_item_and_cannot_be_frozen(
     assert len(v.configurations) == 2
     before = path.read_text(encoding="utf-8")
     with pytest.raises(pr.PreregistrationInvalid) as exc:
-        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)
     assert f"cannot freeze: {pr.DRAFT_OPEN_ITEM}" in exc.value.problems
     assert path.read_text(encoding="utf-8") == before  # nothing was written
     wrong = _draft_doc()
@@ -446,4 +456,66 @@ def test_the_h1_v2_draft_validates_as_a_copy_named_after_its_id(tmp_path: Path) 
     )
     assert doc["walk_forward"]["embargo_minutes"] * 60_000 >= longest
     with pytest.raises(pr.PreregistrationInvalid, match="cannot freeze"):
-        pr.freeze(copy_path, now_ms=0, code=CLEAN, backtest_config_hash=CFG)
+        pr.freeze(copy_path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)
+
+
+# ------------------------------------------------------------------ D-E: keep the live floor
+
+
+def _h1(version: str) -> dict[str, Any]:
+    doc = yaml.safe_load(
+        (REPO / "docs" / "research" / f"{version}.preregistration.DRAFT.yaml").read_text("utf-8")
+    )
+    assert isinstance(doc, dict)
+    return doc
+
+
+def test_keeping_the_live_floor_refuses_every_configuration_it_rejects(tmp_path: Path) -> None:
+    """With risk_compatibility live-floor-kept-geometries-dropped, a configuration the live
+    baseline book would reject (INCOMPATIBLE or only CONDITIONAL) is a problem, checked with the
+    paper engine's own reward/risk function; H1-v3's take-profits (2, 2.5, 3 R) all pass."""
+    v2, v3 = _h1("H1-v2"), _h1("H1-v3")
+    for doc in (v2, v3):
+        doc["risk_compatibility"] = pr.KEEP_LIVE_FLOOR
+    v2_problems = pr.live_floor_problems(v2)
+    assert len(v2_problems) == 24
+    assert all("INCOMPATIBLE" in p for p in v2_problems)
+    assert pr.live_floor_problems(v3) == []
+    assert not any("live floor" in p for p in pr.validate_document(v3).problems)
+    assert sum("live floor" in p for p in pr.validate_document(v2).problems) == 24
+    # 1.75 R is only CONDITIONAL at the cost filter's smallest stop: refused too
+    conditional = copy.deepcopy(v3)
+    conditional["search_space"] = [{**v3["search_space"][0], "tp_r": 1.75}]
+    assert ["CONDITIONAL" in p for p in pr.live_floor_problems(conditional)] == [True]
+    # a pending D-E checks nothing (the owner has not chosen); fail closed without a risk config
+    pending = copy.deepcopy(v2)
+    pending["risk_compatibility"] = pr.PENDING
+    assert not any("live floor" in p for p in pr.validate_document(pending).problems)
+    missing = pr.live_floor_problems(v3, risk_config=tmp_path / "none.yaml")
+    assert len(missing) == 1
+    assert "cannot load the risk config" in missing[0]
+    # a stricter floor drops more: at 2.0 only 3 R survives (2.5 R nets 1.94 at the smallest stop)
+    strict = yaml.safe_load((REPO / "configs" / "risk.yaml").read_text("utf-8"))
+    strict["min_rr_net"] = "2.0"
+    (tmp_path / "risk.yaml").write_text(yaml.safe_dump(strict), encoding="utf-8")
+    dropped = pr.live_floor_problems(v3, risk_config=tmp_path / "risk.yaml")
+    assert len(dropped) == 16
+    kept = {i for i in range(24)} - {int(p.split("[")[1].split("]")[0]) for p in dropped}
+    assert {v3["search_space"][i]["tp_r"] for i in kept} == {3.0}
+
+
+def test_keeping_the_floor_needs_runs_under_the_live_policy(tmp_path: Path) -> None:
+    """Identical risk rules in backtests and Paper: a keep-the-floor preregistration is frozen only
+    against a backtest config with risk_policy live, and checked against that config's floor."""
+    path = _write(tmp_path, _decided(_doc()), "H-POLICY")
+    with pytest.raises(pr.PreregistrationInvalid, match="needs a backtest config with risk_policy"):
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=None)
+    stricter = dataclasses.replace(RISK, min_rr_net=Decimal("2.5"))  # template tp_r 2.0 fails
+    with pytest.raises(pr.PreregistrationInvalid, match="INCOMPATIBLE"):
+        pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=stricter)
+    other = _decided(_doc())
+    other["risk_compatibility"] = "live-floor-replaced-for-validated"  # no floor check
+    block = pr.freeze(_write(tmp_path, other, "H-OTHER"), now_ms=0, code=CLEAN,
+                      backtest_config_hash=CFG)  # fmt: skip
+    assert block["backtest_config_hash"] == CFG
+    assert pr.freeze(path, now_ms=0, code=CLEAN, backtest_config_hash=CFG, backtest_risk=RISK)

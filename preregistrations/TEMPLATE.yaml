@@ -14,8 +14,10 @@ strategy:
   strategy_id: bracket_reference
   version: 1.0.0
 search_space:        # every entry is one configuration (a trial per evaluated window)
-  - {tp_r: 1.0, time_exit_bars: 48}   # 15m: (48 + 1) x 15 = 735 min max holding <= embargo
-  - {tp_r: 0.5, time_exit_bars: 48}
+  # take-profits >= 2 R: COMPATIBLE with the live floor min_rr_net 1.5 (D-E, owner direction
+  # 2026-11-10: keep the floor); 0.5-1.5 R would be rejected live on every trade
+  - {tp_r: 2.0, time_exit_bars: 48}   # 15m: (48 + 1) x 15 = 735 min max holding <= embargo
+  - {tp_r: 3.0, time_exit_bars: 48}
 universe:
   market: spot
   symbols: [BTCUSDT, ETHUSDT]

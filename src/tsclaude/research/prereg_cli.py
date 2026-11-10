@@ -38,10 +38,10 @@ def _cmd_freeze(args: argparse.Namespace) -> int:
         _print({"ok": False, "refused": "freeze", "problems": [f"{cfg_path} does not exist"]})
         return 2
     try:
-        cfg_hash = BacktestConfig.load(cfg_path).config_hash
+        cfg = BacktestConfig.load(cfg_path)
         block = freeze(
             Path(args.file), now_ms=SystemClock().now_ms(), code=git_version(),
-            backtest_config_hash=cfg_hash,
+            backtest_config_hash=cfg.config_hash, backtest_risk=cfg.risk,
         )  # fmt: skip
     except PreregistrationInvalid as exc:
         _print({"ok": False, "refused": "freeze", "problems": exc.problems})
