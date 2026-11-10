@@ -57,12 +57,14 @@ from tsclaude.contracts.timeutil import MS_PER_MINUTE, from_iso, to_iso
 from tsclaude.features.core import FEATURES_VERSION
 from tsclaude.quality.interruptions import EMPTY_REGISTRY, InterruptionRegistry
 from tsclaude.research import report
+from tsclaude.research import risk_policy as risk_policy_mod
 from tsclaude.research.max_loss_cache import MaxLossCache
 from tsclaude.research.parquet import read_table, write_table
 from tsclaude.research.prereg import check_preregistration
 from tsclaude.research.source import StrategySource, SymbolKey
 from tsclaude.research.stats import Certification, certify
 from tsclaude.research.trials import TrialRegistry, trial_body, trial_key
+from tsclaude.risk.config import RiskConfig, RiskConfigError, load_risk_config
 from tsclaude.sim.book import Book, BookConfig, SimEventType, TradeRecord, allow_all
 from tsclaude.sim.clock import HistoricalClock, order_key
 from tsclaude.sim.costs import CostModel, Liquidity
@@ -128,20 +130,50 @@ class BacktestConfig:
     stress_factors: tuple[str, ...] = ("1.5", "2")
     flat_margin_bars: int = 1
     instruments: Mapping[str, Mapping[str, Mapping[str, str]]] = field(default_factory=dict)
+    #: "allow_all" (no risk rule) or "live": the paper engine's policy rules and kill switch from
+    #: ``risk_config`` (a path relative to this config file), see `research.risk_policy` (P1-6)
+    risk_policy: str = risk_policy_mod.ALLOW_ALL
+    risk_config: str | None = None
+    risk: RiskConfig | None = field(default=None, compare=False, repr=False)  # loaded, not a key
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> BacktestConfig:
-        known = set(cls.__dataclass_fields__)
+    def from_mapping(
+        cls, raw: Mapping[str, Any], *, base_dir: Path | str | None = None
+    ) -> BacktestConfig:
+        known = set(cls.__dataclass_fields__) - {"risk"}
         unknown = sorted(set(raw) - known)
         if unknown:
             raise ValueError(f"unknown backtest config keys: {unknown}")
         kw: dict[str, Any] = dict(raw)
+        mode = kw.get("risk_policy", risk_policy_mod.ALLOW_ALL)
+        if mode not in risk_policy_mod.MODES:
+            raise ValueError(f"risk_policy must be one of {list(risk_policy_mod.MODES)}")
+        if mode == risk_policy_mod.LIVE:
+            ref = kw.get("risk_config")
+            if not isinstance(ref, str) or not ref:
+                raise ValueError("risk_policy live needs risk_config (path to the risk config)")
+            path = Path(ref)
+            if not path.is_absolute():
+                if base_dir is None:
+                    raise ValueError("a relative risk_config needs the config file's directory")
+                path = Path(base_dir) / path
+            try:
+                kw["risk"] = load_risk_config(path)
+            except RiskConfigError as exc:  # fail closed: no policy, no run
+                raise ValueError(f"risk_config: {exc}") from None
+        elif kw.get("risk_config") is not None:
+            raise ValueError("risk_config is only used with risk_policy live")
         for k in ("starting_equity", "risk_per_trade"):
             if k in kw:
                 kw[k] = Decimal(str(kw[k]))
         if "stress_factors" in kw:
             kw["stress_factors"] = tuple(str(x) for x in kw["stress_factors"])
         cfg = cls(**kw)
+        if cfg.risk is not None and cfg.risk_per_trade > cfg.risk.max_risk_per_trade:
+            raise ValueError(
+                f"risk_per_trade {cfg.risk_per_trade} exceeds the risk policy's "
+                f"max_risk_per_trade {cfg.risk.max_risk_per_trade}"
+            )
         if cfg.max_loss_safety_factor < 1.5:
             raise ValueError("max_loss_safety_factor may not be below 1.5 (L-10)")
         if not 0.0 <= cfg.max_missing_share < 1.0:
@@ -151,7 +183,7 @@ class BacktestConfig:
     @classmethod
     def load(cls, path: Path | str) -> BacktestConfig:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-        return cls.from_mapping(raw)
+        return cls.from_mapping(raw, base_dir=Path(path).parent)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +203,13 @@ class BacktestConfig:
                 m: {s: dict(v) for s, v in sorted(syms.items())}
                 for m, syms in sorted(self.instruments.items())
             },
+            # only a live policy enters the hash (allow_all configs keep their hash); the risk
+            # config enters by content (version and hash), never by path
+            **(
+                {"risk_policy": risk_policy_mod.describe(self.risk_policy, self.risk)}
+                if self.risk is not None
+                else {}
+            ),
         }
 
     @property
@@ -368,14 +407,53 @@ def _stream(
 
 
 def _books(
-    env: RunEnv, req: BacktestRequest, cfg: BacktestConfig, names: Sequence[tuple[str, CostModel]]
+    env: RunEnv,
+    req: BacktestRequest,
+    cfg: BacktestConfig,
+    names: Sequence[tuple[str, CostModel]],
+    views: risk_policy_mod.BarViews | None = None,
 ) -> list[Book]:
+    """One book per (name, cost model). Under ``risk_policy: live`` every book asks the paper
+    engine's policy rules -- judged with the **base** cost model, as the live engine is, also in
+    the stress books -- and halts at the paper kill switch (`research.risk_policy`)."""
     specs = [cfg.instrument(m, s) for m, s in req.symbols]
     book_cfg = BookConfig(risk_per_trade=cfg.risk_per_trade)
+    if cfg.risk is None:
+        return [
+            Book(name, cfg.starting_equity, cm, allow_all, instruments=specs, config=book_cfg)
+            for name, cm in names
+        ]
+    if views is None:
+        raise ValueError("risk_policy live needs the run's bar views")
     return [
-        Book(name, cfg.starting_equity, cm, allow_all, instruments=specs, config=book_cfg)
+        Book(
+            name,
+            cfg.starting_equity,
+            cm,
+            risk_policy_mod.BacktestRiskHook(cfg.risk, env.cost_model, views),
+            instruments=specs,
+            config=book_cfg,
+            kill_switch_drawdown=cfg.risk.drawdown_kill_switch,
+        )
         for name, cm in names
     ]
+
+
+def _views(cfg: BacktestConfig) -> risk_policy_mod.BarViews | None:
+    return risk_policy_mod.BarViews() if cfg.risk is not None else None
+
+
+def _risk_policy_summary(book: Book) -> dict[str, Any]:
+    """Checks and blocks of the base book under a live risk policy (rule -> blocked checks)."""
+    hook = book.risk_hook
+    if not isinstance(hook, risk_policy_mod.BacktestRiskHook):
+        return {"mode": risk_policy_mod.ALLOW_ALL}
+    return {
+        "mode": risk_policy_mod.LIVE,
+        "checks": hook.checks,
+        "blocked_by_rule": dict(sorted(hook.blocked_by_rule.items())),
+        "halted": book.halted,
+    }
 
 
 def _simulate(
@@ -389,6 +467,7 @@ def _simulate(
     count_from_ms: int,
     pinned: Sequence[str] | None,
     funding: Mapping[SymbolKey, Sequence[FundingEvent]] | None = None,
+    views: risk_policy_mod.BarViews | None = None,
 ) -> tuple[SimResult, _DataLog]:
     """Drive the simulator; funding is posted at each funding timestamp ``T`` after the last 1m
     bar closing before ``T`` and before the first bar opening at/after ``T`` (positions held
@@ -430,6 +509,8 @@ def _simulate(
     for bar in _stream(env, req, read_from_ms, end_ms, count_from_ms, log, pinned):
         if last_close is not None:
             settle(min(bar.open_time_ms, last_close + 1))
+        if views is not None:  # before the step: a check selects bars by close_time <= cutoff
+            views.observe(bar)
         sim.step(bar)
         last_close = bar.close_time_ms
     if last_close is not None:
@@ -580,12 +661,14 @@ def measure_max_loss(env: RunEnv, req: BacktestRequest, cfg: BacktestConfig) -> 
     planned_stop = req.strategy.stop_loss_r(first) or 1.0
     factor = cfg.max_loss_safety_factor
     source = _source(req, planning, DEV_START_MS, DEV_END_MS, cfg, prefix="ml")
-    books = _books(env, req, cfg, [(BASELINE, env.cost_model)])
+    views = _views(cfg)
+    books = _books(env, req, cfg, [(BASELINE, env.cost_model)], views)
     pinned = None if req.dataset_ids is None else req.dataset_ids.get("max_loss")
     funding, funding_problems, funding_ds = load_funding(env, req, DEV_START_MS, DEV_END_MS)
     _, log = _simulate(
-        env, req, cfg, books, source, DEV_START_MS, DEV_END_MS, DEV_START_MS, pinned, funding
-    )
+        env, req, cfg, books, source, DEV_START_MS, DEV_END_MS, DEV_START_MS, pinned, funding,
+        views,
+    )  # fmt: skip
     trades = books[0].trades
     losers = [t for t in trades if t.r_multiple < 0]
     stops = [t for t in trades if t.exit_reason is ExitReason.STOP_LOSS]
@@ -1020,11 +1103,12 @@ def run_backtest(
     # 3. main run: baseline + cost stress books on the same signals; USD-M funding applied
     funding, funding_problems, funding_ds = load_funding(env, req, req.from_ms, req.to_ms)
     stress = [(f"stress_x{f}", env.cost_model.scaled(Decimal(f))) for f in cfg.stress_factors]
-    books = _books(env, req, cfg, [(BASELINE, env.cost_model), *stress])
+    views = _views(cfg)
+    books = _books(env, req, cfg, [(BASELINE, env.cost_model), *stress], views)
     main = _source(req, planning, req.from_ms, req.to_ms, cfg, prefix="s")
     pinned = None if req.dataset_ids is None else req.dataset_ids.get("main")
     result, log = _simulate(
-        env, req, cfg, books, main, read_from, req.to_ms, req.from_ms, pinned, funding
+        env, req, cfg, books, main, read_from, req.to_ms, req.from_ms, pinned, funding, views
     )
     by_name = {b.name: b for b in books}
     base = by_name[BASELINE]
@@ -1032,7 +1116,8 @@ def run_backtest(
 
     # random-entry control: same exits, same entries per (symbol, UTC hour), seeded
     schedule = _control_schedule(main, base_trades, seed)
-    control_books = _books(env, req, cfg, [(CONTROL, env.cost_model)])
+    control_views = _views(cfg)
+    control_books = _books(env, req, cfg, [(CONTROL, env.cost_model)], control_views)
     control_src = _source(req, planning, req.from_ms, req.to_ms, cfg, schedule=schedule, prefix="c")
     control_result, control_log = _simulate(
         env,
@@ -1045,6 +1130,7 @@ def run_backtest(
         req.from_ms,
         pinned,
         funding,
+        control_views,
     )
     control_trades = report.order_trades(control_books[0].trades)
 
@@ -1128,7 +1214,12 @@ def run_backtest(
             "events": log.funding_events,
             "applied": log.funding_applied,
         },
-        "risk_hook": "sim.book.allow_all (stub; M3 risk engine not wired)",
+        # allow_all keeps its original manifest value, so allow_all runs stay byte-identical
+        "risk_hook": (
+            risk_policy_mod.describe(cfg.risk_policy, cfg.risk)
+            if cfg.risk is not None
+            else "sim.book.allow_all (stub; M3 risk engine not wired)"
+        ),
     }
     manifest_hash = _sha(hashed)
     run_id = f"bt-{stamp}-{manifest_hash[:10]}"
@@ -1261,6 +1352,8 @@ def run_backtest(
                 "funding_events": log.funding_events,
                 "funding_applied": log.funding_applied,
                 "rejections": base.summary()["rejections_by_reason"],
+                # only under a live policy (allow_all metrics stay byte-identical)
+                **({"risk_policy": _risk_policy_summary(base)} if cfg.risk is not None else {}),
                 "open_positions_at_end": base.summary()["open_positions"],
                 "sim_fingerprint": result.fingerprint,
                 "ledger_hash": result.ledger_hashes[BASELINE],

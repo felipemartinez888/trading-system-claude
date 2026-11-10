@@ -282,9 +282,15 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
             )
             from tsclaude.risk.config import RiskConfigError, load_risk_config
 
+            # the backtest config's own risk policy when it applies one (risk_policy live);
+            # otherwise configs/risk.yaml, informational only (live compatibility)
             risk_path = cfg_path.parent / "risk.yaml"
-            try:  # informational only (live compatibility); a missing file: not assessed
-                risk_config = load_risk_config(risk_path) if risk_path.is_file() else None
+            try:
+                risk_config = (
+                    cfg.risk
+                    if cfg.risk is not None
+                    else (load_risk_config(risk_path) if risk_path.is_file() else None)
+                )
             except RiskConfigError as exc:
                 raise WalkForwardError(f"configs/risk.yaml is invalid: {exc}") from exc
             report = run_walk_forward(

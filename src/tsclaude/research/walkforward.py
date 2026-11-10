@@ -1022,15 +1022,23 @@ def _prereg_conformance(
     return dict(doc.get("trial_budget") or {})
 
 
+def _describe_policy(cfg: BacktestConfig) -> dict[str, Any]:
+    from tsclaude.research.risk_policy import describe
+
+    return describe(cfg.risk_policy, cfg.risk)
+
+
 def _live_compatibility(
     env: RunEnv,
     strategy_id: str,
     grid: Mapping[str, Mapping[str, Any]],
     symbols: Sequence[tuple[Market, str]],
     risk_config: Any | None,
+    policy_live: bool = False,
 ) -> dict[str, Any] | None:
     """Whether each configuration could ever trade in the live baseline book (handoff I-1);
-    None when no risk configuration was given. Informational: it never changes selection."""
+    None when no risk configuration was given. Informational: it never changes selection (under
+    ``risk_policy: live`` the backtests themselves already refuse what the live book refuses)."""
     if risk_config is None:
         return None
     from tsclaude.research.live_compat import assess
@@ -1053,8 +1061,13 @@ def _live_compatibility(
         "risk_config_version": getattr(risk_config, "version", None),
         "configurations": worst,
         "any_deployable": any(v["deployable_in_baseline_book"] for v in worst.values()),
-        "note": "Backtests apply no risk gate; this shows what the live baseline book would "
-        "accept. It never changes selection (decision D-E).",
+        "note": (
+            "The backtests applied the paper risk policy (risk_policy live): a configuration "
+            "that is not COMPATIBLE had its rejected trades refused in the backtests too."
+            if policy_live
+            else "Backtests applied no risk gate (risk_policy allow_all); this shows what the "
+            "live baseline book would accept. It never changes selection (decision D-E)."
+        ),
     }
 
 
@@ -1394,7 +1407,10 @@ def run_walk_forward(
             n_min=n_min, oos_verdict=oos["verdict"], last_fold=folds[-1],
         )  # fmt: skip
     try:  # informational: a failure here must never lose the report
-        live = _live_compatibility(env, strategy_id, grid, symbols, risk_config)
+        live = _live_compatibility(
+            env, strategy_id, grid, symbols, cfg.risk if cfg.risk is not None else risk_config,
+            policy_live=cfg.risk is not None,
+        )  # fmt: skip
     except Exception as exc:
         live = {"error": f"{type(exc).__name__}: {exc}"}
     if final is not None and final.get("selected") and live and "configurations" in live:
@@ -1442,6 +1458,7 @@ def run_walk_forward(
         "oos": oos,
         "final_selection": final,
         "live_compatibility": live,
+        "risk_policy": _describe_policy(cfg),
         "run_ids": [o.run_id for o in evaluator.runs],
         "n_trials_family_now": env.trials.n_trials(strategy_id),
     }

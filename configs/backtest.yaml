@@ -1,5 +1,5 @@
 # Backtest runner configuration (research/runner.py, M2-T4). Hashed into every run manifest.
-version: backtest-config-v1
+version: backtest-config-v2
 starting_equity: "10000"
 risk_per_trade: "0.005"        # SIMULATION §6 default
 decision_latency_ms: 0         # raise to >= observed live p95 once measured (SIMULATION §2)
@@ -11,6 +11,15 @@ flagged_share_cap: 0.05        # ambiguous / spans_gap share above this caps the
 max_loss_safety_factor: 1.5    # L-10; may only be raised
 stress_factors: ["1.5", "2"]
 flat_margin_bars: 1
+# Risk policy (P1-6; owner direction 2026-11-10 under D-E: keep the paper floor and apply the same
+# risk policy in backtests and Paper). `live`: every backtest book asks the paper risk engine's
+# trade and portfolio rules from risk.yaml (net reward/risk >= min_rr_net 1.5, take-profit
+# required, risk per trade, positions, clusters, gross exposure, daily loss, drawdown) and halts at
+# its kill switch. The four live-environment rules (market view, stream freshness, clock skew,
+# spread) have no history and are substituted (research/risk_policy.py). `allow_all`: no rule.
+# The risk config enters this config's hash by content.
+risk_policy: live
+risk_config: risk.yaml
 # Instrument filters are UNVERIFIED placeholders (no exchangeInfo snapshot in the lake yet).
 # Per-symbol entries override the market default. Tick/lot rounding is always adverse.
 instruments:
