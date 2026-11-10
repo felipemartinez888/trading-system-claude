@@ -83,8 +83,11 @@ jobs:
             "ci-logs/junit-${{ matrix.os }}-serial.xml" --label "python serial (${{ matrix.os }})" \
             --outcomes-out "ci-logs/outcomes-${{ matrix.os }}-serial.json" --summary-out "$GITHUB_STEP_SUMMARY"
           uv pip freeze > "ci-logs/freeze-${{ matrix.os }}-serial.txt"
-          { echo "### Working tree after pytest (${{ matrix.os }}, report only)"; echo '```';
-            git status --porcelain --untracked-files=all --ignored | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # written to a file first: `git status | head` would end in SIGPIPE (exit 141) under
+          # pipefail once the list is longer than the head
+          git status --porcelain --untracked-files=normal --ignored > "ci-logs/tree-${{ matrix.os }}-serial.txt"
+          { echo "### Working tree after pytest (${{ matrix.os }}, report only; ignored files listed too)"; echo '```';
+            head -n 50 "ci-logs/tree-${{ matrix.os }}-serial.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload test report (P0)
         if: always()
         continue-on-error: true
@@ -170,8 +173,11 @@ jobs:
         shell: bash
         run: |
           changed=$(git status --porcelain --untracked-files=no)
+          # written to a file first: `git status | head` would end in SIGPIPE (exit 141) under
+          # pipefail once the list is longer than the head (bench run 42911839409, ubuntu)
+          git status --porcelain --untracked-files=normal --ignored > "ci-logs/tree-${{ matrix.os }}-$MODE.txt"
           { echo "### Working tree after pytest (${{ matrix.os }}, $MODE; ignored files listed too)"; echo '```';
-            git status --porcelain --untracked-files=all --ignored | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            head -n 50 "ci-logs/tree-${{ matrix.os }}-$MODE.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$changed" ]; then echo "::error::tests changed tracked files:"; echo "$changed"; exit 1; fi
       - name: Upload test report
         if: always()
