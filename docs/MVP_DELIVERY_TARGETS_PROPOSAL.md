@@ -6,7 +6,8 @@
   part of M6" stay exactly as written. M5 and M6 are not new. This file adds a delivery view on top of them. Any
   change to the roadmap contract needs separate owner approval.
 - **Basis:** repository state at `9f908d9` (CI `42322235295`, 7/7 green), the
-  [M2 acceptance record](M2_ACCEPTANCE_RECORD.md) and the [walkthrough proposal](MVP_WALKTHROUGH_PROPOSAL.md).
+  [M2 acceptance record](M2_ACCEPTANCE_RECORD.md) and the MVP walkthrough proposal (presented in the 2026-11-06
+  session and never committed, so there is no file to link; its operating steps now live in [MVP_USER_GUIDE](MVP_USER_GUIDE.md)).
   Where a statement is a judgment and not a measurement, it says so.
 
 ## 1. Four deliverables that must not be confused

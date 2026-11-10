@@ -36,6 +36,7 @@ If any value is beyond ±0.5 s:
 - **Start / Stop monitoring:** use the buttons in the status bar. Start returns at once; ingestion runs in the background (`GET /api/ingestion` shows it).
 - **Quit:** use the dashboard's Quit, or Ctrl+C in the launcher window. Both record a clean stop.
 - **After an unclean end:** if the PC restarts or the process is killed, the next Start shows the unobserved interval and backfills it where it can.
+- **If a paper book halts** (drawdown kill switch): there is no reset button (proposal D-B in [DECISIONS_PENDING](DECISIONS_PENDING.md), open). On the Paper page, use **Operator action → Record new paper session** with a note; the new session opens at the next monitoring start and the halted session's record is kept unchanged.
 
 **Where to look**
 

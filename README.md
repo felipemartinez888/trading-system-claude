@@ -4,9 +4,18 @@ Local-first cryptocurrency market-intelligence, quantitative research, backtesti
 paper-trading platform for Binance Spot and USDⓈ-M Futures public market data —
 designed, implemented and reviewed exclusively with Claude and Claude-based agents.
 
-> **Status (2026-10-19): planning only.** Nothing in this repository is implemented yet.
-> Every capability described in `docs/` is a design proposal awaiting approval.
-> The live status of each feature is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status (2026-11-10): MVP FUNCTIONAL — VALIDATION INCOMPLETE.** The paper-only engineering
+> MVP runs locally: Binance public data ingestion, the Parquet research lake, the backtest runner
+> with certified reports, the paper runtime with deterministic replay, and the dashboard.
+> Evidence and what is still open: [`docs/MVP_VALIDATION_REPORT.md`](docs/MVP_VALIDATION_REPORT.md);
+> limitations: [`docs/MVP_LIMITATIONS.md`](docs/MVP_LIMITATIONS.md); how to run it:
+> [`docs/MVP_USER_GUIDE.md`](docs/MVP_USER_GUIDE.md).
+>
+> Keep these apart: M2 is accepted with a limited scope (D-22); M3 has technical evidence but no
+> formal owner acceptance; **no strategy has demonstrated an edge** (the only implemented strategy
+> is a reference baseline, and its one real-data backtest made 0 trades); quantitative research
+> (M4) has its tooling in progress and no real research run; there is **no live trading**, and none is planned before a separate
+> owner decision. Milestone status: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Why this project exists
 
@@ -28,7 +37,7 @@ honest) and **development effectiveness** (time, cost, defects, rework). See
   measured advisory layer that can only veto or downgrade, never bypass risk controls.
 - A historical backtest is never reported as live validation.
 
-## Planning documents
+## Documents
 
 | Document | Purpose |
 |---|---|
