@@ -5,9 +5,11 @@ Reads the lake only through `LakeReader` behind the holdout guard (event-store u
 up in `strategies.DRAFT_REGISTRY` (strategies awaiting an owner freeze, which no run can build)
 instead of the runnable `REGISTRY`; the same development-only refusals apply. Each
 configuration (``--params``, or one per entry of ``--grid``) writes
-``<data_dir>/feasibility/feas-<hash12>/feasibility.json``; a JSON summary goes to stdout.
+``<data_dir>/feasibility/feas-<hash12>/feasibility.json``, with the counting code's commit
+(``code``, recorded outside the content hash); a JSON summary goes to stdout.
 Refusals exit 2 (``{"ok": false, "refused": "feasibility"}``); a range touching the holdout
-exits 3. The Lead wires `register_feasibility` into ``backtest``.
+exits 3; a malformed ``exchange_interruptions.yaml`` next to ``--config`` exits 5 (as
+``backtest run``). The Lead wires `register_feasibility` into ``backtest``.
 """
 
 from __future__ import annotations
@@ -93,6 +95,19 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
         from_ms, to_ms = parse_time(args.from_), parse_time(args.to)
         cfg_path = Path(args.config)
         cfg = BacktestConfig.load(cfg_path) if cfg_path.is_file() else BacktestConfig()
+        # the registry `backtest run` uses (next to the config): registered exchange downtime is
+        # reported apart from unexplained missing minutes; a broken file refuses (exit 5)
+        from tsclaude.quality.interruptions import (
+            EMPTY_REGISTRY,
+            InterruptionRegistryError,
+            load_registry,
+        )
+
+        registry_path = cfg_path.parent / "exchange_interruptions.yaml"
+        try:
+            registry = load_registry(registry_path) if registry_path.is_file() else EMPTY_REGISTRY
+        except InterruptionRegistryError as exc:
+            return _refuse(str(exc), "exchange_interruptions", 5)
         pinned = (
             None
             if args.datasets is None
@@ -109,6 +124,9 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
     # the cost model `backtest run` uses (the `RunEnv.cost_model` default), so the cost filter
     # is evaluated with the same planning costs as in a backtest
     costs_for = planning_costs_for(CostModel())
+    from tsclaude.research.runner import git_version
+
+    code = git_version()
     out_root = settings.data_dir / "feasibility"
     summaries: list[dict[str, Any]] = []
     with EventStore(settings.state_db_path) as store:
@@ -124,6 +142,7 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
                     to_ms,
                     costs_for=costs_for,
                     dataset_ids=pinned,
+                    interruptions=registry,
                 )
             except (HoldoutError, FeasibilityHoldoutRefused) as exc:
                 return _refuse(str(exc), "holdout", 3)
@@ -132,6 +151,8 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
             result["config_id"] = cid
             result["draft"] = bool(args.draft)
             result["backtest_config_hash"] = cfg.config_hash
+            # the code that counted (recorded, not hashed: equal counts keep their content hash)
+            result["code"] = code
             out_dir = out_root / f"feas-{result['content_hash'][:12]}"
             out_dir.mkdir(parents=True, exist_ok=True)
             path = out_dir / "feasibility.json"

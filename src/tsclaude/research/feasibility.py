@@ -23,7 +23,10 @@ Pipeline (the same data path as a backtest, `research.runner` / `research.source
 
 Output per ``market:symbol`` and per UTC year of the decision bar's close: ``decision_bars``, the
 **cumulative** counts in stage order (bars passing stages 1..k), ``missing_minutes`` (inside
-``[from, to)``, by the year of the missing minute) and ``history_resets`` (by the year of the 1m bar
+``[from, to)``, by the year of the missing minute), split into ``registered_downtime_minutes``
+(inside a registered exchange interruption's absence period, ADR-0013, with the registry and
+``split_missing`` the backtest runner uses) and ``unexplained_missing_minutes``, and
+``history_resets`` (by the year of the 1m bar
 that revealed the gap; resets while reading the warm-up are reported under ``warmup``).
 
 Interpretation limits: the count after the last stage is an **upper bound** on entries (position
@@ -66,6 +69,7 @@ from tsclaude.contracts.events import canonical_json
 from tsclaude.contracts.market import Bar, Market
 from tsclaude.contracts.timeutil import MS_PER_MINUTE, to_iso
 from tsclaude.features.bars import BarAggregator
+from tsclaude.quality.interruptions import EMPTY_REGISTRY, InterruptionRegistry
 from tsclaude.research.runner import _months, segment_of, warmup_ms_of
 from tsclaude.research.source import SymbolKey, _History
 from tsclaude.sim.costs import CostModel
@@ -73,7 +77,9 @@ from tsclaude.store.holdout import Purpose, touches_holdout
 from tsclaude.store.lake_reader import ReadResult
 from tsclaude.strategies.base import PlanningCosts, Strategy
 
-FEASIBILITY_VERSION = "feasibility-v2"  # v2: diagnostics (hour of day, stage filter, ladder)
+#: v2: diagnostics (hour of day, stage filter, ladder); v3: missing minutes split into registered
+#: exchange downtime (ADR-0013, the runner's registry) and unexplained missing data
+FEASIBILITY_VERSION = "feasibility-v3"
 KIND = "feasibility_count"
 
 type CostsFor = Callable[[Market, str], PlanningCosts]
@@ -137,13 +143,13 @@ def _year_start_ms(year: int) -> int:
     return int(datetime(year, 1, 1, tzinfo=UTC).timestamp() * 1000)
 
 
-def _minutes_by_year(a: int, b: int) -> Iterator[tuple[int, int]]:
-    """Minutes of the missing range [a, b) split at UTC year boundaries."""
+def _ranges_by_year(a: int, b: int) -> Iterator[tuple[int, int, int]]:
+    """The range [a, b) split at UTC year boundaries: (year, lo, hi)."""
     cur = a
     while cur < b:
         year = utc_year(cur)
         nxt = min(b, _year_start_ms(year + 1))
-        yield year, (nxt - cur) // MS_PER_MINUTE
+        yield year, cur, nxt
         cur = nxt
 
 
@@ -199,6 +205,9 @@ class _Year:
     decision_bars: int = 0
     passed: list[int] = field(default_factory=list)
     missing_minutes: int = 0
+    #: the part of ``missing_minutes`` inside a registered exchange interruption's absence
+    #: period (ADR-0013); the rest is unexplained missing data
+    registered_downtime_minutes: int = 0
     history_resets: int = 0
 
 
@@ -208,7 +217,9 @@ class _SymbolLog:
     hour_decisions: list[int] = field(default_factory=lambda: [0] * HOURS)
     hour_candidates: list[int] = field(default_factory=lambda: [0] * HOURS)
     warmup_missing_minutes: int = 0
+    warmup_registered_downtime_minutes: int = 0
     warmup_history_resets: int = 0
+    interruption_ids: set[str] = field(default_factory=set)
     conflicts: int = 0
     bars_1m: int = 0
 
@@ -230,6 +241,7 @@ def iter_decisions(
     dataset_ids: Collection[str] | None = None,
     logs: dict[SymbolKey, _SymbolLog] | None = None,
     datasets: set[str] | None = None,
+    interruptions: InterruptionRegistry = EMPTY_REGISTRY,
 ) -> Iterator[DecisionFlags]:
     """Stage flags of every decision bar closing in [from, to), per symbol in order.
 
@@ -275,10 +287,17 @@ def iter_decisions(
             for a, b in res.missing:
                 wa, wb = a, min(b, from_ms)
                 if wb > wa:
+                    inside, _, ids = interruptions.split_missing(market, wa, wb)
                     log.warmup_missing_minutes += (wb - wa) // MS_PER_MINUTE
+                    log.warmup_registered_downtime_minutes += inside
+                    log.interruption_ids.update(ids)
                 ia, ib = max(a, from_ms), min(b, to_ms)
-                for year, minutes in _minutes_by_year(ia, ib) if ib > ia else ():
-                    log.year(year, len(names)).missing_minutes += minutes
+                for year, ya, yb in _ranges_by_year(ia, ib) if ib > ia else ():
+                    inside, _, ids = interruptions.split_missing(market, ya, yb)
+                    yr = log.year(year, len(names))
+                    yr.missing_minutes += (yb - ya) // MS_PER_MINUTE
+                    yr.registered_downtime_minutes += inside
+                    log.interruption_ids.update(ids)
             for bar in res.items:
                 before = agg.incomplete
                 derived = agg.push(bar)
@@ -313,6 +332,7 @@ def count_feasibility(
     *,
     costs_for: CostsFor,
     dataset_ids: Collection[str] | None = None,
+    interruptions: InterruptionRegistry = EMPTY_REGISTRY,
 ) -> dict[str, Any]:
     """Cumulative stage-pass counts per symbol and UTC year (see the module docstring)."""
     check_request(strategy, from_ms, to_ms)
@@ -330,6 +350,7 @@ def count_feasibility(
         dataset_ids=dataset_ids,
         logs=logs,
         datasets=datasets,
+        interruptions=interruptions,
     ):
         log = logs[(d.market, d.symbol)]
         yr = log.year(utc_year(d.decision_ms), len(names))
@@ -354,6 +375,7 @@ def count_feasibility(
             src = log.year(y, len(names))
             total.decision_bars += src.decision_bars
             total.missing_minutes += src.missing_minutes
+            total.registered_downtime_minutes += src.registered_downtime_minutes
             total.history_resets += src.history_resets
             total.passed = [a + b for a, b in zip(total.passed, src.passed, strict=True)]
         per_symbol[f"{key[0]}:{key[1]}"] = {
@@ -361,8 +383,12 @@ def count_feasibility(
             "total": _year_out(total, names),
             "warmup": {
                 "missing_minutes": log.warmup_missing_minutes,
+                "registered_downtime_minutes": log.warmup_registered_downtime_minutes,
+                "unexplained_missing_minutes": log.warmup_missing_minutes
+                - log.warmup_registered_downtime_minutes,
                 "history_resets": log.warmup_history_resets,
             },
+            "exchange_interruptions": sorted(log.interruption_ids),
             "conflicts": log.conflicts,
             "bars_1m": log.bars_1m,
             "by_utc_hour": {
@@ -393,6 +419,16 @@ def count_feasibility(
             "cumulative in stage order: cumulative[k] counts decision bars passing stages 1..k; "
             "the last stage is an upper bound on entries (no overlap, validity or exit simulated)"
         ),
+        "exchange_interruptions": {
+            "source": interruptions.source,
+            "sha256": interruptions.sha256,
+            "ids": sorted(e.id for e in interruptions.entries),
+            "note": (
+                "missing minutes inside a registered absence period (ADR-0013) are reported as "
+                "registered_downtime_minutes, the rest as unexplained_missing_minutes; the same "
+                "registry and split as the backtest runner"
+            ),
+        },
         "planning_costs": {
             k: {"round_trip_frac": c.round_trip_frac, "basis": c.basis}
             for k, c in sorted(costs.items())
@@ -531,5 +567,7 @@ def _year_out(y: _Year, names: Sequence[str]) -> dict[str, Any]:
         "decision_bars": y.decision_bars,
         "cumulative": [{"stage": n, "bars": c} for n, c in zip(names, y.passed, strict=True)],
         "missing_minutes": y.missing_minutes,
+        "registered_downtime_minutes": y.registered_downtime_minutes,
+        "unexplained_missing_minutes": y.missing_minutes - y.registered_downtime_minutes,
         "history_resets": y.history_resets,
     }

@@ -45,12 +45,19 @@ STAGES = [
     "warmup_ready", "features_defined", "compressed", "trend", "breakout", "volume_ok",
     "stop_valid", "cost_ok",
 ]  # fmt: skip
+REPO_ROOT = Path(__file__).resolve().parents[3]
 TOP_KEYS = {
     "kind", "version", "provenance", "pnl_free", "segment", "strategy", "range", "stages",
     "counting", "planning_costs", "symbols", "diagnostics", "dataset_ids", "content_hash",
+    "exchange_interruptions",
 }  # fmt: skip
-SYMBOL_KEYS = {"years", "total", "warmup", "conflicts", "bars_1m", "by_utc_hour"}
-YEAR_KEYS = {"decision_bars", "cumulative", "missing_minutes", "history_resets"}
+SYMBOL_KEYS = {
+    "years", "total", "warmup", "conflicts", "bars_1m", "by_utc_hour", "exchange_interruptions",
+}  # fmt: skip
+YEAR_KEYS = {
+    "decision_bars", "cumulative", "missing_minutes", "registered_downtime_minutes",
+    "unexplained_missing_minutes", "history_resets",
+}  # fmt: skip
 
 
 class RecordingReader:
@@ -153,7 +160,10 @@ def test_output_key_set_has_no_outcome_fields(march: tuple[Path, list[str]]) -> 
     assert set(out) == TOP_KEYS
     sym = out["symbols"]["spot:BTCUSDT"]
     assert set(sym) == SYMBOL_KEYS
-    assert set(sym["warmup"]) == {"missing_minutes", "history_resets"}
+    assert set(sym["warmup"]) == {
+        "missing_minutes", "registered_downtime_minutes", "unexplained_missing_minutes",
+        "history_resets",
+    }  # fmt: skip
     for y in [*sym["years"].values(), sym["total"]]:
         assert set(y) == YEAR_KEYS
         assert all(set(c) == {"stage", "bars"} for c in y["cumulative"])
@@ -225,6 +235,74 @@ def test_gap_resets_history_and_is_counted_per_year(tmp_path: Path) -> None:
     assert total["decision_bars"] == y23["decision_bars"] + y24["decision_bars"]
     assert total["history_resets"] == 1
     assert total["missing_minutes"] == 3
+
+
+def test_registered_downtime_is_split_from_unexplained_missing_minutes(tmp_path: Path) -> None:
+    """Review finding (independent H1 feasibility review, 2026-11-10): the count reported the
+    2023-03-24 Binance halt as plain missing minutes. Minutes inside a registered absence period
+    are now registered downtime, with the runner's own `split_missing`; the rest stay unexplained.
+    """
+    from tsclaude.quality.interruptions import ExchangeInterruption, InterruptionRegistry
+
+    gap = ms(2024, 1, 1, 12, 0)
+    skip = [gap + k * MIN for k in range(10)]  # 12:00-12:09 missing
+    other = ms(2024, 1, 2, 6, 0)  # one unexplained minute elsewhere
+    rows = synthetic_rows(ms(2023, 12, 30), ms(2024, 1, 3), skip=[*skip, other])
+    data_dir, _ = _lake(tmp_path, rows)
+    registry = InterruptionRegistry(
+        entries=(
+            ExchangeInterruption(
+                id="test-halt", market=Market.SPOT, from_ms=gap - 5 * MIN, to_ms=gap + 10 * MIN,
+                absent_from_ms=gap + 3 * MIN, approved_at="2026-11-10",
+            ),
+        ),
+        sha256="a" * 64,
+        source="exchange_interruptions.yaml",
+    )  # fmt: skip
+    out = count_feasibility(
+        _reader(data_dir), fast_strategy(), [SPOT_BTC], ms(2023, 12, 31), ms(2024, 1, 3),
+        costs_for=COSTS_FOR, interruptions=registry,
+    )  # fmt: skip
+    sym = out["symbols"]["spot:BTCUSDT"]
+    y24 = sym["years"]["2024"]
+    # 12:00-12:02 fall before absent_from (candles published there): unexplained, as in the runner
+    assert y24["missing_minutes"] == 11
+    assert y24["registered_downtime_minutes"] == 7
+    assert y24["unexplained_missing_minutes"] == 4
+    assert sym["total"]["registered_downtime_minutes"] == 7
+    assert sym["exchange_interruptions"] == ["test-halt"]
+    assert out["exchange_interruptions"]["ids"] == ["test-halt"]
+    assert out["exchange_interruptions"]["sha256"] == "a" * 64
+    # without a registry every missing minute is unexplained (the earlier behaviour)
+    plain = count_feasibility(
+        _reader(data_dir), fast_strategy(), [SPOT_BTC], ms(2023, 12, 31), ms(2024, 1, 3),
+        costs_for=COSTS_FOR,
+    )  # fmt: skip
+    p24 = plain["symbols"]["spot:BTCUSDT"]["years"]["2024"]
+    assert (p24["registered_downtime_minutes"], p24["unexplained_missing_minutes"]) == (0, 11)
+    assert plain["symbols"]["spot:BTCUSDT"]["exchange_interruptions"] == []
+    # the stage counts do not depend on the registry
+    assert p24["cumulative"] == y24["cumulative"]
+
+
+def test_the_repository_registry_explains_the_2023_03_24_gap(tmp_path: Path) -> None:
+    """The owner's 15m and 1h counts report 81 missing minutes per symbol on 2023-03-24
+    (12:39-13:59 UTC). With the repository's registry all 81 are registered downtime."""
+    from tsclaude.quality.interruptions import load_registry
+
+    registry = load_registry(REPO_ROOT / "configs" / "exchange_interruptions.yaml")
+    absent = ms(2023, 3, 24, 12, 39)
+    skip = [absent + k * MIN for k in range(81)]
+    rows = synthetic_rows(ms(2023, 3, 22), ms(2023, 3, 26), skip=skip)
+    data_dir, _ = _lake(tmp_path, rows)
+    out = count_feasibility(
+        _reader(data_dir), fast_strategy(), [SPOT_BTC], ms(2023, 3, 23), ms(2023, 3, 26),
+        costs_for=COSTS_FOR, interruptions=registry,
+    )  # fmt: skip
+    y = out["symbols"]["spot:BTCUSDT"]["years"]["2023"]
+    assert (y["missing_minutes"], y["registered_downtime_minutes"]) == (81, 81)
+    assert y["unexplained_missing_minutes"] == 0
+    assert out["symbols"]["spot:BTCUSDT"]["exchange_interruptions"] == ["binance-spot-2023-03-24"]
 
 
 def test_missing_month_gives_missing_minutes_not_an_error(tmp_path: Path) -> None:
@@ -435,6 +513,36 @@ def test_cli_refuses_both_params_and_grid(
     )  # fmt: skip
     assert code == 2
     assert out["refused"] == "feasibility"
+
+
+def test_cli_uses_the_registry_next_to_the_config_and_refuses_a_broken_one(
+    cli_data: tuple[Path, list[str]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d, _ = cli_data
+    registry = tmp_path / "exchange_interruptions.yaml"  # next to --config tmp_path/missing.yaml
+    registry.write_text("schema: 2\nentries: [{id: broken}]\n", encoding="utf-8")
+    code, out = _cli(
+        capsys, tmp_path, "--params", PARAMS, "--from", "2024-03-02", "--to", "2024-03-04"
+    )
+    assert code == 5
+    assert out["refused"] == "exchange_interruptions"
+    assert not (d / "feasibility").exists()  # refused before anything is written
+    registry.write_bytes((REPO_ROOT / "configs" / "exchange_interruptions.yaml").read_bytes())
+    code, out = _cli(
+        capsys, tmp_path, "--params", PARAMS, "--from", "2024-03-02", "--to", "2024-03-04"
+    )
+    assert code == 0
+    written = json.loads(Path(out["results"][0]["path"]).read_text(encoding="utf-8"))
+    assert "binance-spot-2023-03-24" in written["exchange_interruptions"]["ids"]
+    assert written["exchange_interruptions"]["source"] == "exchange_interruptions.yaml"
+    # provenance: the counting code is recorded next to the counts, outside the content hash
+    assert set(written["code"]) == {"commit", "dirty"}
+    from tsclaude.research.feasibility import content_hash
+
+    added = {"config_id", "draft", "backtest_config_hash", "code"}
+    body = {k: v for k, v in written.items() if k not in added}
+    assert content_hash(body) == written["content_hash"]
+    assert Path(out["results"][0]["path"]).parent.name == f"feas-{written['content_hash'][:12]}"
 
 
 # ---------------------------------------------------------------- diagnostics (feasibility-v2)
