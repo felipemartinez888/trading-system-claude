@@ -1,0 +1,34 @@
+name: CI docs tier
+
+# CI proposal P3: runs for pushes that touch docs. When every pushed file is a doc that nothing
+# reads (see the docs-tier patterns in ci.yml), ci.yml does not run at all, so this workflow is the
+# only check of the push and is NOT evidence for code (scripts/ci/evidence.sh refuses it). When
+# the push also touches anything else, ci.yml runs as well and this job only reports.
+on:
+  push:
+    branches: [main, "task/**", "acceptance/**"]
+    paths:
+      - "docs/**"
+      - "*.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  # its own group: a docs-tier run can never cancel or replace a ci.yml run
+  group: ci-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-tier:
+    name: docs tier (not evidence for code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Which pushed files would run the full CI
+        shell: bash
+        run: >-
+          python3 -I scripts/ci/docs_tier.py classify
+          "${{ github.event.before }}" "${{ github.sha }}" --summary "$GITHUB_STEP_SUMMARY"

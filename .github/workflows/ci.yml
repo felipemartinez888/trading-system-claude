@@ -3,6 +3,32 @@ name: CI
 on:
   push:
     branches: [main, "task/**", "acceptance/**"]
+    # CI proposal P3: a push runs this workflow when at least one pushed file matches this list
+    # (the last matching pattern decides). Docs that code, tests, scripts or configs read are
+    # included back; tests/unit/test_ci_docs_tier.py fails if one is missing. Other docs-only
+    # pushes run ci-docs.yml instead and never start, cancel or replace a run of this workflow.
+    # workflow_dispatch and pull_request are not filtered.
+    # docs-tier patterns: begin
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!*.md"
+      - "docs/research/**"
+      - "docs/tasks/**"
+      - "CLAUDE.md"
+      - "README.md"
+      - "docs/DASHBOARD.md"
+      - "docs/DECISIONS_PENDING.md"
+      - "docs/EVALUATION_PROTOCOL.md"
+      - "docs/MVP_CLOSURE_HANDOFF.md"
+      - "docs/MVP_USER_GUIDE.md"
+      - "docs/ROADMAP.md"
+      - "docs/SIGNALS_AND_AGENTS.md"
+      - "docs/SIMULATION.md"
+      - "docs/adr/README.md"
+      - "docs/devlog/2026-10-27-m2-handover-reconciliation.md"
+      - "docs/devlog/2026-10-28-m2-policy-design.md"
+    # docs-tier patterns: end
   pull_request:
   workflow_dispatch:
     inputs:
