@@ -91,6 +91,13 @@ WALK_FORWARD_KEYS = frozenset({
     "anchor", "end", "initial_train_months", "test_months", "embargo_minutes",
     "time_exit_required", "n_min", "min_oos_coverage",
 })  # fmt: skip
+#: closed key sets of the nested blocks (re-review R2: ``data.dataset_id`` would leave the pin null)
+NESTED_KEYS = {
+    "strategy": frozenset({"strategy_id", "version"}),
+    "universe": frozenset({"market", "symbols"}),
+    "data": frozenset({"development", "validation", "holdout", "dataset_ids"}),
+    "trial_budget": frozenset({"max_configurations", "max_registry_trials", "counting"}),
+}
 _HEX64 = frozenset("0123456789abcdef")
 SELECTION_RULES = ("full-development-train-v1",)
 #: open item listed (not a problem) for a strategy that is only in `strategies.DRAFT_REGISTRY`
@@ -340,6 +347,10 @@ def validate_document(doc: Mapping[str, Any], *, path: str = "<memory>") -> Vali
     for name in ("title", "rationale"):
         if not isinstance(doc.get(name), str) or not str(doc.get(name)).strip():
             p.append(f"{name} is required")
+    for block, allowed in NESTED_KEYS.items():
+        value = doc.get(block)
+        if isinstance(value, Mapping) and set(value) - allowed:
+            p.append(f"unknown {block} keys {sorted(set(value) - allowed)}")
     sid = _get(doc, "strategy.strategy_id")
     if sid not in REGISTRY and sid not in DRAFT_REGISTRY:
         p.append(f"strategy.strategy_id {sid!r} is not an implemented strategy")
@@ -645,11 +656,14 @@ def walkforward_conformance(
     for name, got, want in checks:
         if got != want:
             problems.append(f"{name} is {got!r}, the preregistration fixes {want!r}")
-    if folds:
+    # the expected folds come from the FILE's anchor, never from the run (re-review R1)
+    if not folds:
+        problems.append("no folds given: the run's folds cannot be checked against the plan")
+    elif _month_start(wf["anchor"]):  # otherwise validation already reported the anchor
         from tsclaude.research.walkforward import plan_folds
 
         first_train = folds[0]["train"][0]
-        start = datetime.strptime(first_train, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        start = datetime.strptime(str(wf["anchor"]), "%Y-%m-%d").replace(tzinfo=UTC)
         end = datetime.strptime(str(wf["end"]), "%Y-%m-%d").replace(tzinfo=UTC)
         expected = [
             f.to_dict()

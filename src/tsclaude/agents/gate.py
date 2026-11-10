@@ -47,6 +47,7 @@ from .budget import (
     CostLedger,
     DailyBudget,
     EntryKind,
+    LedgerUnreadable,
     cost_of,
     q,
 )
@@ -208,20 +209,36 @@ class AgentGate:
         }
         if self.mode is AgentMode.OFF:
             return base
-        return base | {
-            "model": self.config.model,
-            "prompts": {str(r): p.ref for r, p in self.prompts.items()},
-            "synthesis_version": SYNTHESIS_VERSION,
-            "daily_cap_usd": str(self.budget.cap),
-            "spent_today_usd": str(self.budget.spent_today()),
-            "remaining_today_usd": str(self.budget.remaining()),
-            "calls_today": self.ledger.calls_on(self.budget.today()),
-            "ledger_error": self.ledger.error,
-            "over_reservation_calls": self.ledger.over_reservations(),
-            "breaker": str(self.breaker.state),
-            "consecutive_failures": self.breaker.consecutive_failures,
-            "cached_reviews": len(self.cache),
-        }
+        spend: dict[str, Any]
+        try:
+            spend = {
+                "spent_today_usd": str(self.budget.spent_today()),
+                "remaining_today_usd": str(self.budget.remaining()),
+                "calls_today": self.ledger.calls_on(self.budget.today()),
+                "ledger_error": self.ledger.error,
+                "over_reservation_calls": self.ledger.over_reservations(),
+            }
+        except LedgerUnreadable as exc:  # e.g. the lock timed out: unknown spend, never a crash
+            spend = {
+                "spent_today_usd": None,
+                "remaining_today_usd": None,
+                "calls_today": None,
+                "ledger_error": f"cost ledger unreadable ({exc})",
+                "over_reservation_calls": None,
+            }
+        return (
+            base
+            | spend
+            | {
+                "model": self.config.model,
+                "prompts": {str(r): p.ref for r, p in self.prompts.items()},
+                "synthesis_version": SYNTHESIS_VERSION,
+                "daily_cap_usd": str(self.budget.cap),
+                "breaker": str(self.breaker.state),
+                "consecutive_failures": self.breaker.consecutive_failures,
+                "cached_reviews": len(self.cache),
+            }
+        )
 
     # ------------------------------------------------------------------ internals
     def _count(self, outcome: AgentOutcome) -> AgentOutcome:

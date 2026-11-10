@@ -3,9 +3,11 @@ N4 bounded Windows lock)."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import types
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -150,6 +152,8 @@ def test_windows_lock_retries_are_bounded_and_fail_closed(
 
     def locking(fd: int, mode: int, n: int) -> None:
         attempts.append(mode)
+        if len(attempts) > 50:  # an unbounded loop fails here instead of hanging CI (R4)
+            raise RuntimeError("unbounded lock retry")
         raise OSError("permanent")
 
     fake = types.ModuleType("msvcrt")
@@ -166,3 +170,36 @@ def test_windows_lock_retries_are_bounded_and_fail_closed(
     ledger = CostLedger(tmp_path / LEDGER_FILE)  # construction records the error, no raise
     assert ledger.error is not None
     assert "lock unavailable" in ledger.error
+
+
+# ---------------------------------------------------------------------- R3 mid-run lock failure
+
+
+def test_a_mid_run_lock_failure_is_a_budget_refusal_not_an_api_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closure review R3: a ledger lock that cannot be taken during a review refuses spend as
+    BUDGET_EXHAUSTED (not AI_UNAVAILABLE), does not count against the API breaker, and
+    ``snapshot()`` reports it instead of raising."""
+    client = MockClient.scripted(*valid_pair())
+    gate = make_gate(client, data_dir=tmp_path, breaker_failure_threshold=1)
+
+    @contextlib.contextmanager
+    def no_lock(path: Path) -> Iterator[None]:
+        raise LedgerUnreadable("cost ledger lock unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(budget_mod, "_os_file_lock", no_lock)
+    out = _review(gate)
+    assert out.state is S.BUDGET_EXHAUSTED, out.reason
+    assert "lock unavailable" in out.reason
+    assert client.calls == []
+    assert gate.breaker.state is BreakerState.CLOSED
+    assert gate.breaker.consecutive_failures == 0
+    snap = gate.snapshot()
+    assert snap["spent_today_usd"] is None
+    assert "lock unavailable" in snap["ledger_error"]
+
+    monkeypatch.undo()  # the lock recovers: reviews work again
+    assert _review(gate).state is S.REVIEWED
+    assert gate.snapshot()["spent_today_usd"] is not None

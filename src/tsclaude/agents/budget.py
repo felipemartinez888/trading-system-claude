@@ -332,29 +332,39 @@ class CostLedger:
             return list(self._entries)
 
     def try_reserve(self, entry: CostEntry, cap: Decimal) -> tuple[bool, str]:
-        """Atomically: re-read, check ``spent + entry.cost <= cap``, append the reservation."""
-        with self._locked():
-            self._refresh()
-            if self.error is not None:
-                return False, self.error
-            if spent_on(self._entries, entry.day) + entry.cost_usd > cap:
-                return False, "daily budget exhausted"
-            if not self._append(entry):
-                return False, self.error or "cost ledger not writable"
-            return True, ""
+        """Atomically: re-read, check ``spent + entry.cost <= cap``, append the reservation.
+        A lock that cannot be taken refuses (budget refusal, not an API failure; re-review R3)."""
+        try:
+            with self._locked():
+                self._refresh()
+                if self.error is not None:
+                    return False, self.error
+                if spent_on(self._entries, entry.day) + entry.cost_usd > cap:
+                    return False, "daily budget exhausted"
+                if not self._append(entry):
+                    return False, self.error or "cost ledger not writable"
+                return True, ""
+        except LedgerUnreadable as exc:
+            return False, f"cost ledger unreadable ({exc})"
 
     def preview(self, day: int, amount: Decimal, cap: Decimal) -> tuple[bool, str]:
-        with self._locked():
-            self._refresh()
-            if self.error is not None:
-                return False, self.error
-            if spent_on(self._entries, day) + amount > cap:
-                return False, "daily budget exhausted"
-            return True, ""
+        try:
+            with self._locked():
+                self._refresh()
+                if self.error is not None:
+                    return False, self.error
+                if spent_on(self._entries, day) + amount > cap:
+                    return False, "daily budget exhausted"
+                return True, ""
+        except LedgerUnreadable as exc:
+            return False, f"cost ledger unreadable ({exc})"
 
     def settle(self, entry: CostEntry) -> None:
-        with self._locked():
-            self._append(entry)  # a failed write leaves the reservation (worst case) in force
+        try:
+            with self._locked():
+                self._append(entry)  # a failed write leaves the reservation (worst case) in force
+        except LedgerUnreadable:
+            pass  # no lock: the reservation (worst case) stays in force, which over-counts only
 
     def spent_on(self, day: int) -> Decimal:
         with self._locked():

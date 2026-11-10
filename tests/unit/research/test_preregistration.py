@@ -245,7 +245,6 @@ def test_walkforward_conformance_lists_every_deviation(tmp_path: Path) -> None:
         "anchor": "2022-02-01T00:00:00Z", "dataset_ids": None, "final_selection": True,
         "config_hash": CFG,
     }  # fmt: skip
-    assert pr.walkforward_conformance(doc, **base) == []
     from tsclaude.research.walkforward import plan_folds
 
     def ms(y: int, m: int) -> int:
@@ -255,10 +254,19 @@ def test_walkforward_conformance_lists_every_deviation(tmp_path: Path) -> None:
 
     planned = [f.to_dict() for f in plan_folds(ms(2022, 2), ms(2025, 1), initial_train_months=12,
                                               test_months=3, embargo_ms=1440 * 60_000)]  # fmt: skip
-    assert pr.walkforward_conformance(doc, **base, folds=planned) == []
+    base["folds"] = planned
+    assert pr.walkforward_conformance(doc, **base) == []
     short = [f.to_dict() for f in plan_folds(ms(2022, 2), ms(2024, 1), initial_train_months=12,
                                             test_months=3, embargo_ms=1440 * 60_000)]  # fmt: skip
-    assert any("folds differ" in p for p in pr.walkforward_conformance(doc, **base, folds=short))
+    assert any("folds differ" in p for p in pr.walkforward_conformance(
+        doc, **{**base, "folds": short}))  # fmt: skip
+    # closure review R1: the plan comes from the file's anchor, and no folds is never conformant
+    late = [f.to_dict() for f in plan_folds(ms(2023, 6), ms(2025, 1), initial_train_months=12,
+                                           test_months=3, embargo_ms=1440 * 60_000)]  # fmt: skip
+    assert any("folds differ" in p for p in pr.walkforward_conformance(
+        doc, **{**base, "folds": late}))  # fmt: skip
+    assert any("no folds given" in p for p in pr.walkforward_conformance(
+        doc, **{**base, "folds": []}))  # fmt: skip
     for other in ("d" * 64, None):  # another config, or none reported: refused (re-review N2)
         assert any("config hash" in p for p in pr.walkforward_conformance(
             doc, **{**base, "config_hash": other}))  # fmt: skip
@@ -333,6 +341,12 @@ def test_unknown_keys_are_problems_not_ignored(tmp_path: Path) -> None:
     doc = _doc()
     doc["walk_forward"]["embargo_minute"] = 1440
     assert any("unknown walk_forward keys" in p for p in pr.validate_document(doc).problems)
+    for block, typo in (("data", "dataset_id"), ("trial_budget", "max_configuration"),
+                        ("universe", "symbol"), ("strategy", "strategy_idd")):  # fmt: skip
+        doc = _doc()
+        doc[block][typo] = "x"  # closure review R2: nested typos are problems too
+        assert any(f"unknown {block} keys ['{typo}']" in p
+                   for p in pr.validate_document(doc).problems)  # fmt: skip
     doc = _doc()
     doc["backtest_config_hash"] = "not-a-digest"
     assert any("sha256 hex digest" in p for p in pr.validate_document(doc).problems)

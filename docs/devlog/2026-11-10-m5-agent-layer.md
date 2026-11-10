@@ -132,6 +132,8 @@ cases fail on the previous code and the N4 test hangs there):
 | N4 unbounded Windows lock retry | 6 attempts, then `LedgerUnreadable` (fail closed); the constructor records it as the ledger error |
 | N6 torn last line | operator note above (no code change: fail closed is the intended behaviour) |
 
+Closure review (Fable): CONDITIONAL PASS, 0 blocking. Its R3 (a ledger lock that times out mid-review gave AI_UNAVAILABLE, counted as a breaker failure, and `snapshot()` raised) and R4 (the lock test would hang, not fail, on a regression) are fixed: `preview`, `try_reserve` and `settle` turn a lock failure into a budget refusal (a settle keeps the worst-case reservation), and `snapshot()` reports `ledger_error` with unknown spend fields.
+
 ## Requests for the Lead (contracts — not edited)
 
 - `EventType.AGENT_REVIEW_COMPLETED` (payload: `AgentOutcome` state, verdict, review_id or key,
