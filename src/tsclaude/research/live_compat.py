@@ -1,10 +1,12 @@
 """Can a research configuration ever trade in the live baseline book? (handoff I-1, decision D-E)
 
-Backtests apply no risk gate (`sim.book.allow_all`); the live baseline book applies the risk engine,
-whose reward/risk rule (`risk.engine.rule_reward_risk`) requires a cost-adjusted net reward/risk of
-at least ``min_rr_net`` (1.5 in `configs/risk.yaml`). A bracket's gross reward/risk is its ``tp_r``
-and costs only lower it, so a geometry with ``tp_r < min_rr_net`` is rejected live on **every**
-trade, however good its backtest.
+Backtests with ``risk_policy: allow_all`` apply no risk gate (`sim.book.allow_all`); with
+``risk_policy: live`` (the repo default since 2026-11-10, `research.risk_policy`) they apply the
+paper rules, so a rejected geometry books no trades there either. The live baseline book applies
+the risk engine, whose reward/risk rule (`risk.engine.rule_reward_risk`) requires a cost-adjusted
+net reward/risk of at least ``min_rr_net`` (1.5 in `configs/risk.yaml`). A bracket's gross
+reward/risk is its ``tp_r`` and costs only lower it, so a geometry with ``tp_r < min_rr_net`` is
+rejected live on **every** trade, however good its backtest.
 
 This module answers that statically, with the live engine's own function (`cost_adjusted_rr`) on
 synthetic **long market** bracket orders with **modelled** slippage (no live spread or volume:
@@ -69,7 +71,7 @@ class LiveCompatibility:
             "min_stop_fraction": self.min_stop_fraction,
             "strategy_min_stop_fraction": self.strategy_min_stop_fraction,
             "reason": self.reason,
-            "decision": "D-E (open): live risk floor vs research geometries",
+            "decision": "D-E (open; owner direction 2026-11-10: keep the floor)",
         }
 
 

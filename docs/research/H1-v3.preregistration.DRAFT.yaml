@@ -22,7 +22,8 @@
 #     tp_r 2.50 -> 1.94  COMPATIBLE
 #     tp_r 3.00 -> 2.35  COMPATIBLE
 #   Net reward/risk grows with the stop distance (costs are a fixed fraction of price), so a
-#   configuration COMPATIBLE at its smallest admitted stop is COMPATIBLE for every trade.
+#   configuration COMPATIBLE at its smallest admitted stop is COMPATIBLE for every trade, at zero
+#   decision latency (with decision_latency_ms > 0 the fill check re-prices from a later close).
 #   Caveat: "at modelled slippage". The live engine uses max(modelled slippage, half the live
 #   spread); a wide live spread can still reject a trade. Backtests have no spread history: the
 #   cost-stress runs (x1.5, x2) carry that risk. tp_r 2.0 is the thinnest margin (1.52 vs 1.5).

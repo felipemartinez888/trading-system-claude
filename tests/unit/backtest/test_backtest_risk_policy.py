@@ -35,7 +35,7 @@ from tsclaude.research import risk_policy as rp
 from tsclaude.research.runner import BacktestConfig, run_backtest
 from tsclaude.risk.config import load_risk_config
 from tsclaude.risk.engine import RULES, RiskEngine, Rule
-from tsclaude.risk.market import MarketView, SymbolMarket
+from tsclaude.risk.market import MarketView, SymbolMarket, cutoff_ms
 from tsclaude.sim.book import PositionView, RiskCheck
 from tsclaude.sim.costs import CostModel
 from tsclaude.sim.orders import EntryRequest
@@ -71,9 +71,9 @@ def test_policy_rules_are_the_paper_engines_functions_minus_operational() -> Non
     assert [r for r, _ in rp.POLICY_RULES] == [r for r, _ in RULES if r not in rp.OPERATIONAL_RULES]
     paper = dict(RULES)
     assert all(fn is paper[r] for r, fn in rp.POLICY_RULES)  # the same objects, not copies
-    assert {
-        Rule.MARKET_VIEW, Rule.DATA_FRESHNESS, Rule.CLOCK_SKEW, Rule.SPREAD
-    } == rp.OPERATIONAL_RULES  # fmt: skip
+    # data_freshness applies (its bar checks are evaluated from history: closure review F1)
+    assert {Rule.MARKET_VIEW, Rule.CLOCK_SKEW, Rule.SPREAD} == rp.OPERATIONAL_RULES
+    assert Rule.DATA_FRESHNESS in dict(rp.POLICY_RULES)
     assert set(rp.SUBSTITUTIONS) == {str(r) for r in rp.OPERATIONAL_RULES}
 
 
@@ -342,3 +342,135 @@ def test_walk_forward_reports_name_the_policy_their_runs_applied(lake: Path) -> 
     assert "applied no risk gate" in off["note"]
     assert on["configurations"]["a"]["status"] == "INCOMPATIBLE"
     assert on["configurations"]["b"]["status"] == "COMPATIBLE"
+
+
+# ---------------------------------------------------------------- closure review F1, F2, F10
+
+
+def _tracker_view(bars: list[Bar], cutoff: int) -> SymbolMarket:
+    """The paper tracker's view of the same bars (a healthy snapshot just before the cutoff)."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "risk"))
+    from risk_helpers import snapshot
+
+    from tsclaude.risk.market import MarketStateTracker
+
+    tr = MarketStateTracker()
+    tr.observe_snapshot(snapshot(cutoff - 500))
+    for b in bars:
+        tr.observe_bar(b)
+    v = tr.view_at(cutoff, [(Market.SPOT, "BTCUSDT")])
+    assert v is not None
+    return v.symbols[(Market.SPOT, "BTCUSDT")]
+
+
+@pytest.mark.parametrize("skip", [(), (100,), (100, 101, 102), (5,), (299,)])
+def test_bar_views_equal_the_paper_trackers_bar_fields(skip: tuple[int, ...]) -> None:
+    start = T0 + 1 - 300 * MIN
+    bars = [_bar(start + i * MIN, 100.0 + i / 10, qv=1e6 + i) for i in range(300) if i not in skip]
+    views = rp.BarViews(RISK.data_freshness.lookback_minutes)
+    for b in bars:
+        views.observe(b)
+    for stage, ts in (("submit", T0), ("fill", T0 + 1), ("submit", T0 - 30 * MIN)):
+        check = RiskCheck(stage, "baseline", ts, _request("98", "110"), Decimal("10000"), 0)
+        mine = views.view(check)
+        assert mine is not None
+        ours = mine.symbols[(Market.SPOT, "BTCUSDT")]
+        theirs = _tracker_view(bars, cutoff_ms(stage, ts))
+        for f in ("last_bar_close_ms", "last_close", "last_quote_volume", "lookback_gap_minutes"):
+            assert getattr(ours, f) == getattr(theirs, f), (f, skip, stage, ts)
+
+
+def test_a_lookback_into_pruned_history_fails_closed() -> None:
+    views = rp.BarViews(240)
+    start = T0 + 1 - 400 * MIN
+    for i in range(400):
+        views.observe(_bar(start + i * MIN, 100.0))
+    # 400 bars observed, about 300 kept: a cutoff whose lookback needs dropped bars gets no view
+    far = RiskCheck("submit", "baseline", T0 - 120 * MIN, _request("98", "110"), Decimal("1"), 0)
+    assert views.view(far) is None
+    near = RiskCheck("submit", "baseline", T0, _request("98", "110"), Decimal("1"), 0)
+    assert views.view(near) is not None
+
+
+def _policy_check(stage: str, ts: int) -> RiskCheck:
+    return RiskCheck(
+        stage=stage, book="baseline", ts_ms=ts, request=_request("98.7", "102.6"),
+        equity=Decimal("10000"), open_positions=0, start_of_day_equity=Decimal("10000"),
+        peak_equity=Decimal("10000"), earliest_exec_ms=T0 + 1, risk_per_trade=Decimal("0.005"),
+        max_notional_fraction=Decimal("1"),
+    )  # fmt: skip
+
+
+def test_stale_bars_and_lookback_gaps_block_as_in_paper() -> None:
+    """F1: the bar checks of data_freshness apply in backtests as in Paper."""
+    paper = RiskEngine(RISK, COSTS)
+    old = rp.BarViews()
+    old.observe(_bar(T0 + 1 - 240 * MIN, 100.0))  # the last bar closed 239 min before T0
+    hook = rp.BacktestRiskHook(RISK, COSTS, old)
+    d = hook(_policy_check("submit", T0))
+    assert not d.allow
+    assert "data_freshness:" in d.reason
+    view = old.view(_policy_check("submit", T0))
+    assert view is not None
+    assert "data_freshness:bar_stale" in "|".join(paper.evaluate(_policy_check("submit", T0),
+                                                                 view).reasons)  # fmt: skip
+    gap = rp.BarViews()
+    for i in range(240):
+        if i != 120:  # one missing minute two hours before the decision
+            gap.observe(_bar(T0 + 1 - (240 - i) * MIN, 100.0))
+    d = rp.BacktestRiskHook(RISK, COSTS, gap)(_policy_check("submit", T0))
+    assert not d.allow
+    assert "data_freshness:gap_in_lookback:1m" in d.reason
+    fresh = rp.BarViews()
+    for i in range(240):
+        fresh.observe(_bar(T0 + 1 - (240 - i) * MIN, 100.0))
+    assert rp.BacktestRiskHook(RISK, COSTS, fresh)(_policy_check("submit", T0)).allow
+
+
+def test_the_submit_reference_is_the_decision_bars_close(
+    lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2a: bars are observed before the step, so a submit check at the decision close sees that
+    bar (and a fill check the close before the executing bar)."""
+    seen: list[tuple[str, int, int | None]] = []
+    real = rp.BacktestRiskHook.__call__
+
+    def spy(self: rp.BacktestRiskHook, check: RiskCheck) -> Any:
+        v = self.views.view(check)
+        last = None if v is None else v.symbols[(Market.SPOT, "BTCUSDT")].last_bar_close_ms
+        seen.append((check.stage, check.ts_ms, last))
+        return real(self, check)
+
+    monkeypatch.setattr(rp.BacktestRiskHook, "__call__", spy)
+    run_backtest(request(FROM, TO, strategy=fast_strategy(tp_r=3.0)), make_env(lake), _live_cfg())
+    submits = [s for s in seen if s[0] == "submit"]
+    fills = [s for s in seen if s[0] == "fill"]
+    assert submits
+    assert fills
+    assert all(last == ts for _, ts, last in submits)  # decision latency 0: the decision close
+    assert all(last == ts - 1 for _, ts, last in fills)  # the close before the executing open
+
+
+def test_live_books_get_the_kill_switch_and_the_base_cost_model(lake: Path) -> None:
+    """F2b, F2c: every live-policy book halts at the paper kill switch, and the engine judges
+    every book (cost stress included) with the base cost model, as the live engine does."""
+    from decimal import Decimal as D
+
+    from tsclaude.research import runner
+
+    env = make_env(lake)
+    cfg = _live_cfg()
+    req = request(FROM, TO)
+    names = [("baseline", env.cost_model), ("stress_x2", env.cost_model.scaled(D("2")))]
+    books = runner._books(env, req, cfg, names, rp.BarViews())
+    assert [b.kill_switch_drawdown for b in books] == [RISK.drawdown_kill_switch] * 2
+    hooks = [b.risk_hook for b in books]
+    assert all(isinstance(h, rp.BacktestRiskHook) for h in hooks)
+    assert all(h.engine.cost_model is env.cost_model for h in hooks)  # type: ignore[union-attr]
+    assert books[1].cost_model is not env.cost_model  # the stress book still pays stressed costs
+    with pytest.raises(ValueError, match="needs the run's bar views"):
+        runner._books(env, req, cfg, names, None)
+    allow = runner._books(env, req, TEST_CONFIG, names)
+    assert all(b.kill_switch_drawdown is None for b in allow)

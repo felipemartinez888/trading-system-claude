@@ -440,19 +440,23 @@ def _books(
 
 
 def _views(cfg: BacktestConfig) -> risk_policy_mod.BarViews | None:
-    return risk_policy_mod.BarViews() if cfg.risk is not None else None
+    if cfg.risk is None:
+        return None
+    return risk_policy_mod.BarViews(cfg.risk.data_freshness.lookback_minutes)
 
 
-def _risk_policy_summary(book: Book) -> dict[str, Any]:
-    """Checks and blocks of the base book under a live risk policy (rule -> blocked checks)."""
-    hook = book.risk_hook
+def _risk_policy_summary(base: Book, others: Sequence[Book]) -> dict[str, Any]:
+    """Checks and blocks of the base book under a live risk policy (rule -> blocked checks), and
+    every book halted by the kill switch (base, cost stress, random control)."""
+    hook = base.risk_hook
     if not isinstance(hook, risk_policy_mod.BacktestRiskHook):
         return {"mode": risk_policy_mod.ALLOW_ALL}
     return {
         "mode": risk_policy_mod.LIVE,
         "checks": hook.checks,
         "blocked_by_rule": dict(sorted(hook.blocked_by_rule.items())),
-        "halted": book.halted,
+        "halted": base.halted,
+        "halted_books": {b.name: b.halted for b in [base, *others] if b.halted is not None},
     }
 
 
@@ -1353,7 +1357,11 @@ def run_backtest(
                 "funding_applied": log.funding_applied,
                 "rejections": base.summary()["rejections_by_reason"],
                 # only under a live policy (allow_all metrics stay byte-identical)
-                **({"risk_policy": _risk_policy_summary(base)} if cfg.risk is not None else {}),
+                **(
+                    {"risk_policy": _risk_policy_summary(base, [*books[1:], *control_books])}
+                    if cfg.risk is not None
+                    else {}
+                ),
                 "open_positions_at_end": base.summary()["open_positions"],
                 "sim_fingerprint": result.fingerprint,
                 "ledger_hash": result.ledger_hashes[BASELINE],

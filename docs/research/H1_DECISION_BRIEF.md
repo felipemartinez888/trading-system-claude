@@ -74,15 +74,30 @@ the preregistration value and the ADR amendment remain the owner's acts.
   - risk per trade, max positions, one position per symbol, correlation clusters;
   - gross exposure, daily loss, drawdown, signal validity;
   - and the same drawdown kill switch.
-- The four rules that judge the live environment (market view, stream freshness, clock skew,
-  spread) have no historical input. They are replaced by the run's integrity grading, and every
-  manifest records the substitution (`research/risk_policy.py`).
+- `data_freshness` also applies. Its three bar checks are computed from the 1m bars exactly as
+  the paper tracker computes them: no closed bar, a last bar older than 120 s, any missing minute
+  in the last 240 minutes. Stream health has no historical input and passes.
+- Three rules judge only the live environment: market view, clock skew and spread. They have no
+  historical input; every manifest records the substitution (`research/risk_policy.py`). The one
+  that matters is spread: backtests use modelled slippage only.
+- A book halted by the kill switch stays halted for the rest of that run, as a paper book stays
+  halted until a new session. Every halted book (base, cost stress, random control) is reported.
+  The random-control book is filtered by the same portfolio rules, so control and strategy are
+  compared under the same policy.
+- Sizing: the backtest's `risk_per_trade` must not exceed the policy's `max_risk_per_trade`
+  (refused at load). Paper sizes at exactly that maximum; both are 0.005 today.
 - The risk config enters the backtest config hash by content, and a frozen preregistration pins
   that hash, so a later change to the floor cannot be mixed into a frozen experiment.
-- Tests: on 400 random checks the backtest verdict equals the paper engine's verdict. Views never
-  use a bar closing after the cutoff. Configuration fails closed. End to end, a 1 R strategy books
-  0 trades under the live policy, and a 2 R strategy keeps only the trades the floor accepts
-  (`tests/unit/backtest/test_backtest_risk_policy.py`).
+- Tests (`tests/unit/backtest/test_backtest_risk_policy.py`, 20):
+  - on 400 random checks the backtest verdict equals the paper engine's;
+  - the view's bar fields equal the paper tracker's on the same bars, gaps included;
+  - stale bars and lookback gaps block, as in Paper;
+  - views never use a bar closing after the cutoff, and the submit check sees the decision bar;
+  - every book gets the kill switch and the base cost model;
+  - configuration fails closed;
+  - end to end, a 1 R strategy books 0 trades and a 2 R strategy keeps only the trades the floor
+    accepts.
+  The independent review's three surviving mutants are now killed.
 - With `risk_compatibility: live-floor-kept-geometries-dropped`:
   - `prereg validate` refuses any configuration the floor would reject;
   - `freeze` refuses unless the pinned backtest config applies `risk_policy: live`, and checks the
@@ -100,7 +115,10 @@ admits only stops ≥ 1.30 % of price. At that smallest stop the paper engine co
 | **3.0** | **2.35** | COMPATIBLE |
 
 Net RR rises with the stop distance, so COMPATIBLE at the smallest stop means every confirmable
-trade passes, at modelled slippage. The live engine also uses half the live spread when that is
+trade passes, at modelled slippage and at zero decision latency. The fill-stage check re-prices
+from the close just before the executing bar. With `decision_latency_ms` above 0 (H1-11 plans to
+set it), that close can differ from the decision close, and a trade near the 2 R margin can then
+be refused at fill. The live engine also uses half the live spread when that is
 larger; wide spreads can still reject a trade, and the ×1.5 and ×2 cost-stress runs carry that risk.
 At 2 R the margin is thin: 1.52 against 1.5.
 
