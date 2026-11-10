@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v1/orders.schema.json",
+  "title": "tsc-eval v1 orders.jsonl: order lifecycle and request-level rejections per book",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "sim_order_submitted",
+            "sim_order_cancelled",
+            "sim_order_expired",
+            "sim_order_rejected",
+            "sim_request_rejected",
+            "sim_exit_requested"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_order_submitted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_order_submitted"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_order_cancelled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_order_cancelled"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_order_expired"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_order_expired"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_order_rejected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_order_rejected"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_request_rejected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_request_rejected"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_exit_requested"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_exit_requested"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sim_order_submitted": {
+      "type": "object",
+      "required": [
+        "book",
+        "order_id",
+        "sim_seq"
+      ],
+      "properties": {}
+    },
+    "sim_order_cancelled": {
+      "type": "object",
+      "required": [
+        "book",
+        "order_id",
+        "reason",
+        "sim_seq"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "sim_order_expired": {
+      "type": "object",
+      "required": [
+        "book",
+        "order_id",
+        "reason",
+        "sim_seq"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "sim_order_rejected": {
+      "type": "object",
+      "required": [
+        "book",
+        "order_id",
+        "reason",
+        "sim_seq"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "sim_request_rejected": {
+      "type": "object",
+      "required": [
+        "book",
+        "request_id",
+        "reason",
+        "sim_seq"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "sim_exit_requested": {
+      "type": "object",
+      "required": [
+        "book",
+        "sim_seq"
+      ],
+      "properties": {}
+    }
+  }
+}

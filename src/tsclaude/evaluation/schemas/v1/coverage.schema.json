@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v1/coverage.schema.json",
+  "title": "tsc-eval v1 coverage.jsonl: app sessions, monitoring (observed) intervals, crash detection, data gaps and their recovery, stream and clock state. Only what the store recorded; nothing is inferred.",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "session_started",
+            "session_stopped",
+            "session_crash_detected",
+            "monitoring_started",
+            "monitoring_stopped",
+            "gap_detected",
+            "gap_resolved",
+            "backfill_completed",
+            "bar_late",
+            "bar_conflict",
+            "stream_state_changed",
+            "clock_skew_changed",
+            "chain_verified"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SYSTEM"
+          ]
+        },
+        "paper_session_id": {
+          "type": "null"
+        },
+        "batch_seq": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "session_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/session_started"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "session_stopped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/session_stopped"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "session_crash_detected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/session_crash_detected"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "monitoring_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/monitoring_started"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "monitoring_stopped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/monitoring_stopped"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "gap_detected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/gap_detected"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "gap_resolved"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/gap_resolved"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "backfill_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/backfill_completed"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "bar_late"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/bar_late"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "bar_conflict"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/bar_conflict"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "stream_state_changed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/stream_state_changed"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "clock_skew_changed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/clock_skew_changed"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "chain_verified"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/chain_verified"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "session_started": {
+      "type": "object"
+    },
+    "session_stopped": {
+      "type": "object"
+    },
+    "session_crash_detected": {
+      "type": "object"
+    },
+    "monitoring_started": {
+      "type": "object"
+    },
+    "monitoring_stopped": {
+      "type": "object"
+    },
+    "gap_detected": {
+      "type": "object"
+    },
+    "gap_resolved": {
+      "type": "object"
+    },
+    "backfill_completed": {
+      "type": "object"
+    },
+    "bar_late": {
+      "type": "object"
+    },
+    "bar_conflict": {
+      "type": "object"
+    },
+    "stream_state_changed": {
+      "type": "object"
+    },
+    "clock_skew_changed": {
+      "type": "object"
+    },
+    "chain_verified": {
+      "type": "object"
+    }
+  }
+}

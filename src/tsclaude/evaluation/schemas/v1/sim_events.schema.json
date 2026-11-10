@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v1/sim_events.schema.json",
+  "title": "tsc-eval v1 sim_events.jsonl: simulator run, gap, halt, reset, funding and observation events",
+  "allOf": [
+    {
+      "$ref": "envelope.schema.json"
+    },
+    {
+      "properties": {
+        "record_type": {
+          "enum": [
+            "sim_run_started",
+            "sim_run_completed",
+            "sim_bar_gap",
+            "sim_source_error",
+            "sim_funding_applied",
+            "sim_book_halted",
+            "sim_book_reset",
+            "sim_observation_changed"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "SIMULATED"
+          ]
+        },
+        "paper_session_id": {
+          "type": "string"
+        },
+        "batch_seq": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_run_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_run_started"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_run_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_run_completed"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_bar_gap"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_bar_gap"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_source_error"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_source_error"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_funding_applied"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_funding_applied"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_book_halted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_book_halted"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_book_reset"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_book_reset"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "sim_observation_changed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "event": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/sim_observation_changed"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sim_run_started": {
+      "type": "object",
+      "required": [
+        "engine_version",
+        "books",
+        "sim_seq"
+      ],
+      "properties": {
+        "books": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "book",
+              "starting_equity"
+            ],
+            "properties": {
+              "book": {
+                "type": "string",
+                "minLength": 1
+              },
+              "starting_equity": {
+                "$ref": "envelope.schema.json#/$defs/decimal"
+              }
+            }
+          }
+        }
+      }
+    },
+    "sim_run_completed": {
+      "type": "object",
+      "required": [
+        "sim_seq"
+      ],
+      "properties": {}
+    },
+    "sim_bar_gap": {
+      "type": "object",
+      "required": [
+        "market",
+        "symbol",
+        "after_open_ms",
+        "next_open_ms",
+        "missing_bars",
+        "sim_seq"
+      ],
+      "properties": {}
+    },
+    "sim_source_error": {
+      "type": "object",
+      "required": [
+        "sim_seq"
+      ],
+      "properties": {}
+    },
+    "sim_funding_applied": {
+      "type": "object",
+      "required": [
+        "book",
+        "market",
+        "symbol",
+        "amount",
+        "sim_seq"
+      ],
+      "properties": {
+        "amount": {
+          "$ref": "envelope.schema.json#/$defs/decimal"
+        }
+      }
+    },
+    "sim_book_halted": {
+      "type": "object",
+      "required": [
+        "book",
+        "reason",
+        "sim_seq"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "sim_book_reset": {
+      "type": "object",
+      "required": [
+        "book",
+        "sim_seq"
+      ],
+      "properties": {}
+    },
+    "sim_observation_changed": {
+      "type": "object",
+      "required": [
+        "observed",
+        "reason",
+        "sim_seq"
+      ],
+      "properties": {
+        "observed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

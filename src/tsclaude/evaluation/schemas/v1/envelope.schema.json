@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tsclaude.invalid/eval/v1/envelope.schema.json",
+  "title": "tsc-eval v1 line envelope",
+  "description": "One JSON Lines record of the evaluation export: the verbatim source event of the hash-chained event store (ADR-0011) with its provenance label (ADR-0010) and integrity fields. Lines are canonical JSON (sorted keys, no whitespace). line_hash = sha256(canonical_json(line without line_hash)); prev_line_hash links the lines of one file (first line: 64 zeros). event.hash = sha256(event.prev_hash + '\\n' + canonical_json({seq, ts_ms, type, aggregate_type, aggregate_id, payload, schema_version})). Decimal amounts are plain decimal strings; bar prices are JSON numbers read through their decimal text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "format_version",
+    "record_type",
+    "line_no",
+    "prev_line_hash",
+    "line_hash",
+    "provenance",
+    "paper_session_id",
+    "batch_seq",
+    "event",
+    "chain_head"
+  ],
+  "properties": {
+    "format": {
+      "const": "tsc-eval"
+    },
+    "format_version": {
+      "const": 1
+    },
+    "record_type": {
+      "type": "string",
+      "pattern": "^[a-z_]+$"
+    },
+    "line_no": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "prev_line_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "line_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "provenance": {
+      "enum": [
+        "LIVE",
+        "SYSTEM",
+        "PARTIAL",
+        "RECOVERED",
+        "HISTORICAL",
+        "REPLAY",
+        "BACKTEST",
+        "SIMULATED",
+        "ESTIMATED",
+        "DEMO",
+        "STALE",
+        "UNAVAILABLE"
+      ]
+    },
+    "paper_session_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "paper session (journal) the event belongs to; null outside paper batches"
+    },
+    "batch_seq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "seq of the paper_step that opens the event's batch (the step itself included); null outside batches"
+    },
+    "event": {
+      "$ref": "#/$defs/event"
+    },
+    "chain_head": {
+      "$ref": "#/$defs/chain_head"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "chain_head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "hash"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "ts_ms",
+        "type",
+        "aggregate_type",
+        "aggregate_id",
+        "payload",
+        "schema_version",
+        "prev_hash",
+        "hash"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts_ms": {
+          "type": "integer"
+        },
+        "type": {
+          "type": "string"
+        },
+        "aggregate_type": {
+          "type": "string"
+        },
+        "aggregate_id": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "schema_version": {
+          "type": "integer"
+        },
+        "prev_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}
