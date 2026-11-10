@@ -186,7 +186,11 @@ reach the 300-trade floor.
 
 ## 5. Sequence to the first valid H1 walk-forward
 
-Owner steps are marked **(owner)**; everything else is prepared on the branch.
+Owner steps are marked **(owner)**; everything else is prepared on the branch. The whole path from
+step 4 to step 6 is rehearsed end to end on synthetic data with the REFERENCE strategy, never as
+evidence (`test_rehearsal_of_the_first_experiment_pipeline_on_synthetic_data`). The rehearsal
+covers a frozen keep-the-floor preregistration, a refusal under allow_all, a conforming
+live-policy run, and a report naming the policy and its per-phase blocks.
 
 1. **(owner)** Dashboard smoke check and H1-1 feasibility count, 15m against 1h (§6). The count is
    P&L-free, records no trial and is independent of tp_r: no entry stage uses the take-profit.
