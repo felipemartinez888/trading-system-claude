@@ -150,6 +150,17 @@ class Strategy[P](ABC):
     def on_bar(self, window: BarArrays, costs: PlanningCosts) -> Sequence[Proposal]:
         """Proposals at the last bar of `window` (none while it is shorter than the warm-up)."""
 
+    def diagnose(self, window: BarArrays, costs: PlanningCosts) -> Mapping[str, bool] | None:
+        """Optional P&L-free diagnostic: the entry-filter stages at the last bar of `window`.
+
+        Returns an **ordered** mapping ``stage name -> passed`` in the order the entry rule applies
+        its conditions, computed from `window` alone (the same trailing window `on_bar` receives,
+        so nothing after the decision bar exists). All stages pass exactly when `on_bar` would
+        return a CONFIRMED entry. Used only for feasibility counts (`research.feasibility`); it
+        evaluates no outcome. None (the default): the strategy declares no stages.
+        """
+        return None
+
     @abstractmethod
     def exit_geometry(self, window: BarArrays, side: Side, costs: PlanningCosts) -> Proposal | None:
         """A CONFIRMED market entry at the last bar with this strategy's exits (random control)."""

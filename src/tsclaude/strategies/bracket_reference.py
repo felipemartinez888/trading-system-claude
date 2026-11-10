@@ -25,12 +25,15 @@ Rules on each closed strategy bar ``i`` (long only, spot or USD-M):
   this difference.
 
 Realized volatility is reported as a market condition only; it does not gate.
+
+`diagnose` reports the CONFIRMED rule stage by stage (`DIAGNOSE_STAGES`) for P&L-free
+feasibility counts; it and `on_bar` share `_signal` / `_geometry`, so they cannot drift.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from tsclaude.contracts.market import Interval
@@ -75,6 +78,38 @@ class BracketReferenceParams:
             raise ValueError("time_exit_bars must be >= 1")
 
 
+#: `BracketReference.diagnose` stages, in the order the LONG CONFIRMED rule applies them.
+DIAGNOSE_STAGES: tuple[str, ...] = (
+    "warmup_ready",  # the window holds `warmup_bars` strategy bars
+    "features_defined",  # every gating feature is defined (volume z may be undefined)
+    "compressed",  # atr_rank(atr_n, rank_m)[i-1] <= rank_max
+    "trend",  # close_i > ema(ema_span)_i
+    "breakout",  # close_i > range_high(range_n)[i-1]
+    "volume_ok",  # volume_z(vol_n)_i defined and >= vol_z_min
+    "stop_valid",  # stop = close_i - stop_atr x ATR_i is finite and > 0, ATR_i > 0
+    "cost_ok",  # planned round-trip cost in R <= max_cost_r
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Geometry:
+    stop: float
+    cost_r: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Signal:
+    features: dict[str, float]
+    compressed: bool
+    trend: bool
+    breakout: bool
+    volume_ok: bool
+
+    @property
+    def confirmed_conditions(self) -> bool:
+        return self.compressed and self.trend and self.breakout and self.volume_ok
+
+
 class BracketReference(Strategy[BracketReferenceParams]):
     strategy_id = "bracket_reference"
     version = "1.0.0"
@@ -111,15 +146,25 @@ class BracketReference(Strategy[BracketReferenceParams]):
             "realized_vol": float(realized_vol(w, p.rv_n)[-1]),
         }
 
+    def _geometry(self, close: float, atr_value: float, costs: PlanningCosts) -> _Geometry | None:
+        """Stop and planned cost in R from the decision-bar close; None if the stop is invalid."""
+        stop = close - self.params.stop_atr * atr_value
+        if not math.isfinite(stop) or stop <= 0 or atr_value <= 0:
+            return None
+        return _Geometry(stop, costs.cost_r(close, stop))
+
+    def _cost_ok(self, cost_r: float) -> bool:
+        return not cost_r > self.params.max_cost_r
+
     def _bracket(
         self, close: float, atr_value: float, costs: PlanningCosts, stage: SignalStatus
     ) -> Proposal | None:
         p = self.params
-        stop = close - p.stop_atr * atr_value
-        if not math.isfinite(stop) or stop <= 0 or atr_value <= 0:
+        geo = self._geometry(close, atr_value, costs)
+        if geo is None:
             return None
-        cost_r = costs.cost_r(close, stop)
-        if stage is SignalStatus.CONFIRMED and cost_r > p.max_cost_r:
+        stop, cost_r = geo.stop, geo.cost_r
+        if stage is SignalStatus.CONFIRMED and not self._cost_ok(cost_r):
             return None
         return Proposal(
             stage=stage,
@@ -137,34 +182,67 @@ class BracketReference(Strategy[BracketReferenceParams]):
             planned_cost_r=cost_r,
         )
 
-    def on_bar(self, window: BarArrays, costs: PlanningCosts) -> Sequence[Proposal]:
+    def _signal(self, window: BarArrays) -> _Signal | None:
+        """Features and entry conditions at the last bar; None before the warm-up or while a
+        gating feature is undefined. Shared by `on_bar` and `diagnose` so they cannot drift."""
         p = self.params
         if len(window) < self.warmup_bars:
-            return ()
+            return None
         f = self._features(window)
         if any(math.isnan(v) for k, v in f.items() if k != "volume_z"):
+            return None
+        return _Signal(
+            features=f,
+            compressed=f["atr_rank_prev"] <= p.rank_max,
+            trend=f["close"] > f["ema"],
+            breakout=f["close"] > f["range_high_prev"],
+            volume_ok=not math.isnan(f["volume_z"]) and f["volume_z"] >= p.vol_z_min,
+        )
+
+    def on_bar(self, window: BarArrays, costs: PlanningCosts) -> Sequence[Proposal]:
+        p = self.params
+        sig = self._signal(window)
+        if sig is None:
             return ()
-        compressed = f["atr_rank_prev"] <= p.rank_max
-        trend = f["close"] > f["ema"]
-        broke = f["close"] > f["range_high_prev"]
-        volume_ok = not math.isnan(f["volume_z"]) and f["volume_z"] >= p.vol_z_min
+        f = sig.features
         conditions: dict[str, float | bool] = {
             **{k: v for k, v in f.items() if not math.isnan(v)},
-            "compressed": compressed,
-            "trend": trend,
-            "breakout": broke,
-            "volume_ok": volume_ok,
+            "compressed": sig.compressed,
+            "trend": sig.trend,
+            "breakout": sig.breakout,
+            "volume_ok": sig.volume_ok,
         }
-        if compressed and trend and broke and volume_ok:
+        if sig.confirmed_conditions:
             prop = self._bracket(f["close"], f["atr"], costs, SignalStatus.CONFIRMED)
             if prop is not None:
                 return (_with(prop, conditions),)
             return ()
         near = 0.0 <= f["range_high_prev"] - f["close"] <= p.watch_atr * f["atr"]
-        if compressed and trend and near:
+        if sig.compressed and sig.trend and near:
             prop = self._bracket(f["close"], f["atr"], costs, SignalStatus.WATCH)
             return () if prop is None else (_with(prop, conditions),)
         return ()
+
+    def diagnose(self, window: BarArrays, costs: PlanningCosts) -> Mapping[str, bool] | None:
+        """LONG entry stages in the order `on_bar` applies them (`DIAGNOSE_STAGES`).
+
+        All stages pass  <=>  `on_bar` returns a CONFIRMED proposal. WATCH proposals are not an
+        entry and are not counted. A stage that cannot be evaluated (warm-up not ready, an
+        undefined feature, an invalid stop) and every stage after it is False."""
+        out = dict.fromkeys(DIAGNOSE_STAGES, False)
+        out["warmup_ready"] = len(window) >= self.warmup_bars
+        sig = self._signal(window)
+        if sig is None:
+            return out
+        out["features_defined"] = True
+        out["compressed"] = sig.compressed
+        out["trend"] = sig.trend
+        out["breakout"] = sig.breakout
+        out["volume_ok"] = sig.volume_ok
+        geo = self._geometry(sig.features["close"], sig.features["atr"], costs)
+        out["stop_valid"] = geo is not None
+        out["cost_ok"] = geo is not None and self._cost_ok(geo.cost_r)
+        return out
 
     def exit_geometry(self, window: BarArrays, side: Side, costs: PlanningCosts) -> Proposal | None:
         if side is not Side.LONG or len(window) < self.warmup_bars:
