@@ -86,8 +86,12 @@ def test_a_session_recorded_with_another_configuration_gets_a_recovery_hint() ->
     hint = paper_hint({"state": "UNAVAILABLE", "reason": reason})
     assert hint is not None
     assert "TSC_CONFIG_DIR" in hint
-    assert "new data folder" in hint
-    assert "verify-replay" in hint
+    # the in-app recovery documented in MVP_USER_GUIDE §3 (works in the same data folder)
+    assert "Record new paper session" in hint
+    assert "press Stop" in hint
+    # a command the owner can paste as written (every doc runs the CLI through uv)
+    assert "uv run tsclaude verify-replay" in hint
+    assert "--evidence" in hint
     assert "nothing was opened, changed or traded" in hint
     # other UNAVAILABLE reasons do not get it
     other = paper_hint({"state": "UNAVAILABLE", "reason": "paper session could not be opened: x"})

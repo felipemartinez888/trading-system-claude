@@ -98,11 +98,13 @@ def paper_hint(snapshot: Mapping[str, Any]) -> str | None:
         # sim.paper.ConfigurationMismatch (operational-readiness review R-04); fail closed
         return (
             "This data folder holds a paper session recorded with other settings (the fields "
-            "are named in the reason; nothing was opened, changed or traded). Either start again "
-            "with the configuration folder the session was recorded with (TSC_CONFIG_DIR), or "
-            "record a new paper session in a new data folder (TSC_DATA_DIR). The old session "
-            "stays verifiable: tsclaude verify-replay --data-dir <its data> --config-dir <its "
-            "configs>."
+            "are named in the reason; nothing was opened, changed or traded). To continue that "
+            "session, start again with the configuration folder it was recorded with "
+            "(TSC_CONFIG_DIR). To use the current settings instead, press Stop, then on the "
+            "Paper page use Operator action > Record new paper session: it opens at the next "
+            "Start, and the old session's record is kept unchanged. The old session stays "
+            "verifiable: uv run tsclaude verify-replay --data-dir <its data> --config-dir <its "
+            "configs> --evidence <its session_end file>."
         )
     if state == "AWAITING_BACKFILL":
         return (

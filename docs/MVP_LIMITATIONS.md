@@ -24,7 +24,7 @@
 
 ## Paper runtime and recovery
 - **Paper's decision latency changed from 0 to 3,000 ms** (`configs/backtest.yaml`, `1cc2693`, 2026-11-10).
-  - The three real sessions were recorded at 0 (paper config digest `7a68bcfc…`).
+  - The three real sessions were recorded at 0 (paper config digest `7a68bcfc…`, as read from their session-end files).
   - No real session has been recorded under the current configuration (`676d69b6…`) yet.
   - A session recorded with the older default configs does not restore after an update. It is refused, and the reason names the changed field.
   - Details: [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md), "Configuration change".

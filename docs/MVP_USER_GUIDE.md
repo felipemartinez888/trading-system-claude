@@ -68,9 +68,9 @@ Paper trading is **off by default**. To try it with the reference strategy in a 
 folder, follow "Stage C" in [RUNBOOK_INGESTION](RUNBOOK_INGESTION.md).
 
 ## 4. One-command evidence run (unattended, about 1 h 30 min)
-Run the **tracked** script from the checkout you are testing (NORMAL PowerShell). It always
-works on that checkout, the folder two levels above the script, and refuses to run from a copy
-outside a checkout. Older copies (for example `C:\Users\felip\tsc_runs\mvp_evidence.ps1`)
+Run the **tracked** script from the checkout you are testing (NORMAL PowerShell). Unless you
+pass `-Repo`, it works on that checkout, the folder two levels above the script, and refuses to
+run from a copy outside a checkout. Older copies (for example `C:\Users\felip\tsc_runs\mvp_evidence.ps1`)
 defaulted to the older `tsc-ingestion-bounded` checkout: do not use them.
 ```powershell
 cd C:\Users\felip\Projects\trading-system-claude          # or the worktree of the commit under test

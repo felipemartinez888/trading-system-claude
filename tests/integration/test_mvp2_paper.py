@@ -325,13 +325,27 @@ def test_p3_restore_with_a_different_configuration_is_unavailable(tmp_path: Path
         assert "ConfigurationMismatch" in reason
         assert "recorded with a different paper configuration" in reason
         assert "starting_equity: 10000 -> 5000" in reason
-        # ... and the published status carries the recovery hint
+        # ... and the published snapshot (what api/paper.py turns into the hint) gets it
         from tsclaude.runtime.operator_hints import paper_hint
 
-        hint = paper_hint({"state": str(rig.runtime.state), "reason": reason})
+        published, _ = rig.runtime.published()
+        assert published["state"] == "UNAVAILABLE"
+        hint = paper_hint(published)
         assert hint is not None
         assert "TSC_CONFIG_DIR" in hint
+        assert "Record new paper session" in hint
         assert len(rig.journal()) == 2  # the old journal is untouched
+        # the recovery the hint gives: Stop, record a new session, Start (same data folder)
+        await rig.supervisor.stop()
+        record = rig.runtime.request_new_session("settings changed, start clean", "req-0007")
+        assert record["created"] is True
+        await rig.supervisor.start("S3")
+        assert rig.runtime.session_id == record["new_session_id"]
+        assert rig.runtime.state is PaperState.RUNNING
+        await rig.minute(1)
+        assert len(rig.journal(record["new_session_id"])) >= 1
+        assert len(rig.journal()) == 2  # the old session stays as recorded
+        assert rig.store.verify().ok
         await rig.supervisor.close()
 
     run(scenario())

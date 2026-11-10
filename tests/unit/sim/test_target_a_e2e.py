@@ -398,8 +398,9 @@ def test_shadow_outcomes_are_hypothetical_and_the_baseline_never_traded(ref: Run
         s = by_signal[str(t.signal_id)]
         decision = s.record["decision_time_ms"]
         # the poll releases the minute 1.5 s after its close, i.e. after the next open at
-        # decision + 1 ms; execution is bounded by the release, so the fill is the open after
-        # (conservative). The unbounded case is tested separately with a release at the close.
+        # decision + 1 ms, and the production latency (3,000 ms) also passes that open: both
+        # bound execution, so the fill is the open after (conservative). The latency-only bound
+        # is tested separately with a release at the close.
         assert t.entry_bar_open_ms == decision + 1 + MS_PER_MINUTE
         assert_market_entry_at_the_open(t, ref.cfg.cost_model)
         assert s.shadow_outcome is not None

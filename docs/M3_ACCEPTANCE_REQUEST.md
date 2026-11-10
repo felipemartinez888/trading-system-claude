@@ -15,7 +15,7 @@ in risk rule, crash mid-fill) all block or recover correctly."*
 | Stale stream blocks | `tests/unit/sim/test_paper_session.py:240`; in the real app a clock 3.4 s and 6.9 s off blocked all observation (fail closed) |
 | Exception in a risk rule blocks | `tests/unit/sim/test_paper_session.py:223`; `tests/unit/risk/test_risk_rules.py:187,197` |
 | Crash mid-fill blocks or recovers | `tests/unit/sim/test_paper_restart.py:168`; a real PC restart mid-session recovered with replay PASS (not timed mid-fill) |
-| The tests run green | Audit re-run: 20 gate tests passed. CI 7/7 green on many commits since, latest listed in [MVP_VALIDATION_REPORT](MVP_VALIDATION_REPORT.md) |
+| The tests run green | Before task T1 (Target A at latency 0): audit re-run, 20 gate tests passed; CI 7/7 green on many commits, latest listed in [MVP_VALIDATION_REPORT](MVP_VALIDATION_REPORT.md), last at `0955749` (run `42859002211`). After T1–T4: see the CI run recorded for them in [MVP_TASK_QUEUE](MVP_TASK_QUEUE.md) (rows OR-1 to OR-4); the owner's gate subset (§6 step 2 of the readiness review) gives 124 tests there, 120 at `0955749` |
 | Strategy to fill (Target A, deterministic) | 13 Target A tests, since task T1 run with the production paper latency (3,000 ms, read through `build_paper_config`), plus a latency-0 case of the next-open rule and a test that fails if Target A and the production latency drift apart (`tests/unit/sim/test_target_a_e2e.py`) |
 
 ## Configuration change after the recorded sessions (2026-11-10)
@@ -28,6 +28,10 @@ in risk rule, crash mid-fill) all block or recover correctly."*
   `bracket_reference`:
   - configs as at `65c0e2f`, latency 0: `7a68bcfc…`;
   - current configs, 3,000 ms: `676d69b6…`.
+- **Read from the sessions themselves (2026-11-10):** the `config_digest` field of each session's
+  `data\session_end\*.json` is `7a68bcfcfd52ac5a…` in all three (`paper-bracket-20261106-104529`,
+  360 batches; `paper-20261109-2201`, 150; `recovery-20261109-2227`, 3,498; each state RUNNING),
+  staged read-only from the owner PC. So the recomputed digest and the recorded one agree.
 - **Evidence recorded before the change (the three sessions above).**
   - It is replay evidence for the latency-0 configuration.
   - It passes `verify-replay` with each session's own config folder (last run at `65c0e2f` and
@@ -43,8 +47,10 @@ in risk rule, crash mid-fill) all block or recover correctly."*
   tests (the timing function, Target A at 3,000 ms), not yet by a real session.
 - **Sessions recorded with the older default configs** do not restore after an update. They are
   refused (fail closed), and since task T3 the reason names the changed field
-  (`decision_latency_ms: 0 -> 3000`) and the hint gives the recovery. Either start with the
-  session's own config folder, or record a new session in a new data folder.
+  (`decision_latency_ms: 0 -> 3000`) and the hint gives the recovery: either start with the
+  session's own config folder, or press Stop and use **Operator action → Record new paper session**
+  (the old session's record is kept). The old session stays checkable with `verify-replay` and its
+  own config folder (with `--evidence` once a newer session has stopped in the same folder).
 
 ## Residual limitations (stated, not hidden)
 1. **No strategy book traded in a real session (U1).** Only the benchmark book traded. The reference strategy

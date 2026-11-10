@@ -206,25 +206,50 @@ class ConfigurationMismatch(RestoreError):
         )
 
 
+_ABSENT = "<absent>"
+_SHOWN_CHARS = 60
+
+
 def _flat(obj: Any, prefix: str = "") -> dict[str, Any]:
     if isinstance(obj, Mapping):
         out: dict[str, Any] = {}
         for key in sorted(obj):
             out.update(_flat(obj[key], f"{prefix}{key}."))
         return out
+    if (
+        isinstance(obj, list)
+        and obj
+        and all(isinstance(e, Mapping) and "market" in e and "symbol" in e for e in obj)
+    ):  # instruments: keyed by market:symbol, so one added or dropped names itself
+        keys = [f"{e['market']}:{e['symbol']}" for e in obj]
+        if len(set(keys)) == len(keys):
+            keyed: dict[str, Any] = {}
+            for key, e in zip(keys, obj, strict=True):
+                keyed.update(_flat(e, f"{prefix}{key}."))
+            return keyed
     return {prefix.rstrip("."): obj}
+
+
+def _show(value: Any) -> str:
+    text = value if isinstance(value, str) else canonical_json(value)
+    return text if len(text) <= _SHOWN_CHARS else text[: _SHOWN_CHARS - 3] + "..."
 
 
 def configuration_differences(recorded: Any, current: Any) -> list[str]:
     """``key: recorded -> current`` for every differing leaf of two `describe()` payloads, in
-    their journaled (JSON) form."""
+    their journaled (canonical JSON) form; instruments are keyed by ``market:symbol`` and long
+    values are shortened. Empty exactly when the canonical forms are equal: a difference of order
+    or JSON type only is still reported."""
+    if canonical_json(recorded) == canonical_json(current):
+        return []
     a = _flat(json.loads(canonical_json(recorded)))
     b = _flat(json.loads(canonical_json(current)))
     out = []
     for key in sorted(set(a) | set(b)):
-        if a.get(key, "<absent>") != b.get(key, "<absent>"):
-            out.append(f"{key}: {a.get(key, '<absent>')} -> {b.get(key, '<absent>')}")
-    return out
+        va, vb = a.get(key, _ABSENT), b.get(key, _ABSENT)
+        if canonical_json(va) != canonical_json(vb):
+            out.append(f"{key}: {_show(va)} -> {_show(vb)}")
+    return out or ["the recorded configuration differs in order or JSON type only"]
 
 
 # ---------------------------------------------------------------- the source adapter

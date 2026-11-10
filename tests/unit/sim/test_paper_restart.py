@@ -136,9 +136,43 @@ def test_restore_with_another_configuration_names_the_change_and_fails_closed() 
     assert PaperTradingService.restore(config(), journal).ledger_hashes() == svc.ledger_hashes()
 
 
+def test_a_dropped_instrument_is_named_and_the_reason_stays_short() -> None:
+    """Review of T3: instruments are compared by ``market:symbol``, so one dropped instrument
+    names itself instead of printing both instrument lists (1,321 characters before)."""
+    from tsclaude.contracts.market import Market
+    from tsclaude.sim.paper import ConfigurationMismatch
+
+    _, journal = _reference()
+    btc_only = tuple(s for s in config().instruments if s.symbol == "BTCUSDT")
+    with pytest.raises(ConfigurationMismatch) as info:
+        replay(config(instruments=btc_only), journal.batches())
+    assert info.value.differences
+    assert all(d.startswith(f"instruments.{Market.SPOT.value}:ETHUSDT.") for d in
+               info.value.differences)  # fmt: skip
+    assert all(d.endswith("-> <absent>") for d in info.value.differences)
+    assert len(str(info.value)) < 400
+
+
+def test_configuration_differences_reports_every_canonical_difference() -> None:
+    """Empty exactly when the journaled (canonical JSON) forms are equal; long values shortened."""
+    from tsclaude.sim.paper import configuration_differences
+
+    desc = config().describe()
+    assert configuration_differences(desc, config().describe()) == []
+    swapped = {**desc, "instruments": list(reversed(desc["instruments"]))}
+    assert configuration_differences(desc, swapped) == [
+        "the recorded configuration differs in order or JSON type only"
+    ]
+    assert configuration_differences({"x": 1}, {"x": True}) == ["x: 1 -> true"]
+    long = configuration_differences({"books": ["baseline"] * 20}, {"books": []})
+    assert long == [f"books: {('[' + ','.join(['"baseline"'] * 20))[:57]}... -> []"]
+
+
 def test_a_journal_without_a_recorded_configuration_keeps_the_batch_comparison() -> None:
     """A first batch without the ``session`` key (none is written that way today) skips the new
-    check; the replay still refuses any divergence batch by batch, as before."""
+    check. Such a batch 0 never matches the recomputed one, which records the configuration, so
+    the journal is refused at batch 0 under any configuration: a plain RestoreError, fail closed
+    (this pins the refusal and its type, not a configuration comparison)."""
     from tsclaude.sim.journal import JournalEntry
     from tsclaude.sim.paper import ConfigurationMismatch, RestoreError
 
@@ -148,9 +182,10 @@ def test_a_journal_without_a_recorded_configuration_keeps_the_batch_comparison()
     payload = {k: v for k, v in head.payload.items() if k != "session"}
     stripped = [[JournalEntry(head.type, head.aggregate_type, head.aggregate_id, head.ts_ms,
                               payload), *batches[0][1:]], *batches[1:]]  # fmt: skip
-    with pytest.raises(RestoreError, match="diverged from the journal") as info:
-        replay(config(decision_latency_ms=3_000), stripped)
-    assert not isinstance(info.value, ConfigurationMismatch)
+    for cfg in (config(decision_latency_ms=3_000), config()):
+        with pytest.raises(RestoreError, match="diverged from the journal") as info:
+            replay(cfg, stripped)
+        assert not isinstance(info.value, ConfigurationMismatch)
 
 
 def test_restore_of_empty_journal_starts_fresh() -> None:
