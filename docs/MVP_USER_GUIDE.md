@@ -108,6 +108,7 @@ run writes `runs\` and permanent trial records into that folder.
   uv run tsclaude backtest feasibility --strategy bracket_reference --grid docs\research\grids\feasibility_h1_probe.json `
     --symbols spot:BTCUSDT,spot:ETHUSDT,spot:SOLUSDT,spot:DOGEUSDT,spot:XRPUSDT --from 2022-03-01 --to 2025-01-01
   ```
+  For the H1 draft itself, use the tested run sheet [research/H1_FEASIBILITY_RUN.md](research/H1_FEASIBILITY_RUN.md).
 - **Mechanics dry run of the walk-forward on real data** (handoff B2): the REFERENCE strategy, BTC only, two configurations. Its result is never evidence; it adds about 21 permanent trial rows to the `bracket_reference` family only. Roughly half an hour on the owner PC (an estimate from one 90 s run); if the PC restarts, run it again and it resumes.
   ```powershell
   uv run tsclaude backtest walkforward --strategy bracket_reference --grid docs\research\grids\bracket_reference_dryrun.json `

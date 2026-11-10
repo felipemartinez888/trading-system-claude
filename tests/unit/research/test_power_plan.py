@@ -216,6 +216,16 @@ def test_the_cli_plans_from_a_feasibility_file(
     assert len(out["folds"]) == 7
     assert main(["backtest", "power-plan", "--feasibility", str(tmp_path / "none.json")]) == 2
     assert json.loads(capsys.readouterr().out)["refused"] == "power_plan"
+    out_file = tmp_path / "plan.json"  # --out writes the same JSON, UTF-8 without a BOM
+    assert main(["backtest", "power-plan", "--feasibility", str(path), "--out", str(out_file)]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert out_file.read_bytes()[:1] == b"{"
+    assert json.loads(out_file.read_text(encoding="utf-8")) == printed
+    unwritable = main(
+        ["backtest", "power-plan", "--feasibility", str(path), "--out", str(tmp_path)]
+    )
+    assert unwritable == 2  # a directory: refused, never a half-written plan
+    assert json.loads(capsys.readouterr().out)["refused"] == "power_plan"
 
 
 def test_walk_forward_exit_mix_and_power_reading() -> None:

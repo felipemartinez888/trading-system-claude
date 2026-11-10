@@ -218,6 +218,9 @@ live-policy run, and a report naming the policy and its per-phase blocks.
 
 ## 6. Commands (NORMAL PowerShell, no Administrator)
 
+> **Superseded for the H1-1 count** by [H1_FEASIBILITY_RUN](H1_FEASIBILITY_RUN.md), which adds dataset
+> verification, the power plans and evidence capture, and is tested against the CLI.
+
 None of these places an order, uses an API key or calls a paid service.
 
 **Smoke check of the branch dashboard.** About 5 minutes. It uses a new empty data folder and port

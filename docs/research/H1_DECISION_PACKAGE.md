@@ -168,58 +168,27 @@ Known limits that do not block the run:
 - Paper has no spread history, so the cost-stress runs carry the spread risk.
 - The lock files are not committed (D-G).
 
-## 8. Owner instructions (Windows, **NORMAL PowerShell**; no Administrator rights needed)
+## 8. Owner instructions
 
-None of these places an order, uses an API key, calls a paid service, records a trial or reads the
-holdout.
+The exact, tested steps are in [H1_FEASIBILITY_RUN](H1_FEASIBILITY_RUN.md): **NORMAL PowerShell**,
+no Administrator rights. `tests/unit/backtest/test_owner_feasibility_run.py` parses every command
+with the real CLI and runs the sequence on a synthetic lake. In order:
+1. update the `tsc-mvp` worktree;
+2. create an evidence folder with the code commit;
+3. run the 15m and 1h count in one command;
+4. verify the dataset identity of every dataset the count read;
+5. run the power plans for both take-profit sets;
+6. write SHA-256 sums and zip the folder.
 
-**1. Update the branch checkout** (the same worktree as before; your real app and data are not
-touched). These steps need the commit that adds `power-plan` to be pushed; the last command shows
-the checked-out commit, which should be the one named in the report:
-```powershell
-cd C:\Users\felip\Projects\trading-system-claude
-git fetch origin task/mvp-integration
-if (Test-Path ..\tsc-mvp) { git -C ..\tsc-mvp checkout --detach origin/task/mvp-integration } else { git worktree add --detach ..\tsc-mvp origin/task/mvp-integration }
-cd ..\tsc-mvp
-git log -1 --oneline
-```
-
-**2. Dashboard smoke check** (optional if already done; about 5 minutes; separate empty data folder,
-port 8799):
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\owner_checks\dashboard_smoke.ps1
-```
-
-**3. H1-1 feasibility count, 15m and 1h.** Development data only and P&L-free; it writes only
-`<data>\feasibility\`:
-```powershell
-$env:TSC_DATA_DIR = 'C:\Users\felip\Projects\trading-system-claude\data'
-uv run tsclaude backtest feasibility --draft --strategy h1_compression_breakout `
-  --grid docs\research\grids\feasibility_h1_draft_probe.json `
-  --symbols spot:BTCUSDT,spot:ETHUSDT,spot:DOGEUSDT,spot:XRPUSDT --from 2022-03-01 --to 2025-01-01
-```
-The printed summary lists one result per configuration. The first (`{}`) is 15m, the second
-(`{"interval": "1h"}`) is 1h. Each has its `path` to a `feasibility.json`.
-
-**4. Power plan from each count, for both take-profit sets.** It reads only the file and records
-nothing. Replace `<15m file>` and `<1h file>` with the paths printed in step 3:
-```powershell
-uv run tsclaude backtest power-plan --feasibility "<15m file>" --anchor 2022-02-01 --tp-r 2,2.5,3
-uv run tsclaude backtest power-plan --feasibility "<15m file>" --anchor 2022-02-01 --tp-r 2.5,3,3.5
-uv run tsclaude backtest power-plan --feasibility "<1h file>" --anchor 2022-02-01 --embargo-minutes 4320 --tp-r 2,2.5,3
-uv run tsclaude backtest power-plan --feasibility "<1h file>" --anchor 2022-02-01 --embargo-minutes 4320 --tp-r 2.5,3,3.5
-Remove-Item Env:\TSC_DATA_DIR
-```
-The 1h lines use the draft's 1h embargo (4,320 minutes; a 1h time exit needs at least 2,940), the
-15m lines its default of 1,440 (at least 735). Send the two `feasibility.json` files (the power
-plans can be re-derived from them).
+None of these steps places an order, uses an API key, calls a paid service, records a trial or
+reads the holdout.
 
 **What to read in the output:**
 - the per-stage counts and `stage_filter`;
 - `busiest_hours_candidate_share` (0.25 would be uniform; much higher means candidates cluster at
   particular hours);
 - the ablation-ladder counts;
-- in the power plan, `oos_candidates` (with `oos_candidates_basis`) and `min_detectable_margin` against the 300-trade
-  floor.
+- in the power plans, `oos_candidates` (with `oos_candidates_basis`) and `min_detectable_margin`
+  against the 300-trade floor.
 
-The interval is chosen from the counts only. No step above uses an outcome.
+The interval is chosen from the counts only. No step uses an outcome.

@@ -3,8 +3,9 @@
 Reads one ``feasibility.json`` (no lake, no trial registry, no market data), plans the
 walk-forward folds the preregistration would use, and prints the candidates inside the test
 windows and the smallest win-rate margin each take-profit geometry could certify with 80 % power
-at the trial-corrected level (`research.power_plan`; optimistic, see there). Records nothing.
-Exit codes: 0 ok, 2 refused.
+at the trial-corrected level (`research.power_plan`; optimistic, see there). Records nothing in
+the lake or the trial registry; ``--out`` also writes the plan as UTF-8 JSON (for evidence capture
+on Windows, where a PowerShell redirect would write UTF-16). Exit codes: 0 ok, 2 refused.
 """
 
 from __future__ import annotations
@@ -49,7 +50,14 @@ def cmd_power_plan(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "refused": "power_plan", "error": f"{exc}"}))
         return 2
     result["folds"] = [f.to_dict() for f in folds]
-    print(json.dumps({"ok": True, **result}, indent=2))
+    text = json.dumps({"ok": True, **result}, indent=2)
+    if args.out:
+        try:
+            Path(args.out).write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(json.dumps({"ok": False, "refused": "power_plan", "error": f"{exc}"}))
+            return 2
+    print(text)
     return 0
 
 
@@ -74,4 +82,5 @@ def register_power_plan(bsub: Any) -> None:
         "--prior-family-rows", type=int, default=0,
         help="registry rows already recorded for the strategy family (H1 today: 0)",
     )  # fmt: skip
+    pp.add_argument("--out", default=None, help="also write the plan here (UTF-8 JSON)")
     pp.set_defaults(func=cmd_power_plan)
