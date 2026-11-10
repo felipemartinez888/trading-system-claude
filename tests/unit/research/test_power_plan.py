@@ -270,3 +270,68 @@ def test_walk_forward_diagnostics_never_lose_the_report() -> None:
     huge = wf._power_reading({"p_star": 0.4, "n_trials": 10**400, "n_eff": 452}, BacktestConfig())
     assert huge is not None
     assert huge["error"].startswith("OverflowError")
+
+
+def test_training_ceilings_per_fold_against_n_min() -> None:
+    """Independent H1 feasibility review, finding 4: `select` needs n >= n_min trades in every
+    training window, and the plan did not check it. Anchored windows grow fold by fold."""
+    months = {"2022-03": 100, "2022-06": 150, "2023-01": 60, "2023-04": 40}
+    feas = _feas({"spot:BTCUSDT": 350}, months=months)
+    windows = [(ms(2022, 3), ms(2023, 1)), (ms(2022, 3), ms(2023, 4)), (ms(2022, 3), ms(2023, 7))]
+    out = pp.training_ceilings(feas, windows, n_min=300)
+    got = [(f["candidates_ceiling"], f["counted_share"], f["reaches_n_min"]) for f in out["folds"]]
+    assert got == [(250.0, 1.0, False), (310.0, 1.0, True), (350.0, 1.0, True)]
+    assert (out["folds_reaching_n_min"], out["folds_below_n_min"]) == (2, 1)
+    assert out["selection_possible_in_every_fold"] is False
+    with pytest.raises(ValueError, match="n_min"):
+        pp.training_ceilings(feas, windows, n_min=0)
+
+
+def test_a_window_the_count_does_not_cover_is_decided_only_when_it_must_be() -> None:
+    """The count starts 2022-03-01 while the anchor is 2022-02-01 (review finding 5): February is
+    not counted. Below n_min is stated only if February at the busiest counted month's rate
+    could not close the gap; otherwise the fold is undetermined (None), never a guess."""
+    feas = _feas({"spot:BTCUSDT": 200}, months={"2022-03": 31, "2022-04": 169})
+    low = pp.training_ceilings(feas, [(ms(2022, 2), ms(2022, 4))], n_min=300)["folds"][0]
+    assert low["candidates_ceiling"] == 31.0
+    assert low["counted_share"] == pytest.approx(31 / 59, abs=1e-4)  # March of Feb+March
+    assert low["reaches_n_min"] is False  # 31 + 28 days at April's 169/30 per day < 300
+    near = pp.training_ceilings(feas, [(ms(2022, 2), ms(2022, 5))], n_min=300)["folds"][0]
+    assert near["candidates_ceiling"] == 200.0
+    assert near["reaches_n_min"] is None  # 200 + 28 x 169/30 = 357.7 could reach 300
+    assert (
+        pp.training_ceilings(feas, [(ms(2022, 2), ms(2022, 5))], n_min=300)[
+            "selection_possible_in_every_fold"
+        ]
+        is None
+    )
+    old = _feas({"spot:BTCUSDT": 200})  # a count without month totals
+    assert (
+        pp.training_ceilings(old, [(ms(2022, 3), ms(2022, 5))], n_min=300)["folds"][0][
+            "reaches_n_min"
+        ]
+        is None
+    )
+
+
+def test_the_plan_and_cli_carry_the_training_ceilings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tsclaude.cli import main
+
+    feas = _feas({"spot:BTCUSDT": 120}, months={"2022-06": 60, "2023-06": 60})
+    path = tmp_path / "f.json"
+    path.write_text(json.dumps(feas), encoding="utf-8")
+    assert main(["backtest", "power-plan", "--feasibility", str(path), "--anchor", "2022-02-01",
+                 "--n-min", "50"]) == 0  # fmt: skip
+    out = json.loads(capsys.readouterr().out)
+    tw = out["training_windows"]
+    assert tw["n_min"] == 50
+    assert len(tw["folds"]) == out["trials"]["folds"] == 7
+    assert [f["train_from_ms"] for f in tw["folds"]] == [ms(2022, 2)] * 7  # anchored
+    assert tw["folds"][0]["candidates_ceiling"] == 60.0  # 2022-02 .. 2023-02 holds June 2022
+    assert tw["folds"][0]["counted_share"] < 1.0  # February 2022 is outside the count
+    assert out["count_range"] == {"from_ms": ms(2022, 3), "to_ms": ms(2025, 1)}
+    plan = pp.plan_from_feasibility(feas, test_windows=HALF, configurations=24,
+                                    geometries=[("2R", 2.0)], cost_r=0.2)  # fmt: skip
+    assert plan["training_windows"] is None  # only when the caller passes training windows

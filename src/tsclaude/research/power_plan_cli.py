@@ -29,7 +29,11 @@ def _floats(text: str) -> list[float]:
 def cmd_power_plan(args: argparse.Namespace) -> int:
     from tsclaude.contracts.timeutil import MS_PER_MINUTE
     from tsclaude.research.backtest_cli import parse_time
-    from tsclaude.research.power_plan import plan_from_feasibility, test_windows_of
+    from tsclaude.research.power_plan import (
+        plan_from_feasibility,
+        test_windows_of,
+        train_windows_of,
+    )
     from tsclaude.research.walkforward import plan_folds
 
     try:
@@ -45,6 +49,7 @@ def cmd_power_plan(args: argparse.Namespace) -> int:
             feas, test_windows=test_windows_of(folds), configurations=args.configurations,
             geometries=[(f"{b:g}R", b) for b in args.tp_r], cost_r=args.max_cost_r,
             alpha=args.alpha, prior_family_rows=args.prior_family_rows,
+            train_windows=train_windows_of(folds), n_min=args.n_min,
         )  # fmt: skip
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"ok": False, "refused": "power_plan", "error": f"{exc}"}))
@@ -81,6 +86,10 @@ def register_power_plan(bsub: Any) -> None:
     pp.add_argument(
         "--prior-family-rows", type=int, default=0,
         help="registry rows already recorded for the strategy family (H1 today: 0)",
+    )  # fmt: skip
+    pp.add_argument(
+        "--n-min", type=int, default=300,
+        help="the preregistered n_min a configuration needs in each training window (300)",
     )  # fmt: skip
     pp.add_argument("--out", default=None, help="also write the plan here (UTF-8 JSON)")
     pp.set_defaults(func=cmd_power_plan)
