@@ -55,3 +55,21 @@ dependency or risk rule, and merged nothing.
 
 ## Review
 Independent review requested for the code commits on both branches; result appended below.
+
+## Feasibility evidence integrated (same session, owner direction at 11:38 local)
+
+- **Evidence.** The owner's 15m and 1h counts at `0955749` were staged read-only and checked:
+  content hash, config hash and every counter. The 1h file matches every structural value the
+  independent review predicted. Both are kept byte for byte in `docs/research/evidence` and pinned
+  by `test_h1_feasibility_evidence.py`.
+- **Findings.** In `docs/research/H1_FEASIBILITY_FINDINGS.md`:
+  - 15m is a P&L-free no-go;
+  - 1h is measured and awaits the owner's review;
+  - the independent review is reconciled claim by claim.
+- **Code.**
+  - feasibility-v3 splits registered downtime from unexplained missing data with the runner's
+    registry, and records the counting code;
+  - power-plan-v3 adds training-window ceilings per fold;
+  - both write LF on every platform. The owner's v2 files have CRLF from text mode on Windows.
+- **The February 2022 mismatch.** Origin `08f8953`; the run sheet now counts from the anchor.
+- **Unchanged:** H1-v3, the floor, the cost model.

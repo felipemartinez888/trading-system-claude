@@ -170,3 +170,18 @@ The build first needed a manual esbuild approval under pnpm 12.18.0. The local f
 documentation (about_Parsing), PowerShell passes an
 unquoted `a,b` to a native program as one argument. The run sheet still quotes the comma lists,
 because a token that starts with a digit (`2,2.5,3`) is less clear-cut.
+
+## Feasibility evidence integrated (2026-11-10, owner direction "integrate independent H1 feasibility findings")
+
+| Item | Commits | Evidence | Status |
+|---|---|---|---|
+| The owner's 15m and 1h counts at `0955749`, copied byte for byte | `da8e609`, `5a8eebd` | SHA-256, content hash, config id and config hash checked; `test_h1_feasibility_evidence.py` | VERIFIED as measured |
+| 15m recorded as a P&L-free no-go (167 candidates, ceilings ≤ 109 against 300, 42.7 out of sample) | `da8e609` | [H1_FEASIBILITY_FINDINGS](research/H1_FEASIBILITY_FINDINGS.md) §2 | recorded; no trial consumed |
+| 1h measured (351, 146.1 out of sample, ceilings 153–289; T1 and T2 not met) | `da8e609` | findings §4 | awaiting the owner's review; no redesign proposed |
+| Independent review reconciled against HEAD: every derived number reproduced except one not derivable from the file (4.48 % / 14.76 %) | `da8e609` | findings §5 | done |
+| Feasibility-v3: registered downtime apart from unexplained missing minutes; code identity in each count | `3573509` | feasibility 30 tests | IMPLEMENTED, TESTED |
+| Power-plan-v3: training-window ceilings per fold against `n_min` | `6fc6398` | power plan 15 tests; reproduces 70 … 109 | IMPLEMENTED, TESTED |
+| The February 2022 mismatch: origin `08f8953`; the run sheet now counts from the anchor 2022-02-01 | `da8e609` | findings §6 | documented, fixed for future counts |
+| CRLF on Windows in feasibility.json and power-plan output; now LF everywhere; evidence kept byte for byte | `5a8eebd` | LF assertions (effective on the Windows CI job) | IMPLEMENTED, TESTED |
+
+H1-v3, the 1.5 floor, the cost model and the hypothesis definition are unchanged.
