@@ -70,6 +70,7 @@ from tsclaude.api.pages import (
 )
 from tsclaude.api.paper import paper_router
 from tsclaude.api.push import PUSH_INTERVAL_S, MarketPusher
+from tsclaude.api.research import research_router
 from tsclaude.api.schemas import (
     CoverageResponse,
     ErrorResponse,
@@ -297,6 +298,11 @@ def create_app(
 
     # ------------------------------------------------------------------ backtest reads (M2-T4)
     app.include_router(backtests_router(context.store.path.parent / "runs"))
+    # research status (MVP): REFERENCE / candidate / validated, read-only; the repository root is
+    # the working directory the launcher starts the app in (as for backtest preregistrations)
+    app.include_router(
+        research_router(context.store.path.parent / "runs", Path.cwd(), context.clock)
+    )
 
     # ------------------------------------------------------------------ paper trading (MVP-2)
     app.include_router(
