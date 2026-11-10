@@ -60,27 +60,27 @@ acceptance or formal (Target C) MVP acceptance.
 | 2 | Access the dashboard | ✅ shown | Owner (dev-profile PASS, "dashboard responsive"); the frontend builds green in CI |
 | 3 | Connect to public market data | ✅ shown | Stage B/C: spot + USD-M streams and REST, 6 pairs |
 | 4 | Observe canonical market-data updates | ✅ shown | `bars_1m` ws_live rows observed live (Stage C); Markets page |
-| 5 | Evaluate a reference strategy | ⚠️ partial | Deterministic Target A tests (13 tests); real 2026-11-09 session blocked by the clock (no observed bar). **Pending:** owner evidence run step 3 |
-| 6 | Generate or explicitly reject signals | ⚠️ partial | Target A: 3 CONFIRMED signals, 3/3 rejected by `rr_net` < 1.5 (deterministic). Real: none yet |
+| 5 | Evaluate a reference strategy | ✅ shown (real) | 25-min session 2026-11-09: warmed up at the first observed minute (748/741), evaluated 144 live observed bars, 0 proposals; recomputed offline from the stored bars (§7). Deterministic: Target A tests |
+| 6 | Generate or explicitly reject signals | ⚠️ partial | Deterministic Target A: 3 CONFIRMED signals, 3/3 rejected by `rr_net` < 1.5. Real sessions: no signal occurred (compression + breakout + volume is rare by design) |
 | 7 | Enforce risk rules | ✅ tests | Risk fault-injection tests green in CI (`42322235295`); literal M3 gate not accepted |
-| 8 | Simulate paper orders safely | ⚠️ partial | Real 1 h session 2026-11-06: 3 simulated benchmark entries; strategy books never exercised in a real session. No order endpoint exists (paper only) |
+| 8 | Simulate paper orders safely | ⚠️ partial | Real: benchmark book 3 simulated entries in each of 3 sessions (2026-11-06, 2026-11-09 ×2). Strategy books never traded in a real session. No order endpoint exists (paper only) |
 | 9 | Inspect trades, positions, PnL | ✅ shown (benchmark) | Paper page (books, fills, activity) |
-| 10 | Restart and recover | ⚠️ partial / **open defect** | Restart tests and runbook; Stage B second Start (gap recovered). The first crash-recovery attempt on a copy of the PC-restart session **died natively (0xC0000005)** at market-data store creation, with the chain intact. Retry with faulthandler pending (§7) |
-| 11 | Reproducible backtest / replay | ⚠️ partial | Replay: real 1 h `verify-replay` PASS (2026-11-06); synthetic backtest reproducibility test green. **Pending:** first real-data backtest, run twice (owner evidence step 4) |
+| 10 | Restart and recover | ✅ shown (real, Windows) | Recovery of the PC-restart session: downtime gap detected and backfilled, paper restored and resumed, `verify-replay` PASS on 3,498 batches (§7 run 3). Attempt 1 died natively (0xC0000005, non-deterministic, §7) |
+| 11 | Reproducible backtest / replay | ⚠️ partial | **Replay, real:** PASS ×3: 1 h on 2026-11-06; 25 min on 2026-11-09, replayed on Linux; recovery, 3,498 batches. **Backtest:** reproducibility test green in CI (synthetic lake). **Pending:** a real-data backtest run twice (owner step 4) |
 | 12 | Review test evidence and limitations | ✅ | This report, [MVP_LIMITATIONS](MVP_LIMITATIONS.md) |
-| 13 | Stop safely | ✅ shown | Stage B: two clean Stops plus quit; `safe_to_close_store: true` in the dev profile (owner) |
+| 13 | Stop safely | ✅ shown | Stage B: two clean Stops plus quit. 2026-11-09: console-window close recorded as a clean stop with session-end evidence. Recovery run: clean `app_shutdown` |
 
 ## 5. Definition of done (directive §11)
 | Item | State |
 |---|---|
 | Mandatory core functions implemented | ✅ except the formal M4/M5/M6 scope (Target C) |
-| Integration scenarios verified | ⚠️ 5, 6, 8, 10, 11 partial (§4) |
+| Integration scenarios verified | ⚠️ 6, 8 and 11 partial (§4); 1–5, 7, 9, 10, 12, 13 shown |
 | Applicable safety gates | ⚠️ M3 literal gates open; paper-only isolation holds (no order code, no keys; safety-guard CI job green) |
 | Relevant regression tests executed successfully | ✅ CI `42754283876` on `ceb393c`: 7/7 green (ubuntu 1873, windows 1871 passed). CI `42756815061` on `54af1ef` (review fixes): 7/7 green (ubuntu 1880, windows 1878 passed) |
 | Paper isolated from real trading | ✅ by construction (no signed endpoints, no keys; CLAUDE.md rule 2; safety guards in CI) |
 | Dashboard reflects system state | ✅ for the parts shown. New: research status and actionable blockers |
-| Recovery tested | ✅ tests; ⚠️ real crash recovery pending |
-| Reproducible backtest / replay evidence | ⚠️ replay real ✅; backtest real pending |
+| Recovery tested | ✅ tests and **real Windows crash recovery** (§7 run 3). One non-deterministic native crash in an earlier attempt is recorded |
+| Reproducible backtest / replay evidence | ✅ replay: 3 real sessions, one replayed across OS. ⚠️ backtest: synthetic reproducibility in CI only; real-data double run pending |
 | Startup/shutdown procedure | ✅ [MVP_USER_GUIDE](MVP_USER_GUIDE.md) |
 | Limitations transparent | ✅ [MVP_LIMITATIONS](MVP_LIMITATIONS.md) |
 | Independent final review, no critical blocker | ✅ run (Fable, fresh context, read-only, on `ceb393c`): **APPROVE WITH NOTES** for the code. Its one blocking item, recording the native recovery crash before declaring a status, is done (§7). Its non-blocking findings are fixed (§8) |
@@ -106,18 +106,48 @@ acceptance or formal (Target C) MVP acceptance.
 - **Fix:** tests only (`a3ba353`, `ceb393c`). The tests now wait for what the consumer did (a completed quiet poll with the anchor gate decided at the current manual time), bounded at 60 s; no assertion was weakened.
 - **Residual:** `test_retries_back_off_and_are_capped` still asserts real-time gaps (≤ 0.31 s). It was left as it is: loosening it is a Lead decision.
 
-## 7. Owner evidence run `mvp-evidence-20261109-2201` (started 22:01 local, branch base `1160a71`)
-- **Clock pre-check:** worst offset 0.0101 s, then 0.0099 s before the paper step: PASS.
-- **Crash-recovery step** (a copy of `paper-20261109-125923`, the session the PC restart ended):
-  - **The process died with exit code `0xC0000005` (access violation)** about 4 s after start.
-  - The last log line was `supervisor start: creating service`: the market-data store opening the copied database (`LiveBarStore`: SQLite connection, `PRAGMA journal_mode=WAL`, schema).
-  - `verify-chain` afterwards: **ok, 85 events**; the hash chain survived the PC restart and the native crash.
-  - `verify-replay`: INCONCLUSIVE (no session-end evidence, expected).
-  - **Not reproduced on Linux:** the same database copy opens and builds the service without a crash (Python 3.13.18, SQLite 3.53.1), and `PRAGMA integrity_check` returns ok.
-  - **Next:** one bounded retry with `PYTHONFAULTHANDLER=1`, which prints the Python stack on an access violation. A crash at the same point would be a deterministic, data- or Windows-specific defect; no crash would point to the open hardware issue.
-- **Fresh paper session** (`paper-20261109-2201`, 1 h): started normally after the crash. Results pending.
-- **Reference backtest twice:** pending.
+## 7. Owner evidence runs, 2026-11-09 evening (code `1160a71`, clock synced, `scripts/owner_checks/mvp_evidence.ps1`)
 
+### Run 1, `mvp-evidence-20261109-2201` (22:01 local)
+- **Clock pre-check:** worst offset 0.0101 s, then 0.0099 s before the paper step: PASS.
+- **Crash-recovery attempt 1** (a copy of `paper-20261109-125923`, the session the PC restart ended):
+  - The process died with exit code **`0xC0000005` (access violation)** about 4 s after start, after `supervisor start: creating service` (the live-bar store opening the copied database).
+  - `verify-chain`: ok, 85 events. `verify-replay`: INCONCLUSIVE (no session-end evidence).
+  - The same copy opens and builds the service without a crash on Linux (Python 3.13.18, SQLite 3.53.1); `PRAGMA integrity_check` returns ok.
+- **Paper session `paper-20261109-2201`, 25 min** (it ended when the owner closed the console window at 22:27):
+  - **Clean stop:** `monitoring_stopped` and `session_stopped` with reason `console_closed`, and the session-end evidence was written (Windows console-close path).
+  - **Observation worked:** no `clock_skew_changed` event. `sim_observation_changed` went `observed: false` (04:02Z, downtime backfill) → **`observed: true` (live) from 04:03Z**. **144 of 150 paper steps observed**, 150 `ws_live` bars observed, release latency about 0.2 s.
+  - **Books:** benchmark 3 simulated entries (BTC/ETH/SOL spot, 7 ledger postings including the deposit). Baseline and shadow: deposit only. **0 strategy intents.**
+  - **Reference strategy, recomputed offline from the session's own stored bars with the production adapter (`warm_up` + feed):**
+    - warmed up for all 6 instruments at the first observed minute (748 ≥ 741 15m bars);
+    - **0 proposals** over the 144 live bars, consistent with the journal.
+    - The live in-memory status itself is not persisted, so this is a recomputation.
+  - **`verify-replay` on Linux** (this container, code `2c7d343`, on a copy of the Windows store): **PASS**. 150 batches, every ledger hash equal to the session-end evidence: the replay matches across OS and across this branch's changes.
+- **Reference backtest:** not run, because the window was closed before step 4.
+
+### Run 2, `mvp-evidence-20261109-2216`
+- Recovery attempt 2 **refused to start**: port 8765 was held by run 1's paper session (`could not bind the API port`, app exit 3).
+- Fail-closed: nothing was written, and the copy's chain is unchanged at 83 events.
+
+### Run 3, `mvp-evidence-20261109-2227` (22:27, `PYTHONFAULTHANDLER=1`): real crash recovery **PASS**
+- Recovery attempt 3, a new copy of the same crashed session (identical input to attempt 1): **no native crash**.
+- **Downtime:** the app detected the 19:07 → 04:27 UTC downtime gap (cause `downtime`) on all 6 pairs, caught it up, restored the paper session and resumed it.
+- **Live run:** 15 min monitored, `verify_live` PASS; `monitoring_stopped` (`app_shutdown`), then a clean exit.
+- **`verify-replay`: PASS.** **3,498 batches** replayed, every ledger hash equal to the session-end evidence; 84 observed bars; benchmark 3 entries; strategy books not exercised.
+- **`verify-chain`:** ok, 3,608 events.
+- **Platform anomaly** (logged and survived):
+  - At 04:37:40Z one WebSocket frame dispatch raised `TypeError: expected 2 arguments, got 3` inside the generated frozen-dataclass `__init__` of `StreamKey(market, symbol, kind)`, a correct three-argument call (`marketdata/binance/ws.py:112`).
+  - That line runs for every book-ticker message and succeeded thousands of times around it. Correct execution cannot raise there.
+  - The error was caught; the stream and the session continued.
+
+### Reading
+- **The native crash is non-deterministic:** 1 of 2 runs that got past the port check, on identical input.
+- **Together** with the "impossible" `TypeError` and the PC restart of 13:07, this evidence is consistent with the open hardware (WHEA) instability. It is not proven to be that.
+- **The software side held up:** it failed closed, recorded clean stops where possible, kept the hash chain intact through every event, and recovered.
+- **This also changes the scenario table (§4):**
+  - recovery after an unclean end is now shown on Windows;
+  - real observed paper trading is shown for the benchmark book;
+  - strategy books have still never traded in a real session, because the reference strategy produced no signal.
 ## 8. Independent final review (Fable, fresh context, read-only, commit `ceb393c`)
 **Verdict: APPROVE WITH NOTES (code).**
 - **Checked by the reviewer:**

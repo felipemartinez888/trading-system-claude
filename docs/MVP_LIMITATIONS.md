@@ -24,17 +24,23 @@
   - A PC clock more than 1 s off Binance blocks all observation (fail closed).
   - The owner PC was 6.9 s off (2026-11-06) and 3.4 s off (2026-11-09) while Windows showed "synced".
   - Sync before each session (MVP_USER_GUIDE §2).
-- **The strategy books have never been exercised in a real session.** The real 1 h replay (2026-11-06) traded the benchmark book only.
+- **The strategy books have never been exercised in a real session.**
+  - Three real sessions traded the benchmark book only: 2026-11-06 1 h, 2026-11-09 25 min, and the 2026-11-09 recovery run.
+  - The reference strategy was warmed up and evaluating, but produced no signal. Its conditions (compression + breakout + volume) are rare by design.
+  - The deterministic Target A tests cover signal → risk → fills.
 
-## Open defect under investigation
-- **Native crash while recovering a session the PC restart ended** (2026-11-09, owner evidence run).
-  - Exit code `0xC0000005` about 4 s after start, at `supervisor start: creating service`, while the live-bar store opened the copied database.
-  - The same copy opens fine on Linux, and SQLite's integrity check passes.
-  - Next: one retry with `PYTHONFAULTHANDLER=1` (MVP_VALIDATION_REPORT §7). Recovery after an unclean end stays unproven on Windows until then.
+## Platform instability seen during validation (owner PC, 2026-11-09)
+- **Three events in about 10 hours:**
+  - a PC restart during a paper session (13:07);
+  - a native access violation (`0xC0000005`) in 1 of 2 recovery attempts on identical input, not reproduced on retry with faulthandler;
+  - a `TypeError` that correct execution cannot raise, on a hot path that otherwise succeeded thousands of times.
+- **Reading:** consistent with the open hardware (WHEA) investigation, not proven.
+- **The software held up:** it failed closed, kept the hash chain intact, recorded clean stops where it could, and recovered (MVP_VALIDATION_REPORT §7).
+- **Consequence:** long unattended runs on this machine are not reliable yet. Keep sessions supervised.
 - **Status detail:** `RUNNING` is published from `_open()` until the first poll, even when that poll then turns `AWAITING_BACKFILL`. Nothing is processed in that window.
 
 ## Platform and environment
-- **Owner PC restarts:** hardware (WHEA), open, out of scope here; one occurred during a paper session on 2026-11-09. Sessions survive by design, but such runs are interrupted.
+- **Owner PC hardware (WHEA):** open, out of scope here; see the platform-instability section above.
 - **CI flakes:** the paper-runtime timing flakes are root-caused and fixed in tests (validation report §6).
   - One timing test still asserts real-time gaps (`test_retries_back_off_and_are_capped`, ≤ 0.31 s).
   - Loosening it is a Lead decision, so it can still fail on a stalled runner.

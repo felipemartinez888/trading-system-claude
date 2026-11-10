@@ -69,15 +69,17 @@ Companion documents:
 | B1 | B/E | Research status API plus a NO VALIDATED STRATEGY panel | Opus | ✅ code (`a268ab7`, `f1658fe`); frontend CI green | MVP_VALIDATION_REPORT §2 |
 | B2 | D/E | Actionable paper-blocker hints (API + Paper page) | Opus | ✅ code (`84653e1`); frontend CI green; Python CI pending | same |
 | C1 | C | Anchored walk-forward, train-only selection, stitched OOS verdict, CLI | Opus | ✅ code (`1c40da2`); local tests 18 passed; **no real-data run** | same |
-| F1 | F | Unattended owner evidence run (clock check, crash recovery, Paper O-1, backtest reproducibility) | Opus (script) + owner (run) | 🔄 handed to the owner | `scripts/owner_checks/mvp_evidence.ps1` |
+| F1 | F | Owner evidence runs (clock check, crash recovery, Paper O-1, backtest reproducibility) | Opus (script) + owner (run) | ✅ 3 runs recorded (MVP_VALIDATION_REPORT §7); backtest step pending (F5) | `scripts/owner_checks/mvp_evidence.ps1` |
 | F2 | F | MVP docs (these 4) | Opus | ✅ first version | — |
 | F3 | F | Final independent acceptance review | **Fable** subagent | ✅ APPROVE WITH NOTES; findings fixed | MVP_VALIDATION_REPORT §8 |
-| F4 | F | Native crash (0xC0000005) when recovering the PC-restart session on Windows | Owner retry with faulthandler + Opus | 🔄 open | MVP_VALIDATION_REPORT §7 |
+| F4 | F | Native crash (0xC0000005) when recovering the PC-restart session on Windows | Owner retry with faulthandler + Opus | ✅ not reproduced (non-deterministic); recovery PASS on retry (3,498 batches, identical hashes) | MVP_VALIDATION_REPORT §7 |
+| F5 | F | Real-data reference backtest run twice (reproducibility) | Owner (step 4 of the script) | 🔄 pending | — |
 
 **Next engineering actions**, in order:
-1. Get CI green on both OS on the branch head.
-2. Triage the native recovery crash from the faulthandler retry.
-3. Record the owner's paper session and backtest results.
+1. The real-data backtest double run (F5, about 10 min, owner).
+2. Owner review: merge `task/mvp-integration`; the H1-v1 preregistration draft.
+3. Implement H1 after the freeze, then the first real-data walk-forward.
+4. A longer supervised paper session, to give the strategy books a chance to trade.
 4. Next research step: H1 (compression → expansion breakout) preregistration and strategy, then the first real-data walk-forward.
    - Owner-run, minutes to hours.
    - The expected and reportable outcome is `NO_EDGE_DEMONSTRATED`.
