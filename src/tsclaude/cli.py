@@ -86,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Backtests with run manifests and certified reports (M2-T4); heavy imports are lazy.
     importlib.import_module("tsclaude.research.backtest_cli").register(sub)
     importlib.import_module("tsclaude.research.prereg_cli").register(sub)
+    importlib.import_module("tsclaude.evaluation.cli").register_evaluation(sub)
 
     vr = sub.add_parser(
         "verify-replay",
