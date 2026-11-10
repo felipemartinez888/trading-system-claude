@@ -2,6 +2,7 @@
 // injected into index.html as <meta name="tsc-token">; the browser adds the Origin header itself.
 
 import type {
+  AgentStatusResponse,
   BacktestDetailResponse,
   BacktestsResponse,
   BarsResponse,
@@ -114,6 +115,8 @@ export const api = {
   backtests: (signal?: AbortSignal) => get<BacktestsResponse>("/api/backtests", signal),
   researchStatus: (signal?: AbortSignal) =>
     get<ResearchStatusResponse>("/api/research/status", signal),
+  agentsStatus: (signal?: AbortSignal) =>
+    get<AgentStatusResponse>("/api/agents/status", signal),
   backtest: (runId: string, signal?: AbortSignal) =>
     get<BacktestDetailResponse>(`/api/backtests/${encodeURIComponent(runId)}`, signal),
 };

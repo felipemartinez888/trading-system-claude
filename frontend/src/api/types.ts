@@ -650,3 +650,35 @@ export interface ResearchStatusResponse {
   generated_at: string;
   status: Sourced<ResearchStatus>;
 }
+
+/** GET /api/agents/status (M5, advisory agents; read-only) */
+export interface AgentLedgerStatus {
+  error: string | null;
+  calls_today?: number;
+  unsettled_today?: number;
+  spent_today_usd?: string;
+  remaining_today_usd?: string;
+  calls_total?: number;
+  spent_total_usd?: string;
+  over_reservation_calls?: number;
+}
+
+export interface AgentStatus {
+  mode: string;
+  config_ok: boolean;
+  config_errors: string[];
+  config_version?: string | null;
+  model?: string | null;
+  daily_cap_usd: string;
+  per_call_timeout_s?: number;
+  prompts?: Record<string, string>;
+  synthesis_version?: string;
+  ledger: AgentLedgerStatus;
+  runtime_wired: boolean;
+  note: string;
+}
+
+export interface AgentStatusResponse {
+  generated_at: string;
+  status: Sourced<AgentStatus>;
+}

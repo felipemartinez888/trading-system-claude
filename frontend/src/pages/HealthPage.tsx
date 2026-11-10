@@ -2,6 +2,7 @@
 
 import { useCoverage, useStatus } from "../api/hooks";
 import type { CoverageGap, CoverageInterval } from "../api/types";
+import { AgentStatusCard } from "../components/AgentStatusCard";
 import { ProvenanceBadge } from "../components/ProvenanceBadge";
 import { durationBetween, formatUtc, shortHash } from "../format";
 import { shown, useBackendFreshness } from "../freshness";
@@ -161,6 +162,8 @@ export function HealthPage() {
           </table>
         )}
       </section>
+
+      <AgentStatusCard />
     </div>
   );
 }
