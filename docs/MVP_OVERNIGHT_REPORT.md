@@ -139,9 +139,34 @@ trial was recorded; no holdout data, risk threshold or Codex repository was touc
 | P1-10: power plan (`tsclaude backtest power-plan`), walk-forward `exit_mix` and `power_reading` | `c750fe8` + review fixes | `test_power_plan.py` (12), rehearsal | IMPLEMENTED, TESTED |
 | Decision package: D-C with R-4, D-E with Amendment 6 and the take-profit sets compared mechanically, D-F1, D-G, R-1..R-8, authorized vs proposed, readiness, owner steps | `9126512` + this checkpoint | [H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md) | for owner decision |
 | Independent review of the three commits | `347e87f` (fixes) | Fable: **CONDITIONAL PASS, 0 blocking**; M1–M4 and minors fixed, one declined with a reason (devlog); full unit suite 1941 passed, 16 env-only failures | **VERIFIED: CI `42854101526` 7/7 on `f6ce164`** (python ubuntu 2338 passed, windows 2336; frontend both OS) |
-| The detectable margin in the research status API and the walk-forward table | `1e2339b` | `test_research_status.py` 18 passed; frontend test in CI | IMPLEMENTED, TESTED (backend); CI `42858830369` running at the time of writing |
+| The detectable margin in the research status API and the walk-forward table | `1e2339b` | `test_research_status.py` 18 passed; frontend test in CI | VERIFIED: CI `42859002211` 7/7 on `0955749` (`42858830369` was cancelled by the next push) |
 
 **H1 readiness (package §7):** no engineering blocker remains up to the out-of-sample verdict. Still
 open: the owner's feasibility count and power plan (NORMAL PowerShell, package §8), then D-C, D-E with
 Amendment 6 and R-1, the take-profit set, D-F1, then the freeze. Validation and the holdout stay
 blocked (D-D, D-F2, P1-7).
+
+## Resume session (2026-11-10, after the owner's smoke check at `0955749`)
+
+**Owner evidence received:**
+- the Windows frontend build passed (typecheck, Vite build, exit 0);
+- the smoke check passed 7/7 (`NO_VALIDATED_STRATEGY`, Paper disabled, agents OFF);
+- visual confirmation of the panels is not yet reported.
+
+The build first needed a manual esbuild approval under pnpm 12.18.0. The local files `frontend/pnpm-lock.yaml` and
+`frontend/pnpm-workspace.yaml` were not committed (D-G).
+
+| Item | Commits | Evidence | Status |
+|---|---|---|---|
+| PL-1: esbuild approved for pnpm 9 to 12. pnpm 11 and later ignore package.json's `pnpm` field; CI's pnpm 9 never blocks scripts, so CI could not see it | `6fd2fd7` | `test_frontend_toolchain.py`; pnpm 10.28 here maps the file correctly; pnpm 9 in CI | IMPLEMENTED, TESTED; CI after the push; the owner's pnpm 12 check is in the run sheet §1 |
+| P1-12: tested owner run sheet for H1-1 (count, dataset identity, power plans for both take-profit sets, evidence zip); power-plan `--out` | `c14769c` | `test_owner_feasibility_run.py` parses every documented command and rehearses the sequence on a synthetic lake | IMPLEMENTED, TESTED |
+| H1 decision record (blank, nothing decided) | `f7a957d` | [H1_DECISION_RECORD](research/H1_DECISION_RECORD.md) | for the owner |
+| M6-3: every contract event type is exported or deliberately not | `94e821e` | `test_eval_event_coverage.py`; it fails on the old exporter with the M5-3 contract | IMPLEMENTED, TESTED |
+| M5: no `agent_gated` session could be exported; fixed by export format v2 (`agents.jsonl`), v1 still checkable | branch `task/m5-runtime-wiring` `48ed4d7` `f5c2538` | 8 export tests + 3 format tests; the 9c681ca v1 exporter and the v2 exporter (rewritten to v1) give byte-identical output on one store | IMPLEMENTED, TESTED on its branch; not merged (D-H) |
+| M5 mode-off identity re-verified independently | — | the paper scenario on `9c681ca` and `127e445`, each with its own code: same 39 batches, journal digest, ledgers and fingerprint | VERIFIED (local) |
+| M5-3 decisions and D-06 interface questions as owner sheets | `94e821e` | [M5_RUNTIME_DECISIONS](M5_RUNTIME_DECISIONS.md), [M6_D06_INTERFACE_QUESTIONS](M6_D06_INTERFACE_QUESTIONS.md) | for the owner |
+
+**Correction to the earlier owner steps:** none needed for correctness. Per the PowerShell
+documentation (about_Parsing), PowerShell passes an
+unquoted `a,b` to a native program as one argument. The run sheet still quotes the comma lists,
+because a token that starts with a digit (`2,2.5,3`) is less clear-cut.
