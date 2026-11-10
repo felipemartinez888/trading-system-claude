@@ -134,6 +134,11 @@ function RuntimeHeader({ sourced }: { sourced: Sourced<PaperStatusValue> }) {
           {status.reason}
         </p>
       ) : null}
+      {status.hint ? (
+        <p className="bad" data-testid="paper-hint">
+          <strong>What to do:</strong> {status.hint}
+        </p>
+      ) : null}
       <dl className="kv">
         <Row k="Enabled" v={`${show(status.enabled)} (${show(status.settings_source)})`} />
         <Row k="Session" v={show(status.session_id)} />

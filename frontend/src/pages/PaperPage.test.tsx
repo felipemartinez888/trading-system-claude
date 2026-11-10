@@ -266,6 +266,26 @@ describe("Paper page", () => {
     }
   });
 
+  it("shows the backend's actionable hint for a blocked observation, and nothing when absent", async () => {
+    const hint =
+      "The computer clock differs from Binance server time by more than the allowed limit. " +
+      "Until then every bar is processed unobserved: no entry is created or filled (fail closed).";
+    renderWith({
+      status: {
+        generated_at: "x",
+        status: system(statusValue({ reference: null, hint })),
+        reference_signals: null,
+      },
+    });
+    expect(await screen.findByTestId("paper-hint")).toHaveTextContent(`What to do: ${hint}`);
+    cleanup();
+    renderWith({
+      status: { generated_at: "x", status: system(statusValue({ reference: null })), reference_signals: null },
+    });
+    expect(await screen.findByTestId("paper-runtime")).toBeInTheDocument();
+    expect(screen.queryByTestId("paper-hint")).toBeNull();
+  });
+
   it("still renders the deferred strategy for a backend that does not report the observation", async () => {
     const { observation: _, ...old } = statusValue({ reference: null });
     renderWith({ status: { generated_at: "x", status: system(old as PaperStatusValue), reference_signals: null } });

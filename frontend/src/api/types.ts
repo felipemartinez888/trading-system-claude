@@ -447,6 +447,8 @@ export interface PaperStatusValue {
   awaiting_missing: Record<string, number[]> | null;
   last_minute_ms: number | null;
   batches: number | null;
+  // what the operator can do about a blocked state; absent from backends before the MVP hints
+  hint?: string | null;
 }
 
 export interface ReferenceSignal {
@@ -596,4 +598,34 @@ export interface BacktestDetailResponse {
   summary: Sourced<BacktestSummary>;
   manifest: Sourced<Record<string, unknown>>;
   metrics: Sourced<Record<string, unknown>>;
+}
+
+// ---------------------------------------------------------------- research status (MVP)
+/** Tier of a strategy in GET /api/research/status (backend `research.status`). */
+export type ResearchTier = "REFERENCE" | "VALIDATED" | "REJECTED" | "CANDIDATE" | "UNREGISTERED";
+
+export interface ResearchStrategyStatus {
+  strategy_id: string;
+  tier: ResearchTier;
+  registered: boolean;
+  runs: number;
+  trusted_runs: number;
+  reasons: string[];
+}
+
+export interface ResearchStatus {
+  state: "NO_VALIDATED_STRATEGY" | "VALIDATED_STRATEGY_AVAILABLE";
+  validated: number;
+  counts: Record<ResearchTier, number>;
+  strategies: ResearchStrategyStatus[];
+  runs_recorded: number;
+  runs_trusted: number;
+  preregistration_files: string[];
+  reasons: string[];
+  statement: string;
+}
+
+export interface ResearchStatusResponse {
+  generated_at: string;
+  status: Sourced<ResearchStatus>;
 }

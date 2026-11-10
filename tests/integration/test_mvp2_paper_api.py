@@ -128,8 +128,11 @@ def test_the_status_shows_why_paper_is_not_observing(
         assert got["code"] == "clock_continuity_unknown"
         assert "no monotonic clock evidence (no monotonic clock readings)" in got["problem"]
         assert got["observing_from_ms"] is None
+        assert "processed unobserved" in value["hint"]  # what to do, and that it fails closed
         broken["on"] = False
-        got = observation(c, "active")["observation"]
+        active = observation(c, "active")
+        assert active["hint"] is None
+        got = active["observation"]
         assert got["observing_from_ms"] == T0 + 60_000  # the fake's round: T0 + 3 + 23 + 2 ms
         assert got["problem"] is None
         assert {"offset_ms", "max_rtt_ms", "uncertainty_ms", "allowance_ms"} <= set(got)

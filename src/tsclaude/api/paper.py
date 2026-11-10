@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tsclaude.contracts.provenance import Provenance, Sourced
 from tsclaude.contracts.timeutil import WallClock, to_iso
+from tsclaude.runtime.operator_hints import paper_hint
 from tsclaude.runtime.paper_runtime import PaperActionRefused, PaperRuntime, PaperState
 
 NOT_CONFIGURED = "paper trading is not configured in this app instance"
@@ -117,6 +118,8 @@ def paper_router(
                     "last_minute_ms": service.get("last_minute_ms"),
                     "batches": service.get("batches"),
                     "clock": service.get("clock"),
+                    # what the operator can do about a blocked state (presentation only)
+                    "hint": paper_hint(snap),
                 }
             )
             reference = value.get("reference")
