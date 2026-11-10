@@ -110,6 +110,7 @@ data:                # D-05; fixed, cannot be moved by a preregistration
   dataset_ids: null  # H1-11: pin the exact dataset ids before the freeze
 walk_forward:
   anchor: auto
+  end: '2025-01-01'  # the last test window ends at or before this month start
   initial_train_months: 12
   test_months: 3
   # Embargo from the required time exit (H1-7), interval 15m:
