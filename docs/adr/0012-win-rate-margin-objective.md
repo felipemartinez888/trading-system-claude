@@ -146,3 +146,12 @@ assumption instead:
    level and with n_eff.
 3. **Acceptance:** the Amendment 4 grid must pass for all three reference strategies with
    `max_loss_r` set to their true worst loss. The certificate states `max_loss_r` and its source.
+
+## Amendment 6 (2026-11-10, owner decision D-25 / D-E option a): only live-tradable geometries
+A preregistered search space contains only exit geometries the live risk policy can trade: every
+configuration must be COMPATIBLE with `min_rr_net` of the risk config the backtests apply. While
+`min_rr_net` = 1.5, take-profits at or below 1.5 R are excluded. High-win-rate profiles compete only
+where they are tradable. This supersedes the "always part of the search space" sentence for
+TP 0.5R–1.5R (Search space; RESEARCH_PROTOCOL §5) for as long as the floor applies. Preregistrations
+record `risk_compatibility: live-floor-kept-geometries-dropped`; validate, freeze and run refuse a
+configuration the floor rejects (P1-4, P1-6). The floor, the cost model and certification are unchanged.

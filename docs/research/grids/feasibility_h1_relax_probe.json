@@ -1,0 +1,5 @@
+[
+  {"interval": "1h", "rank_max": 0.5},
+  {"interval": "1h", "rank_max": 0.75},
+  {"interval": "1h", "rank_max": 1.0}
+]

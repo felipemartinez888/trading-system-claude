@@ -40,11 +40,17 @@ Last update: 2026-11-10 (WF-1).
 - **Not authorized by D-24:** live trading, autonomous or unattended operation, agents, a validated strategy, paid API use.
 
 ## Next objective: first meaningful M4 experiment (H1)
-No engineering blocker is known. The path waits on **owner decisions** (details:
-[H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md), [H1_FEASIBILITY_FINDINGS](research/H1_FEASIBILITY_FINDINGS.md)):
-1. **Research direction after the 1h feasibility count.** 351 candidates, about 146 out of sample, training ceilings 153–289 vs `n_min` 300, T1/T2 not met. 15m is a recorded no-go.
-2. **D-C** trial counting; **D-E** record "keep net R/R ≥ 1.5" plus ADR-0012 Amendment 6; **D-F1** SOL/universe; **D-G** lock files (recommended).
-3. Owner freezes H1 (H1-d), then the first walk-forward (H1-e) runs on the owner PC.
+The owner's research decisions are recorded as [D-25](DECISIONS_PENDING.md#2026-11-10-h1-research-decisions-d-25) (2026-11-10):
+- H1-v3 is P&L-free infeasible at 15m and 1h.
+- Direction D: a 1h `rank_max` ladder (0.5 / 0.75 / 1.0) is counted P&L-free, and the least-relaxed value meeting T1, T2 and T3 (T3 = 10 points) is chosen.
+- D-C a; D-E a with Amendment 6; take-profit set B; D-F1 a; D-G a (`uv.lock` ready, frontend lock open); F5 a; R-6 a (rung 1 only).
+
+Next steps:
+1. **Owner:** run [H1_RELAX_FEASIBILITY_RUN](research/H1_RELAX_FEASIBILITY_RUN.md) (NORMAL PowerShell, P&L-free, no trial) and send the zip.
+2. Apply the D-25 rule to the counts.
+   - **If a value qualifies:** draft an H1-v4 preregistration (a revised hypothesis) and the rung-1 control, followed by review and the owner's freeze.
+   - **If none qualifies:** record H1 as infeasible and move to H2.
+3. First walk-forward (H1-e) on the owner PC.
 
 D-D and D-F2 are needed only for validation and the holdout. D-B and D-H do not affect research.
 
