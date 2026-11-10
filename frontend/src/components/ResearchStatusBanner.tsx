@@ -97,6 +97,12 @@ export function riskPolicyLabel(mode: string | null | undefined): string {
   return "—";
 }
 
+/** The smallest win-rate margin a walk-forward's trades could detect (backend `power_reading`). */
+export function detectableMarginLabel(margin: number | null | undefined): string {
+  if (margin === null || margin === undefined) return "—";
+  return `${(margin * 100).toFixed(1)} pts`;
+}
+
 export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
   if (rows.length === 0) {
     return (
@@ -108,7 +114,8 @@ export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
   return (
     <>
       <p className="muted">
-        Walk-forward reports, as recorded. None of these verdicts is a validation result.
+        Walk-forward reports, as recorded. None of these verdicts is a validation result. Without
+        certification, a true margin below the detectable margin is not ruled out.
       </p>
       <table className="table" data-testid="research-walkforwards">
         <thead>
@@ -121,6 +128,7 @@ export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
             <th>Checks passed</th>
             <th>Live-compatible</th>
             <th>Risk rules in backtests</th>
+            <th>Detectable margin</th>
           </tr>
         </thead>
         <tbody>
@@ -143,6 +151,7 @@ export function WalkForwardTable({ rows }: { rows: WalkForwardSummary[] }) {
               <td>{yesNo(r.checks_passed)}</td>
               <td>{yesNo(r.live_deployable)}</td>
               <td>{riskPolicyLabel(r.risk_policy)}</td>
+              <td>{detectableMarginLabel(r.min_detectable_margin)}</td>
             </tr>
           ))}
         </tbody>

@@ -109,7 +109,13 @@ describe("research status", () => {
               risk_policy: "not_recorded",
               not_validation: true,
             },
-            { report: "live", strategy_id: "h1", verdict: "NO_EDGE_DEMONSTRATED", risk_policy: "live" },
+            {
+              report: "live",
+              strategy_id: "h1",
+              verdict: "NO_EDGE_DEMONSTRATED",
+              risk_policy: "live",
+              min_detectable_margin: 0.045,
+            },
             { report: "bad", unreadable: "JSONDecodeError" },
           ],
         })}
@@ -123,6 +129,8 @@ describe("research status", () => {
       within(row).getByText("not recorded (no risk rules before 2026-11-10)"),
     ).toBeInTheDocument();
     expect(within(screen.getByTestId("research-wf-live")).getByText("paper rules")).toBeInTheDocument();
+    expect(within(screen.getByTestId("research-wf-live")).getByText("4.5 pts")).toBeInTheDocument();
+    expect(screen.getByText(/a true margin below the detectable margin is not ruled out/)).toBeInTheDocument();
     expect(screen.getByText(/None of these verdicts is a validation result/)).toBeInTheDocument();
     expect(
       within(screen.getByTestId("research-wf-bad")).getByText("unreadable (JSONDecodeError)"),

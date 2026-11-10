@@ -13,6 +13,13 @@ merges a branch.
 | `9126512` | `docs/research/MATHEMATICAL_STRATEGY_FOUNDATIONS.md` (the audit, verbatim, with a reconciliation part), `docs/research/H1_DECISION_PACKAGE.md`, `tests/unit/research/test_math_foundations_numbers.py` | 8 number-pinning tests |
 | this commit | Review fixes (below); readiness assessment and owner NORMAL PowerShell steps (package §7–§8); tracker, roadmap, report, metrics | `test_feasibility.py` 27, `test_power_plan.py` 12, rehearsal strengthened |
 
+Follow-up while CI ran: the research status API (`walk_forward_summaries`) and the dashboard's
+walk-forward table show each report's `min_detectable_margin`, with the note that a verdict
+without certification does not rule out a smaller margin (audit §9 item 4). Backend test in
+`test_research_status.py`; the frontend test is in `ResearchStatusBanner.test.tsx` and runs in CI
+only (no node_modules in this container; a strict tsc pass on the changed files shows no error
+beyond the missing packages).
+
 ## Reconciliation in short
 
 - Audited revision `1cc2693`; reconciled against `2b63d4c`. Every implementation claim was checked against the code at

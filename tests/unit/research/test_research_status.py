@@ -188,3 +188,17 @@ def test_walk_forward_reports_are_listed_as_recorded_and_never_as_validation(
         "risk_policy": {"mode": "live", "risk_config_hash": "h"},
     }), encoding="utf-8")  # fmt: skip
     assert {r["report"]: r for r in walk_forward_summaries(root)}["cccc"]["risk_policy"] == "live"
+    assert rows["aaaa"]["min_detectable_margin"] is None  # a report from before power-plan
+    for name, reading, expected in (
+        ("dddd", {"min_detectable_margin": 0.045, "n_used": 900}, 0.045),
+        ("eeee", {"error": "OverflowError: x"}, None),
+        ("ffff", None, None),
+    ):
+        d = root / name
+        d.mkdir()
+        (d / "walkforward.json").write_text(json.dumps({
+            "plan": {"plan_id": name}, "strategy_id": "bracket_reference", "oos": {},
+            "power_reading": reading,
+        }), encoding="utf-8")  # fmt: skip
+        got = {r["report"]: r for r in walk_forward_summaries(root)}[name]
+        assert got["min_detectable_margin"] == expected

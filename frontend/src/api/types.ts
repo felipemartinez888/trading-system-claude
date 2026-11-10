@@ -643,6 +643,8 @@ export interface WalkForwardSummary {
   live_deployable?: boolean | null;
   /** "live" (the paper risk rules), "allow_all" (none) or "not_recorded" (report predates P1-6) */
   risk_policy?: string | null;
+  /** smallest win-rate margin the certified trades could detect (0.045 = 4.5 points); null without a reading */
+  min_detectable_margin?: number | null;
   final_selection?: string | null;
   not_validation?: boolean;
   unreadable?: string;

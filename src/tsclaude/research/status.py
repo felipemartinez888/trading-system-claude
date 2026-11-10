@@ -221,8 +221,9 @@ def load_status(runs_dir: Path, repo_root: Path) -> dict[str, Any]:
 
 def walk_forward_summaries(root: Path) -> list[dict[str, Any]]:
     """Every walk-forward report under ``<data_dir>/walkforward/``, newest first, as recorded:
-    verdict, trial count, coverage, failed folds, live compatibility and the final-selection
-    status. An unreadable report is listed as such, never skipped. None of these verdicts is a
+    verdict, trial count, coverage, failed folds, live compatibility, the risk rules applied, the
+    smallest margin its trades could detect and the final-selection status. An unreadable report
+    is listed as such, never skipped. None of these verdicts is a
     validation result (RESEARCH_PROTOCOL §2)."""
     import json
 
@@ -236,6 +237,7 @@ def walk_forward_summaries(root: Path) -> list[dict[str, Any]]:
             oos = r.get("oos") or {}
             live = r.get("live_compatibility") or {}
             final = r.get("final_selection") or {}
+            power = r.get("power_reading")
             out.append(
                 {
                     "report": path.parent.name,
@@ -256,6 +258,12 @@ def walk_forward_summaries(root: Path) -> list[dict[str, Any]]:
                     # which risk rules the runs applied (P1-6); a report without the field
                     # predates it, when every backtest applied no risk rule
                     "risk_policy": (r.get("risk_policy") or {}).get("mode") or "not_recorded",
+                    # the smallest win-rate margin its certified trades could detect (audit F4):
+                    # a verdict without certification does not rule out a smaller true margin;
+                    # None without a reading (no certification, an error, or an older report)
+                    "min_detectable_margin": power.get("min_detectable_margin")
+                    if isinstance(power, dict)
+                    else None,
                     "final_selection": final.get("status") if final else None,
                     "not_validation": True,
                 }
