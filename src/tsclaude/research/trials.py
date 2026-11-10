@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -186,6 +186,21 @@ class TrialRegistry:
         finally:
             conn.close()
         return attached
+
+    def existing(self, trial_keys: Collection[str]) -> set[str]:
+        """The subset of ``trial_keys`` already recorded (a projection of new trials)."""
+        found: set[str] = set()
+        conn = self._connect()
+        try:
+            for key in dict.fromkeys(trial_keys):
+                row = conn.execute(
+                    "SELECT 1 FROM research_trials WHERE trial_key = ?", (key,)
+                ).fetchone()
+                if row is not None:
+                    found.add(key)
+        finally:
+            conn.close()
+        return found
 
     def n_trials(self, family: str) -> int:
         """Distinct configurations recorded for a strategy id (the family)."""

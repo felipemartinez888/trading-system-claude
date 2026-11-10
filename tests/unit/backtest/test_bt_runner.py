@@ -226,7 +226,7 @@ def test_a_run_that_fails_after_recording_keeps_its_provisional_id_and_its_count
     assert env.trials.n_trials("bracket_reference") == 1  # a crashed evaluation is still a trial
     provisional = row["last_run_id"]
     assert provisional == row["first_run_id"]
-    assert provisional.endswith(row["trial_key"][:8])
+    assert f"-{row['trial_key'][:8]}-prov-" in provisional
     assert not (env.runs_dir / provisional).exists()
     monkeypatch.undo()
     done = run_backtest(request(lo, hi), env, TEST_CONFIG)
@@ -234,6 +234,25 @@ def test_a_run_that_fails_after_recording_keeps_its_provisional_id_and_its_count
     assert row["evaluations"] == 2
     assert row["first_run_id"] == provisional  # created by the crashed evaluation: kept
     assert row["last_run_id"] == done.run_id
+
+
+def test_a_failed_attach_keeps_the_run_and_the_provisional_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    d = _lake(tmp_path / "lake")
+    env = make_env(d)
+
+    def locked(*_: Any, **__: Any) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(env.trials, "attach_run", locked)
+    out = run_backtest(request(ms(2024, 3, 3), ms(2024, 3, 6)), env, TEST_CONFIG)
+    assert (out.run_dir / "manifest.json").is_file()  # the complete run is not lost
+    (row,) = env.trials.list("bracket_reference")
+    assert "-prov-" in row["last_run_id"]
+    assert row["evaluations"] == 1
 
 
 def test_attach_run_changes_only_a_field_that_still_holds_the_provisional_id(

@@ -34,7 +34,10 @@ import hashlib
 import heapq
 import itertools
 import json
+import logging
+import secrets
 import shutil
+import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -53,6 +56,7 @@ from tsclaude.contracts.timeutil import MS_PER_MINUTE, from_iso, to_iso
 from tsclaude.features.core import FEATURES_VERSION
 from tsclaude.quality.interruptions import EMPTY_REGISTRY, InterruptionRegistry
 from tsclaude.research import report
+from tsclaude.research.max_loss_cache import MaxLossCache
 from tsclaude.research.parquet import read_table, write_table
 from tsclaude.research.prereg import check_preregistration
 from tsclaude.research.source import StrategySource, SymbolKey
@@ -68,6 +72,8 @@ from tsclaude.sim.orders import InstrumentSpec
 from tsclaude.store.holdout import HOLDOUT_END_MS, HOLDOUT_START_MS, Purpose
 from tsclaude.store.lake_reader import LakeReader
 from tsclaude.strategies.base import PlanningCosts, Strategy
+
+_log = logging.getLogger(__name__)
 
 #: runner-v2: registered exchange interruptions (ADR-0013) reported as downtime, not missing data
 #: runner-v3: registry schema 2; only the documented absence period [absent_from, to) is downtime
@@ -217,6 +223,8 @@ class RunEnv:
     #: registered exchange interruptions (ADR-0013). The default is empty: without the registry
     #: every missing minute, the 2023-03-24 halt included, still grades the run X (fail closed).
     exchange_interruptions: InterruptionRegistry = field(default_factory=lambda: EMPTY_REGISTRY)
+    #: verified cache of the development-segment max-loss measurement (WF-4); None: no cache
+    max_loss_cache: MaxLossCache | None = None
 
 
 @dataclass(frozen=True)
@@ -613,7 +621,12 @@ def measure_max_loss(env: RunEnv, req: BacktestRequest, cfg: BacktestConfig) -> 
                 f"(simulator, {SIM_ENGINE_VERSION})"
             ),
         )
+    return _apply_max_loss_override(out, req)
+
+
+def _apply_max_loss_override(out: dict[str, Any], req: BacktestRequest) -> dict[str, Any]:
     if req.max_loss_r_override is not None:
+        value = float(out["value"])
         if req.max_loss_r_override < value:
             raise ValueError("max_loss_r_override may only raise the measured default (L-10)")
         out.update(
@@ -621,6 +634,63 @@ def measure_max_loss(env: RunEnv, req: BacktestRequest, cfg: BacktestConfig) -> 
             source=f"preregistration override (raised from {value:.6f}R)",
         )
     return out
+
+
+def max_loss_cache_key(
+    env: RunEnv, req: BacktestRequest, cfg: BacktestConfig, code: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Everything the development-segment max-loss measurement depends on (WF-4), or None when
+    the code cannot be identified (unknown commit or a dirty working tree: never cached)."""
+    commit = code.get("commit")
+    if code.get("dirty") is not False or not commit or commit == "unknown":
+        return None
+    pinned = None if req.dataset_ids is None else req.dataset_ids.get("max_loss")
+    parts: dict[str, list[str]] = {}
+    for market, symbol in req.symbols:
+        name = f"{market}:{symbol}"
+        parts[f"{name}:bars_1m"] = env.reader.parts_fingerprint(
+            market, "bars_1m", symbol, DEV_START_MS, DEV_END_MS, dataset_ids=pinned
+        )
+        if market is Market.USDM:  # funding reads are not pinned (load_funding)
+            for kind in ("funding", "mark_price_1m"):
+                parts[f"{name}:{kind}"] = env.reader.parts_fingerprint(
+                    market, kind, symbol, DEV_START_MS, DEV_END_MS
+                )
+    strat = req.strategy
+    return {
+        "runner_version": RUNNER_VERSION,
+        "sim_engine_version": SIM_ENGINE_VERSION,
+        "features_version": FEATURES_VERSION,
+        "strategy": {**strat.describe(), "strategy_hash": strat.strategy_hash},
+        "symbols": [f"{m}:{s}" for m, s in req.symbols],
+        "config_hash": cfg.config_hash,
+        "cost_model": cost_identity(env.cost_model),
+        "exchange_interruptions": env.exchange_interruptions.manifest(),
+        "dev_range": [DEV_START_MS, DEV_END_MS],
+        "pinned_max_loss": None if pinned is None else sorted(pinned),
+        "lake_parts": parts,
+        "code_commit": commit,
+    }
+
+
+def _max_loss(
+    env: RunEnv, req: BacktestRequest, cfg: BacktestConfig, code: Mapping[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """The max-loss measurement for a run (override applied) and how it was obtained: ``hit``
+    (verified cache entry), ``miss`` (measured and cached) or ``off`` (measured, not cacheable
+    or no cache). The cached measurement never includes a preregistration override."""
+    raw_req = dataclasses.replace(req, max_loss_r_override=None)
+    cache = env.max_loss_cache
+    key = None if cache is None else max_loss_cache_key(env, raw_req, cfg, code)
+    raw = None if cache is None or key is None else cache.get(key)
+    status = "hit"
+    if raw is None:
+        raw = measure_max_loss(env, raw_req, cfg)
+        status = "off"
+        if cache is not None and key is not None:
+            cache.put(key, raw)
+            status = "miss"
+    return _apply_max_loss_override(dict(raw), req), status
 
 
 def _certify(
@@ -840,6 +910,44 @@ def _file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def trial_identity(
+    req: BacktestRequest, env: RunEnv, cfg: BacktestConfig
+) -> tuple[str, dict[str, Any]]:
+    """The trial key a run of ``req`` records, and its configuration, without running it (used
+    to project a walk-forward's trial count and to verify a reused run)."""
+    strat = req.strategy
+    trial_config: dict[str, Any] = {
+        "symbols": [f"{m}:{s}" for m, s in req.symbols],
+        "from_ms": req.from_ms,
+        "to_ms": req.to_ms,
+        "segment": segment_of(req.from_ms, req.to_ms),
+        "config_hash": cfg.config_hash,
+        "cost_model": cost_identity(env.cost_model),
+    }
+    if req.seed is not None:
+        trial_config["seed"] = req.seed
+    key = trial_key(
+        trial_body(
+            strategy_id=strat.strategy_id,
+            strategy_version=strat.version,
+            params_hash=strat.params_hash,
+            config=trial_config,
+        )
+    )
+    return key, trial_config
+
+
+#: manifest fields outside the manifest hash (identity of the file, not of the run's inputs)
+NON_HASHED_MANIFEST_FIELDS = frozenset(
+    {"run_id", "manifest_hash", "code", "created_at", "provenance", "outputs", "max_loss_cache"}
+)
+
+
+def manifest_hash_of(manifest: Mapping[str, Any]) -> str:
+    """Recompute a stored manifest's hash from its hashed fields (verifies the file)."""
+    return _sha({k: v for k, v in manifest.items() if k not in NON_HASHED_MANIFEST_FIELDS})
+
+
 # ---------------------------------------------------------------- the run
 def run_backtest(
     req: BacktestRequest, env: RunEnv, cfg: BacktestConfig | None = None
@@ -880,28 +988,12 @@ def run_backtest(
     # 2. trial registry (before results exist); the seed is derived from the trial key unless
     #    given explicitly, in which case it is part of the key (every seed tried is a trial)
     stamp = datetime.fromtimestamp(created / 1000, tz=UTC).strftime("%Y%m%dT%H%M%SZ")
-    trial_config: dict[str, Any] = {
-        "symbols": [f"{m}:{s}" for m, s in req.symbols],
-        "from_ms": req.from_ms,
-        "to_ms": req.to_ms,
-        "segment": segment,
-        "config_hash": cfg.config_hash,
-        "cost_model": cost_identity(env.cost_model),
-    }
-    if req.seed is not None:
-        trial_config["seed"] = req.seed
-    key = trial_key(
-        trial_body(
-            strategy_id=strat.strategy_id,
-            strategy_version=strat.version,
-            params_hash=strat.params_hash,
-            config=trial_config,
-        )
-    )
+    key, trial_config = trial_identity(req, env, cfg)
     seed = req.seed if req.seed is not None else int(key[:8], 16)
     seed_source = "explicit (counted in the trial key)" if req.seed is not None else "trial key"
-    # provisional run id: the real one (manifest hash) is attached once the artifacts exist
-    provisional_run_id = f"bt-{stamp}-{key[:8]}"
+    # provisional run id: the real one (manifest hash) is attached once the artifacts exist; the
+    # nonce keeps two evaluations of one trial in the same second apart (review note)
+    provisional_run_id = f"bt-{stamp}-{key[:8]}-prov-{secrets.token_hex(4)}"
     trial = env.trials.record(
         hypothesis_label=req.hypothesis,
         strategy_id=strat.strategy_id,
@@ -943,8 +1035,9 @@ def run_backtest(
     )
     control_trades = report.order_trades(control_books[0].trades)
 
-    # 4. max_loss_r on the development segment (L-10)
-    max_loss = measure_max_loss(env, req, cfg)
+    # 4. max_loss_r on the development segment (L-10), from the verified cache when possible
+    code = env.code_version()
+    max_loss, max_loss_cache = _max_loss(env, req, cfg, code)
     first = planning[req.symbols[0]]
     p_star = strat.design_p_star(first)
     stop_loss_r = strat.stop_loss_r(first)
@@ -1030,9 +1123,10 @@ def run_backtest(
         **hashed,
         "run_id": run_id,
         "manifest_hash": manifest_hash,
-        "code": env.code_version(),
+        "code": code,
         "created_at": to_iso(created),
         "provenance": "BACKTEST",
+        "max_loss_cache": max_loss_cache,  # not hashed: a hit gives the same manifest hash
     }
     missing_fields = [f for f in REQUIRED_MANIFEST_FIELDS if manifest.get(f, "") in ("", None)]
     missing_fields = [f for f in missing_fields if f != "prereg_id"]  # None = no prereg (valid)
@@ -1192,9 +1286,17 @@ def run_backtest(
         json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    env.trials.attach_run(
-        trial.trial_key, provisional_run_id=provisional_run_id, run_id=manifest["run_id"]
-    )
+    try:  # traceability only: the run is complete and counted whatever happens here
+        env.trials.attach_run(
+            trial.trial_key, provisional_run_id=provisional_run_id, run_id=manifest["run_id"]
+        )
+    except sqlite3.Error as exc:
+        _log.warning(
+            "trial %s keeps its provisional run id %s (attach failed: %s)",
+            trial.trial_key[:12],
+            provisional_run_id,
+            exc,
+        )
     return RunOutcome(manifest["run_id"], run_dir, manifest, metrics, metrics_hash)
 
 
@@ -1224,12 +1326,14 @@ def load_run(
     trials: TrialRegistry | None = None,
     *,
     recompute: bool = True,
+    n_trials: int | None = None,
 ) -> dict[str, Any] | None:
     """A recorded run with a summary. With ``recompute`` the certification and grade are
     re-evaluated with the registry's **current** ``n_trials`` for the strategy family when more
     trials were recorded since the run (audit N1); the summary then shows the current values and
     ``recomputed: true``, and the stored ones stay in ``metrics``. The registry defaults to
-    ``<runs_dir>/../state.db``.
+    ``<runs_dir>/../state.db``. An explicit ``n_trials`` replaces the registry's count (a
+    walk-forward rescores a fold with one count fixed for its whole plan).
     """
     root = Path(runs_dir).resolve()
     d = (root / run_id).resolve()
@@ -1252,9 +1356,13 @@ def load_run(
     stored_trials = m.get("n_trials")
     current: dict[str, Any] | None = None
     if recompute and metrics is not None and family and verified:
-        if trials is None and (root.parent / "state.db").is_file():
+        if n_trials is None and trials is None and (root.parent / "state.db").is_file():
             trials = TrialRegistry(root.parent / "state.db")
-        now = trials.n_trials(family) if trials is not None else None
+        now = (
+            n_trials
+            if n_trials is not None
+            else (trials.n_trials(family) if trials is not None else None)
+        )
         if now is not None and stored_trials is not None and now != stored_trials:
             current = _recompute(d, metrics, now)
     summary = {

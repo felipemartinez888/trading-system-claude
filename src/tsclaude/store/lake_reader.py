@@ -25,7 +25,7 @@ from typing import Any
 
 from tsclaude.contracts.market import Bar, BarSource, Interval, Market
 from tsclaude.contracts.timeutil import MS_PER_MINUTE
-from tsclaude.store.holdout import HoldoutApproval, HoldoutGuard, Purpose
+from tsclaude.store.holdout import HoldoutApproval, HoldoutError, HoldoutGuard, Purpose
 from tsclaude.store.lake import TIME_KEY, IndexedPart, Lake, LakeKind, PartCodec, Row
 
 _SOURCE_RANK = {
@@ -175,6 +175,31 @@ class LakeReader:
             and not ip.part.sealed
         ]
         return min(firsts) if firsts else None
+
+    def parts_fingerprint(
+        self,
+        market: Market,
+        kind: str,
+        symbol: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        dataset_ids: Collection[str] | None = None,
+    ) -> list[str]:
+        """``dataset_id:content_hash`` of every part of ``kind`` (``bars_1m``, ``funding``,
+        ``mark_price_1m``) a read of ``[start_ms, end_ms)`` would consider, sorted (index
+        metadata only; no row is read). Identifies the exact data a cached measurement was made
+        on. Refused for a range with sealed parts."""
+        out = []
+        for ip in self._parts(market, LakeKind(kind), symbol, start_ms, end_ms, dataset_ids):
+            if ip.part.sealed:
+                raise HoldoutError("a fingerprint is never taken over sealed holdout parts")
+            out.append(f"{ip.dataset_id}:{ip.part.content_hash}")
+        return sorted(out)
+
+    def known_dataset_ids(self) -> list[str]:
+        """Every committed dataset id of the lake (index metadata only)."""
+        return self._lake.dataset_ids()
 
     # ------------------------------------------------------------------ internals
     def _parts(
