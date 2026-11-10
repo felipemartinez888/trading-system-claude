@@ -20,8 +20,10 @@ permissions:
   contents: read
 
 # P1 (CI proposal): an ordinary push still supersedes the run of an older push on the same
-# branch. A dispatched run (formal acceptance, benchmark) and a push to acceptance/** get a group
-# of their own (run id, commit), so nothing can cancel them or replace them while pending.
+# branch. A dispatched run (formal acceptance, benchmark) gets a group of its own (its run id),
+# so no push or other dispatch can cancel it or replace it while pending. A push to
+# acceptance/** gets one group per commit: only another run of the same commit on the same
+# branch (for example the branch deleted and pushed again) can replace it while it is pending.
 concurrency:
   group: "ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || startsWith(github.ref, 'refs/heads/acceptance/') && format('sha-{0}', github.sha) || 'push' }}"
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/heads/acceptance/') }}
@@ -82,7 +84,7 @@ jobs:
             --outcomes-out "ci-logs/outcomes-${{ matrix.os }}-serial.json" --summary-out "$GITHUB_STEP_SUMMARY"
           uv pip freeze > "ci-logs/freeze-${{ matrix.os }}-serial.txt"
           { echo "### Working tree after pytest (${{ matrix.os }}, report only)"; echo '```';
-            git status --porcelain --untracked-files=all | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            git status --porcelain --untracked-files=all --ignored | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload test report (P0)
         if: always()
         continue-on-error: true
@@ -168,8 +170,8 @@ jobs:
         shell: bash
         run: |
           changed=$(git status --porcelain --untracked-files=no)
-          { echo "### Working tree after pytest (${{ matrix.os }}, $MODE)"; echo '```';
-            git status --porcelain --untracked-files=all | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Working tree after pytest (${{ matrix.os }}, $MODE; ignored files listed too)"; echo '```';
+            git status --porcelain --untracked-files=all --ignored | head -50; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$changed" ]; then echo "::error::tests changed tracked files:"; echo "$changed"; exit 1; fi
       - name: Upload test report
         if: always()

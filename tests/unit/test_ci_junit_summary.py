@@ -93,3 +93,41 @@ def test_freeze_comparison_ignores_only_the_named_packages(tmp_path: Path) -> No
     ok, lines = junit.compare_freeze(a, b, {"pytest-xdist", "execnet"})
     assert not ok
     assert lines == ["numpy: numpy==2.3.0 vs numpy==2.3.1"]
+
+
+def _outcomes(path: Path, pairs: list[list[str]]) -> Path:
+    path.write_text(json.dumps({"outcomes": pairs}), "utf-8")
+    return path
+
+
+def test_outcome_comparison_counts_duplicates_and_refuses_empty_reports(tmp_path: Path) -> None:
+    one = _outcomes(tmp_path / "one.json", [["t::a", "passed"]])
+    two = _outcomes(tmp_path / "two.json", [["t::a", "passed"], ["t::a", "passed"]])
+    assert junit.main(["compare", str(one), str(two)]) == 1  # a test run twice is a difference
+    empty = _outcomes(tmp_path / "empty.json", [])
+    assert junit.main(["compare", str(empty), str(empty)]) == 1  # 0 cases never pass
+    assert junit.main(["compare", str(one), str(one)]) == 0
+
+
+def test_json_comparison_fails_on_any_difference(tmp_path: Path) -> None:
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    report = {"delayed restart census": {"cases": 60, "RECOVERED": 45, "SAFE_BLOCK": 15}}
+    a.write_text(json.dumps(report), "utf-8")
+    b.write_text(json.dumps(report, indent=2), "utf-8")  # same content, other layout
+    assert junit.main(["compare-json", str(a), str(b)]) == 0
+    report["delayed restart census"]["RECOVERED"] = 44
+    b.write_text(json.dumps(report), "utf-8")
+    assert junit.main(["compare-json", str(a), str(b)]) == 1
+
+
+def test_freeze_names_are_normalized_and_direct_references_are_kept(tmp_path: Path) -> None:
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_text("Foo_Bar==1.0\ntsclaude @ file:///work\n", "utf-8")
+    b.write_text("foo-bar==1.0\ntsclaude @ file:///work\n", "utf-8")
+    ok, _ = junit.compare_freeze(a, b, set())
+    assert not ok  # the line text differs (name spelling), so it is reported, not hidden
+    b.write_text("Foo_Bar==1.0\ntsclaude @ file:///elsewhere\n", "utf-8")
+    ok, lines = junit.compare_freeze(a, b, set())
+    assert not ok
+    assert lines == ["tsclaude: tsclaude @ file:///work vs tsclaude @ file:///elsewhere"]
+    assert junit.compare_freeze(a, a, {"foo-bar"})[1] == ["identical: 1 packages"]

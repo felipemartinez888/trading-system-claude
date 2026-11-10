@@ -110,3 +110,67 @@ def test_runs_of_other_commits_or_workflows_are_ignored_and_errors_give_no_verdi
 
     assert evidence.evaluate(SHA, "o/r", broken, None)[0] == 2
     assert evidence.evaluate("abc123", "o/r", broken, None)[0] == 2  # short ids are resolved first
+
+
+def _attempts_api(
+    run: dict[str, Any],
+    jobs_by_attempt: dict[int, list[dict[str, Any]]],
+    conclusions: dict[int, str],
+) -> Any:
+    def call(path: str) -> Any:
+        if "/actions/runs?head_sha=" in path:
+            return {"workflow_runs": [run]}
+        for k, js in jobs_by_attempt.items():
+            if path.startswith(f"repos/o/r/actions/runs/{run['id']}/attempts/{k}/jobs"):
+                return {"jobs": js}
+        for k, c in conclusions.items():
+            if path == f"repos/o/r/actions/runs/{run['id']}/attempts/{k}":
+                return {"conclusion": c}
+        raise AssertionError(path)
+
+    return call
+
+
+def test_the_latest_attempt_decides_and_a_rerun_after_a_failure_is_refused_by_default() -> None:
+    run = _run(7, run_attempt=3)
+    failing = _full_jobs(**{"python (windows-latest)": "failure"})
+    api = _attempts_api(
+        run, {1: failing, 2: failing, 3: _full_jobs()}, {1: "failure", 2: "failure"}
+    )
+    code, lines = evidence.evaluate(SHA, "o/r", api, None)
+    assert code == 1
+    assert any("earlier attempt(s) 1 failure, 2 failure" in line for line in lines)
+    code, lines = evidence.evaluate(SHA, "o/r", api, None, allow_rerun_after_failure=True)
+    assert code == 0
+    assert any("attempt 3" in line and line.startswith("EVIDENCE") for line in lines)
+    assert sum("WARNING: attempt" in line for line in lines) == 2
+
+
+def test_a_rerun_of_a_cancelled_attempt_is_evidence_and_only_the_latest_jobs_count() -> None:
+    run = _run(8, run_attempt=2)
+    cancelled = _full_jobs(**{"python (ubuntu-latest)": "cancelled"})
+    api = _attempts_api(run, {1: cancelled, 2: _full_jobs()}, {1: "cancelled"})
+    assert evidence.evaluate(SHA, "o/r", api, None)[0] == 0
+    # the latest attempt failing is never rescued by an earlier green one
+    run = _run(9, run_attempt=2, conclusion="failure")
+    api = _attempts_api(run, {1: _full_jobs(), 2: cancelled}, {1: "success"})
+    assert evidence.evaluate(SHA, "o/r", api, None)[0] == 1
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        RuntimeError("socket closed"),  # not an ApiError: still no verdict
+        [],  # a list where an object was expected
+        {"workflow_runs": [{"head_sha": SHA, "path": ".github/workflows/ci.yml"}]},  # no id
+    ],
+)
+def test_any_unexpected_answer_gives_no_verdict(answer: Any) -> None:
+    def call(path: str) -> Any:
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    code, lines = evidence.evaluate(SHA, "o/r", call, None)
+    assert code == 2
+    assert "no verdict" in lines[-1]

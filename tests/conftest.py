@@ -63,6 +63,8 @@ def pytest_testnodedown(node: Any, error: Any) -> None:
 
 
 def pytest_terminal_summary(terminalreporter: Any) -> None:
+    if hasattr(getattr(terminalreporter, "config", None), "workerinput"):
+        return  # a pytest-xdist worker: its counts go to the controller, which reports the sum
     report = _merge([_local_report(), _FROM_WORKERS])
     if not report:
         return
