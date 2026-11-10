@@ -6,8 +6,9 @@ independent review where the task is research-critical. It never means "effectiv
 Owner decisions are in [DECISIONS_PENDING](DECISIONS_PENDING.md); a task that needs one is BLOCKED and
 names it. Evidence for each row is the commit, the test file and the CI run listed.
 
-Last update: 2026-11-10, morning session (D-E direction: keep the 1.5 floor; identical risk policy in
-backtests and Paper). CI on the overnight final HEAD `b0921c9`: `42796904242` 7/7.
+Last update: 2026-11-10, consolidated integration session (mathematical audit integrated and
+reconciled; P&L-free diagnostics; decision package). CI on `1cc2693`: `42837576325` 7/7; later runs
+are listed in [MVP_OVERNIGHT_REPORT](MVP_OVERNIGHT_REPORT.md) §0.
 
 ## P0: previous sequence (closure handoff Track A, Missions 2 and 3)
 
@@ -40,6 +41,9 @@ backtests and Paper). CI on the overnight final HEAD `b0921c9`: `42796904242` 7/
 | P1-6 | Wire risk rules into backtests | research evaluates what live accepts | IMPLEMENTED, TESTED (20 tests: verdict parity with the paper engine, view parity with the paper tracker, freshness from bars, no look-ahead, kill switch and base costs in every book, fail closed, end to end); Fable review CONDITIONAL PASS 0 blocking, F1–F6/F8–F10 fixed (F6 by a run-side check, `b7abde7`), F7 minor open; VERIFIED in CI `42829517341` 7/7 on `0429135` | `9f2cabc` + review fixes; `test_backtest_risk_policy.py`; [devlog](devlog/2026-11-10-m4-p1-6-risk-policy.md) | unblocked by the owner direction 2026-11-10 (keep the floor); D-E's formal record stays the owner's |
 | P1-7 | Holdout guard integration of selection records | guard unlock via a selection record | BLOCKED: a record has no top-level `strategy_hash`, so the unchanged guard cannot accept it (review B1 fix) | `f10daad`, review fix | **D-D**, then an owner-approved guard change |
 | P1-8 | Independent review of P1-1…P1-5 and M6 | Fable review findings fixed | VERIFIED: review fixes in CI `42780296915` 7/7; Fable re-review CHANGES REQUESTED (N2 folds not pinned, N5 unknown keys), fixed `93846a0` | `afcd1a2` `93846a0` | — |
+| P1-9 | P&L-free feasibility diagnostics (audit F2/F3, F4 counts) | per-stage cumulative, marginal and leave-one-out counts; candidates by UTC hour (overall, per symbol, per ablation rung) with the busiest-6-hour share; month totals; ablation-ladder counts; no outcome field; no trial; selection untouched | IMPLEMENTED, TESTED (feasibility 27 passed; ladder's last rung equals the confirmed count); Fable review CONDITIONAL PASS 0 blocking, M1/M3 fixed (hour tests, per-rung hours) | `87ad417` + review fixes; `test_feasibility.py` | real-data reading: H1-c |
+| P1-10 | Power planning; walk-forward exit mix and power reading (audit F1 part, A7) | candidates inside the test windows from month totals (basis stated), prior family rows in the planned alpha, minimum detectable margin per take-profit and n_eff ratio; report gains `exit_mix` (time-exit share) and `power_reading`; certification and selection unchanged | IMPLEMENTED, TESTED (12 power-plan tests pin margin 0.05 at 1804 trades and 0.10 at 452 under alpha/199; the rehearsal checks the exit mix against the real run metrics); review M2/M4 fixed | `c750fe8` + review fixes; `test_power_plan.py`, `test_backtest_risk_policy.py` | — |
+| P1-11 | Integrated mathematical audit, reconciliation, decision package, H1 readiness | every [I] claim checked at HEAD, every [D] number reproduced by a test; floor qualifications written; D-C/D-E/D-F1/D-G and R-1..R-8 packaged; authorized vs proposed separated | IMPLEMENTED, TESTED (8 number-pinning tests); review wording findings fixed, Part 2 checked against the Project original | `9126512` + readiness §7–§8; [MATHEMATICAL_STRATEGY_FOUNDATIONS](research/MATHEMATICAL_STRATEGY_FOUNDATIONS.md), [H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md), `test_math_foundations_numbers.py` | the decisions themselves: owner |
 
 ## P2: hypotheses
 
@@ -48,9 +52,9 @@ backtests and Paper). CI on the overnight final HEAD `b0921c9`: `42796904242` 7/
 | H1-a | H1 strategy scaffolding (draft registry, finite 1h trend, time exit, diagnose, live geometry) | causality canary; no trial possible | IMPLEMENTED, TESTED (45 + 10 + 2); causality audit CONDITIONAL PASS, findings fixed | `0030114` `fec95ba` `ba69590` `78ed753` | promotion to REGISTRY: owner, with the freeze |
 | H1-b | Corrected H1-v2 preregistration draft (schema v1) | validates with only open owner decisions | VERIFIED as a draft; **superseded for review by H1-f** (every v2 configuration is INCOMPATIBLE with the kept floor: 24 problems once D-E is set) | `docs/research/H1-v2.preregistration.DRAFT.yaml` | — |
 | H1-f | Live-compatible H1-v3 draft (take-profits 2, 2.5, 3 R; all else v2) | every configuration COMPATIBLE with the 1.5 floor; validates with only open owner items | IMPLEMENTED: `prereg validate` ok, 24 configurations; with D-E set to keep the floor, 0 problems (v2: 24) | `9c681ca`; [H1_DECISION_BRIEF](research/H1_DECISION_BRIEF.md) | owner review; ADR-0012 Amendment 6 (proposed) |
-| H1-c | Owner feasibility count on real data (15m vs 1h) | counts per symbol/year | BLOCKED (owner PC) | MVP_USER_GUIDE §5 | owner runs it |
-| H1-d | H1 freeze | committed frozen file | BLOCKED | sequence in the brief §5 | **D-C, D-E (+ Amendment 6), D-F1**, D-G recommended, owner freeze |
-| H1-e | First H1 walk-forward | `--prereg H1-v2 --datasets …` | BLOCKED | — | H1-d |
+| H1-c | Owner feasibility count on real data (15m vs 1h) | counts per symbol/year, with the P1-9 diagnostics and a power plan per take-profit set | BLOCKED (owner PC) | exact NORMAL PowerShell steps: [H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md) §8 | owner runs it |
+| H1-d | H1 freeze | committed frozen file | BLOCKED | sequence in the brief §5 and package §6–§7 | **D-C, D-E (+ Amendment 6), D-F1**, D-G recommended, owner freeze |
+| H1-e | First H1 walk-forward | `--prereg <frozen H1-v3> --datasets …`; OOS verdict with power reading | BLOCKED | readiness: [H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md) §7 | H1-d |
 | H2/H3 | Implement H2, H3 | as RESEARCH_PROTOCOL §8 | DEFERRED | — | after H1's protocol path is proven; no new hypothesis invented |
 
 ## P3: M5 agents (mocked)

@@ -42,8 +42,8 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | M0, M1 | Implemented and used daily; not formally accepted (ROADMAP live status) |
 | M2 | **ACCEPTED, limited scope** (D-22) |
 | M3 | Gate VERIFIED technically; formal acceptance open (D-A, [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md)) |
-| M4 | Tooling IMPLEMENTED and TESTED; no preregistration frozen, no hypothesis implemented as runnable, no real-data research run |
-| M5 | Mock-testable part IMPLEMENTED and TESTED (156 passed; two review rounds, findings fixed); runtime wiring, `agent_gated` book and Agent tab DEFERRED; the real-key clause BLOCKED (paid API, owner) |
+| M4 | Tooling IMPLEMENTED and TESTED, most of it VERIFIED in CI (risk policy in backtests, 3,000 ms latency, preregistration and freeze). P&L-free diagnostics and power planning IMPLEMENTED, TESTED (integration session, below). No preregistration frozen, no trial consumed, no real-data research run |
+| M5 | Mock-testable part VERIFIED (mock scope). Runtime wiring and the `agent_gated` book VERIFIED on the separate branch `task/m5-runtime-wiring` (CI `42844539087` 7/7 on `127e445`), **not merged** (D-H). Agent tab not started; the real-key clause BLOCKED (paid API, owner) |
 | M6 (export) | IMPLEMENTED, TESTED (CI `42776226802`); **verified on three real recorded sessions**: the stdlib scorer reproduces all 9 session-end ledger hashes from the export alone. Not accepted: D-06 (format agreed with the other team) and the gate's wider dashboard metrics remain |
 
 ## Research readiness
@@ -126,3 +126,21 @@ official trial was recorded, and no holdout data was touched.
 - 2 R holds the floor only while take-profits fill as maker orders: it nets 1.52, or 1.4995 if
   they fill as taker orders. {2.5, 3, 3.5} keeps a margin either way (brief §3).
 - Applying the paper policy and the real latency makes backtests more conservative, by design.
+
+## Integration session (2026-11-10, "consolidated MVP and mathematical research integration")
+Ground truth checked first: `1cc2693` (CI `42837576325` 7/7), then `2b63d4c` (CI `42844534280` 7/7)
+and the M5 branch at `127e445` (CI `42844539087` 7/7). Nothing was frozen, merged or accepted; no
+trial was recorded; no holdout data, risk threshold or Codex repository was touched.
+
+| Item | Commits | Evidence | Status |
+|---|---|---|---|
+| The mathematical audit added as `docs/research/MATHEMATICAL_STRATEGY_FOUNDATIONS.md`: Part 1 reconciliation against `2b63d4c` (claims table, one number corrected, five qualifications of the floor's meaning, recommendation status), Part 2 verbatim | `9126512` + review wording fixes | `test_math_foundations_numbers.py` (8) reproduces every derived number with the engine's own `net_rr` and `n_min` | IMPLEMENTED, TESTED |
+| P1-9: P&L-free feasibility diagnostics (stage filter, UTC-hour split overall, per symbol and per ablation rung, month totals) | `87ad417` + review fixes | `test_feasibility.py` (27) | IMPLEMENTED, TESTED |
+| P1-10: power plan (`tsclaude backtest power-plan`), walk-forward `exit_mix` and `power_reading` | `c750fe8` + review fixes | `test_power_plan.py` (12), rehearsal | IMPLEMENTED, TESTED |
+| Decision package: D-C with R-4, D-E with Amendment 6 and the take-profit sets compared mechanically, D-F1, D-G, R-1..R-8, authorized vs proposed, readiness, owner steps | `9126512` + this checkpoint | [H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md) | for owner decision |
+| Independent review of the three commits | — | Fable: **CONDITIONAL PASS, 0 blocking**; M1–M4 and minors fixed, one declined with a reason (devlog) | fixes IMPLEMENTED, TESTED; CI after the push |
+
+**H1 readiness (package §7):** no engineering blocker remains up to the out-of-sample verdict. Still
+open: the owner's feasibility count and power plan (NORMAL PowerShell, package §8), then D-C, D-E with
+Amendment 6 and R-1, the take-profit set, D-F1, then the freeze. Validation and the holdout stay
+blocked (D-D, D-F2, P1-7).

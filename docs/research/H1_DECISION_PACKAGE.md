@@ -14,7 +14,7 @@ from an outcome. `tests/unit/research/test_math_foundations_numbers.py` and
 |---|---|
 | Keep the 1.5 net reward/risk floor and apply the same risk policy in backtests and Paper (a *direction* under D-E; the formal D-E record is still open) | Session instruction 2026-11-10; implemented, CI 7/7 (`0429135`, `1cc2693`) |
 | Design a floor-compatible H1 search space for review (H1-v3 draft) | Same instruction |
-| P&L-free H1 diagnostics: hour of day, stage filtering, power reporting, time-exit share, an ablation design that does not change the objective | Session instruction 2026-11-10 (this package's directive) |
+| P&L-free H1 diagnostics: hour of day, stage filtering, power reporting, time-exit share, an ablation design that does not change the objective | Session instruction 2026-11-10 (the "consolidated MVP and mathematical research integration" directive). It is an engineering instruction, not a D-decision, so it has no entry in DECISIONS_PENDING |
 | M5 runtime work on its own branch, mode off, mock clients only | Session instructions 2026-11-10 |
 
 **Not authorized; awaiting a decision:**
@@ -116,8 +116,10 @@ condition carries information.
 | 3 | + compression |
 | 4 | + volume (= H1) |
 
-**Done now (P&L-free).** Candidate counts per rung, overall and by UTC hour, in every feasibility
-count. These show whether a conditional control would have enough candidates.
+**Done now (P&L-free).** Candidate counts per rung, overall and by UTC hour
+(`diagnostics.ablation_ladder[].by_utc_hour`, with each rung's busiest-6-hour share), in every
+feasibility count. These show whether a conditional control would have enough candidates, and
+whether a rung's candidates cluster at particular hours (audit A12).
 
 **Proposed for approval.** A secondary control per rung:
 - **Design.** For rung `k`, draw random entries from the rung's candidate pool with H1's exits and
@@ -134,9 +136,88 @@ count. These show whether a conditional control would have enough candidates.
 1. **(owner, now)** The smoke check and the H1-1 feasibility count (§6 of the brief). The count now
    also returns hour-of-day, stage-filter and ladder diagnostics.
 2. **(owner)** `tsclaude backtest power-plan --feasibility <file> --anchor 2022-02-01` on that count.
-   It prints the out-of-sample trade upper bound and the detectable margin for both take-profit
-   sets (`--tp-r 2,2.5,3` and `--tp-r 2.5,3,3.5`).
+   It prints the candidates inside the test windows and the detectable margin for both
+   take-profit sets (`--tp-r 2,2.5,3` and `--tp-r 2.5,3,3.5`). The candidate number comes from the
+   count's month totals, so it is not an even-spread estimate. It is still optimistic: candidates
+   of one configuration, before the portfolio rules and exits, under alpha / 199 for an empty H1
+   family.
 3. **(owner)** Decide D-C, D-E with Amendment 6 and R-1, the take-profit set, D-F1, D-G. R-4 can
    wait until H2.
 4. Prepare the H1 preregistration from the chosen set. Then the owner promotes, freezes and
    commits it (brief §5).
+
+## 7. Readiness of the first H1 real-data walk-forward (2026-11-10)
+
+**Assessment: not executable yet, and no engineering blocker remains up to the out-of-sample
+verdict.** What remains is one owner-side measurement and the owner's decisions. Validation and the
+holdout are separately blocked, by design.
+
+| Step | Status | Evidence | Blocked by |
+|---|---|---|---|
+| 1. Development-data feasibility count | Tool ready (feasibility-v2 with diagnostics); **not run on real data** | `test_feasibility.py`; overnight and morning CI | The owner's run (H1-c) |
+| 2. Research decision approval | **Open** | §1–§4 | D-C, D-E with Amendment 6 and R-1, the take-profit set, D-F1; D-G recommended |
+| 3. H1 preregistration | H1-v3 draft validates (24 configurations, only owner items open) | `prereg validate`; `test_preregistration.py` | Steps 1–2: the interval from the counts, a fixed anchor, the policy values, dataset pins from `feasibility.json`, the F5 statement |
+| 4. Frozen configuration and dataset identities | Freeze tooling verified. It pins the anchor, the folds, the backtest config hash (risk policy and 3,000 ms latency included), the implementation hash and the code commit | CI `42829517341`, `42837576325`; rehearsal test | The owner's promotion out of the draft registry, the freeze and the commit, from a clean checkout |
+| 5. Walk-forward | Verified on synthetic data end to end: conformance, live policy, resume, budget, blocks, exit mix, power reading | `test_rehearsal_of_the_first_experiment_pipeline_on_synthetic_data` | Step 4. Compute is about 28–46 hours, an upper estimate from H1-v1; the run is resumable |
+| 6. Out-of-sample evaluation | Verified: stitched certification, coverage floor, verdicts, `power_reading` | walk-forward tests | Step 5 |
+| 7. Validation (2025) | **Blocked** | — | D-D (two-stage selection record), then an owner-approved holdout-guard change (P1-7) |
+| 8. Holdout (2026) | **Blocked, never without separate authorization** | — | D-D, D-F2, a separate unlock |
+
+Known limits that do not block the run:
+- The real-data runtime is not measured.
+- Paper has no spread history, so the cost-stress runs carry the spread risk.
+- The lock files are not committed (D-G).
+
+## 8. Owner instructions (Windows, **NORMAL PowerShell**; no Administrator rights needed)
+
+None of these places an order, uses an API key, calls a paid service, records a trial or reads the
+holdout.
+
+**1. Update the branch checkout** (the same worktree as before; your real app and data are not
+touched). These steps need the commit that adds `power-plan` to be pushed; the last command shows
+the checked-out commit, which should be the one named in the report:
+```powershell
+cd C:\Users\felip\Projects\trading-system-claude
+git fetch origin task/mvp-integration
+if (Test-Path ..\tsc-mvp) { git -C ..\tsc-mvp checkout --detach origin/task/mvp-integration } else { git worktree add --detach ..\tsc-mvp origin/task/mvp-integration }
+cd ..\tsc-mvp
+git log -1 --oneline
+```
+
+**2. Dashboard smoke check** (optional if already done; about 5 minutes; separate empty data folder,
+port 8799):
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\owner_checks\dashboard_smoke.ps1
+```
+
+**3. H1-1 feasibility count, 15m and 1h.** Development data only and P&L-free; it writes only
+`<data>\feasibility\`:
+```powershell
+$env:TSC_DATA_DIR = 'C:\Users\felip\Projects\trading-system-claude\data'
+uv run tsclaude backtest feasibility --draft --strategy h1_compression_breakout `
+  --grid docs\research\grids\feasibility_h1_draft_probe.json `
+  --symbols spot:BTCUSDT,spot:ETHUSDT,spot:DOGEUSDT,spot:XRPUSDT --from 2022-03-01 --to 2025-01-01
+```
+The printed summary lists one result per configuration. The first (`{}`) is 15m, the second
+(`{"interval": "1h"}`) is 1h. Each has its `path` to a `feasibility.json`.
+
+**4. Power plan from each count, for both take-profit sets.** It reads only the file and records
+nothing. Replace `<15m file>` and `<1h file>` with the paths printed in step 3:
+```powershell
+uv run tsclaude backtest power-plan --feasibility "<15m file>" --anchor 2022-02-01 --tp-r 2,2.5,3
+uv run tsclaude backtest power-plan --feasibility "<15m file>" --anchor 2022-02-01 --tp-r 2.5,3,3.5
+uv run tsclaude backtest power-plan --feasibility "<1h file>" --anchor 2022-02-01 --embargo-minutes 4320 --tp-r 2,2.5,3
+uv run tsclaude backtest power-plan --feasibility "<1h file>" --anchor 2022-02-01 --embargo-minutes 4320 --tp-r 2.5,3,3.5
+Remove-Item Env:\TSC_DATA_DIR
+```
+Send the two `feasibility.json` files (the power plans can be re-derived from them).
+
+**What to read in the output:**
+- the per-stage counts and `stage_filter`;
+- `busiest_hours_candidate_share` (0.25 would be uniform; much higher means candidates cluster at
+  particular hours);
+- the ablation-ladder counts;
+- in the power plan, `oos_candidates` (with `oos_candidates_basis`) and `min_detectable_margin` against the 300-trade
+  floor.
+
+The interval is chosen from the counts only. No step above uses an outcome.

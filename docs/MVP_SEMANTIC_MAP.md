@@ -85,9 +85,9 @@ Overall status (validation report §10, §12): **MVP FUNCTIONAL, VALIDATION INCO
 - **Requirements / ADRs:** REQ-SIG-01, REQ-SIG-05; [ADR-0012](adr/0012-win-rate-margin-objective.md); D-14 (grade X is reference-only).
 - **Tests:** [tests/unit/strategies/](../tests/unit/strategies/) (`test_strat_bracket_reference.py`, `test_strat_diagnose.py`).
 - **Evidence:** [devlog 2026-10-28 reference adapter](devlog/2026-10-28-mvp3-reference-adapter.md).
-- **Limits:** `bracket_reference` is the only runnable strategy, a pipeline reference, not a research subject (D-14); it traded 0 times on real BTC 2024-Q1 with defaults. H1 exists only as a DRAFT (no runs); H2-H4 not implemented. Every ADR-0012 take-profit geometry is incompatible with the live risk floor 1.5 (`research/live_compat.py`, D-E).
+- **Limits:** `bracket_reference` is the only runnable strategy, a pipeline reference, not a research subject (D-14); it traded 0 times on real BTC 2024-Q1 with defaults. H1 exists only as a DRAFT (no runs); H2-H4 not implemented. Every ADR-0012 take-profit geometry, and every H1-v2 configuration, is incompatible with the live risk floor 1.5 (`research/live_compat.py`, D-E); the H1-v3 draft (2, 2.5, 3 R) is compatible.
 - **State:** TESTED.
-- **Next dependency:** owner freeze of [H1-v2](research/H1-v2.preregistration.DRAFT.yaml) after D-C, D-E, D-F1 and the feasibility count.
+- **Next dependency:** owner freeze of [H1-v3](research/H1-v3.preregistration.DRAFT.yaml) after the feasibility count and D-C, D-E, D-F1 ([H1 decision package](research/H1_DECISION_PACKAGE.md)).
 
 ## 6. Risk engine
 - **Paths:** [risk/](../src/tsclaude/risk/) (`engine.py`, `config.py`, `market.py`, `hook.py`), [configs/risk.yaml](../configs/risk.yaml).
@@ -112,11 +112,11 @@ Overall status (validation report §10, §12): **MVP FUNCTIONAL, VALIDATION INCO
 - **Next dependency:** D-C and D-E.
 
 ## 8. Walk-forward and statistical validation
-- **Paths:** [walkforward.py](../src/tsclaude/research/walkforward.py), [wf_progress.py](../src/tsclaude/research/wf_progress.py), [feasibility.py](../src/tsclaude/research/feasibility.py), [feasibility_cli.py](../src/tsclaude/research/feasibility_cli.py), [research/stats/](../src/tsclaude/research/stats/).
-- **Key symbols:** `plan_folds`, `check_anchor`, `walk_forward`, `verdict`, `certify_oos`, `run_walk_forward`, `RunnerEvaluator`, `validity_checks`, `project_trials`, `final_selection` (walkforward.py); `ProgressLedger`, `verify_reused_run` (wf_progress.py); `count_feasibility`, `iter_decisions` (feasibility.py); `certify`, `Certification`, `break_even_win_rate`, `holm_bonferroni`, `deflated_sharpe_ratio`, `n_min_exact` (stats/).
+- **Paths:** [walkforward.py](../src/tsclaude/research/walkforward.py), [wf_progress.py](../src/tsclaude/research/wf_progress.py), [feasibility.py](../src/tsclaude/research/feasibility.py), [feasibility_cli.py](../src/tsclaude/research/feasibility_cli.py), [power_plan.py](../src/tsclaude/research/power_plan.py), [power_plan_cli.py](../src/tsclaude/research/power_plan_cli.py), [research/stats/](../src/tsclaude/research/stats/).
+- **Key symbols:** `plan_folds`, `check_anchor`, `walk_forward`, `verdict`, `certify_oos`, `run_walk_forward`, `RunnerEvaluator`, `validity_checks`, `project_trials`, `final_selection` (walkforward.py); `ProgressLedger`, `verify_reused_run` (wf_progress.py); `count_feasibility`, `iter_decisions`, `ABLATION_LADDERS`, `utc_hour` (feasibility.py); `plan_from_feasibility`, `read_power`, `min_detectable_margin` (power_plan.py); `certify`, `Certification`, `break_even_win_rate`, `holm_bonferroni`, `deflated_sharpe_ratio`, `n_min_exact` (stats/).
 - **Depends on:** `research/runner`, `research/trials`, `research/prereg`. **Consumed by:** the CLI (`backtest_cli.py`, `_cmd_walkforward`; `feasibility_cli.py`), the research status API.
 - **Requirements / ADRs:** REQ-BT-05, REQ-BT-06; [ADR-0012](adr/0012-win-rate-margin-objective.md) with Amendments 1-3 (L-03, L-05, L-06), [ADR-0009](adr/0009-preregistration-and-holdout-guard.md).
-- **Tests:** [test_walkforward.py](../tests/unit/research/test_walkforward.py), `tests/unit/backtest/test_walkforward_{cli,resume,runner}.py`, `test_feasibility.py`, the `test_research_*` files, [property tests](../tests/property/research/test_research_stats_properties.py).
+- **Tests:** [test_walkforward.py](../tests/unit/research/test_walkforward.py), `tests/unit/backtest/test_walkforward_{cli,resume,runner}.py`, `test_feasibility.py`, [test_power_plan.py](../tests/unit/research/test_power_plan.py), [test_math_foundations_numbers.py](../tests/unit/research/test_math_foundations_numbers.py), the `test_research_*` files, [property tests](../tests/property/research/test_research_stats_properties.py).
 - **Evidence:** validation report §12; [devlog 2026-11-10 Track A and M4](devlog/2026-11-10-track-a-and-m4-walkforward-infrastructure.md); [feasibility count devlog](devlog/2026-11-10-m4-feasibility-count.md); handoff §4.
 - **Limits:** synthetic data only, **no real-data walk-forward has run**; one source gap in an anchored train window removes later folds and gives `INSUFFICIENT_OOS_EVIDENCE` (D-F1); open policy decisions D-C, D-E, D-F1, D-G.
 - **State:** TESTED. Track A fixes WF-1/WF-2 are in code with CI evidence; reviewers gave APPROVE WITH NOTES and CONDITIONAL PASS (report §12).

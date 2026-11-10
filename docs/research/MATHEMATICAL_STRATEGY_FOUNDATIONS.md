@@ -36,7 +36,7 @@ Part 1 adds **[I]**: verified against the implementation at the revision above.
 | A11 slippage fixed at 3 bps | `FixedSlippage`: 2 bps half-spread + 1 bp impact per side | Correct |
 | §3.1 the engine's `rho(b, d)` with `c_e = c_sl = 0.13 %`, `c_tp = 0.10 %` (maker take-profit) | `risk/engine.py cost_adjusted_rr`; `CostModel.tp_as_taker = False` | Correct |
 | §0, §3.5, §7 Bonferroni at `alpha / trials`, trials from the registry | `research/stats/certify.py`: `alpha_adj = alpha / n_trials` (Holm's first step), `n_trials` from the registry; the walk-forward fixes it at plan time | Correct |
-| §3.5 199 registry rows for H1 as drafted | 24 × 7 train + 7 test + 24 final-selection rows, anchor 2022-02-01, 12/3-month folds | Correct (an upper bound: reused rows are not counted again) |
+| §3.5 199 registry rows for H1 as drafted | 24 × 7 train + 7 test + 24 final-selection rows, anchor 2022-02-01, 12/3-month folds | Correct for an empty H1 family, as today (an upper bound on new rows: reused rows are not counted again). Certification divides alpha by the family's whole registry count (`walkforward.py`), so rows recorded before a plan would add to it |
 | §3.5 out of sample: 84 symbol-months; validation 48 | 7 folds × 3 months × 4 symbols; 12 × 4 | Correct |
 | A9 four symbols in one `btc_beta` cluster | `configs/risk.yaml`: `default_cluster: btc_beta`, `max_per_cluster: 3` | Correct, see 1.3 (c) |
 | Embargo covers the time exit | 1,440 min ≥ (48 + 1) × 15 = 735 min on 15m; validation refuses a shorter embargo; 1h needs ≥ 2,940 min | Correct |
@@ -56,7 +56,7 @@ and an independent numerical integral; the test file pins them. **Every value in
 ## 1.3 Qualifications (the floor and win rates)
 
 The 1.5 floor is a rule on the **planned geometry of each order**, evaluated by the risk engine at
-submit and again at fill. It is not a rule on win rates. Four statements in Part 2 need this
+submit and again just before the fill. It is not a rule on win rates. Four statements in Part 2 need this
 qualification.
 
 **(a) "It caps the break-even win rate at 0.40" (§0 item 4, §3.2).** This is true for the
@@ -88,13 +88,16 @@ which is what the audit means.
 
 **(d) Power is computed on trades, and trades can be fewer than candidates (§3.5, F4).** Since
 `9f2cabc` (already in the audited snapshot), backtests apply the paper risk policy. The audit does
-not mention the portfolio rules, which bind on H1's correlated universe [I]:
+not mention the portfolio rules. They exist and can bind on H1's correlated universe [I]; how
+often they do is an empirical question the walk-forward reports answer (`risk_policy_blocks`):
 - **Concurrency:** at most 5 positions, 1 per symbol, and at most 3 in the `btc_beta` cluster.
   Four symbols that break out together can yield at most 3 concurrent trades.
 - **Loss limits:** the daily loss limit (2 %) and the drawdown kill switch (10 %, which halts the
   book for the rest of that run).
-- **Data freshness:** no entry within 240 minutes after any missing 1m bar.
-- **The floor at fill:** it is re-checked at the second open after the decision.
+- **Data freshness:** no entry on a symbol within 240 minutes after a missing 1m bar of that
+  symbol.
+- **The floor before the fill:** it is re-checked just before the fill at the second open after
+  the decision, with the last close before the executing bar as the reference price.
 
 The P&L-free feasibility count measures **candidates** before these rules. Before freezing, the §3.5
 tables should be read against candidates minus these losses. Walk-forward reports now show the
@@ -114,8 +117,8 @@ None of the audit's recommendations is authorized by this file. Their status on 
 |---|---|---|
 | F2 hour-of-day output in the P&L-free feasibility report | Implemented (feasibility-v2, `diagnostics.by_utc_hour`, per symbol and overall, with the share of candidates in the 6 busiest hours). Also stage-filter statistics (pass rate from the previous stage, marginal and leave-one-out counts). Outside selection and certification | `research/feasibility.py`; `tests/unit/backtest/test_feasibility.py` |
 | F3 time-exit share per configuration | Implemented. Run metrics already recorded exit reasons; walk-forward reports now aggregate them per phase and configuration with the time-exit share (`exit_mix`). Run metrics are unchanged | `research/walkforward.py _exit_mix`; `tests/unit/research/test_power_plan.py` |
-| F4 read power against counts | Implemented. Before a freeze, `tsclaude backtest power-plan --feasibility <file>` gives the out-of-sample trade upper bound and the minimum detectable margin per take-profit, at n_eff ratios 1, 0.75 and 0.5. After a run, walk-forward reports carry `power_reading` | `research/power_plan.py`, `power_plan_cli.py`; `test_power_plan.py` |
-| F1 / R-6 ablation ladder | **Partly implemented, P&L-free:** candidate counts per rung (trend → + breakout → + compression → + volume) in every feasibility count. The conditional random control per rung is a **proposal** (decision package §5): owner approval and a preregistration field first | `ABLATION_LADDERS`; [H1 decision package](H1_DECISION_PACKAGE.md) |
+| F4 read power against counts | Implemented. Before a freeze, `tsclaude backtest power-plan --feasibility <file>` gives the candidates inside the test windows (from the count's month totals; an upper bound on out-of-sample trades) and the minimum detectable margin per take-profit, at n_eff ratios 1, 0.75 and 0.5, with the family's prior registry rows as an input. After a run, walk-forward reports carry `power_reading` | `research/power_plan.py`, `power_plan_cli.py`; `test_power_plan.py` |
+| F1 / R-6 ablation ladder | **Partly implemented, P&L-free:** candidate counts per rung (trend → + breakout → + compression → + volume), overall and by UTC hour, in every feasibility count. The conditional random control per rung is a **proposal** (decision package §5): owner approval and a preregistration field first | `ABLATION_LADDERS`; [H1 decision package](H1_DECISION_PACKAGE.md) |
 | F5 fixed parameters stated as untested priors | Proposal for the H1 preregistration text | Decision package |
 | R-1 … R-8 | **Owner decisions, open** | Decision package |
 | I-2 … I-8 (H2, H3, features, overlap, limit entries, USD-M) | Deferred. H2 and H3 stay deferred until H1's protocol path is proven (MVP_TASK_QUEUE P2) | — |
@@ -127,7 +130,10 @@ hypotheses.
 
 # Part 2. The audit as delivered (unchanged)
 
-The text below is the audit exactly as retrieved. Relative links resolve from `docs/research/`.
+The text below is the audit as retrieved from the Project (`claude/TSC_MATHEMATICAL_STRATEGY_FOUNDATIONS.md`),
+with no edit to its wording, numbers or links. Its own corrections are in Part 1 only (for example, it
+still says "1.9 times" in §3.4; Part 1 §1.2 corrects that). Its relative links were written for
+`docs/research/` and resolve from here.
 
 # Mathematical strategy foundations for M4 (H1–H3)
 
