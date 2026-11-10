@@ -34,6 +34,11 @@ development segment only, synthetic tests only), an owner evidence script. Owner
 (Paper O-1) loaded the 9-day history in about 33 s but observed no bar (PC clock 3.4 s off, since fixed) and ended with a PC restart. No gate
 changes; none of this is M3/M4 acceptance.
 
+**Closure audit (2026-11-10, independent, docs only):** [MVP_CLOSURE_HANDOFF](MVP_CLOSURE_HANDOFF.md). M3's literal gate has evidence for
+both halves (three real sessions replayed identically on Linux; fault-injection tests green on both OS in CI `42754283876`, `42756815061`,
+`42761802261`); **formal acceptance is still the owner's and is not given here**. The walk-forward driver must not be used on real data before
+the two fixes in the handoff §4; the H1-v1 draft is not ready to freeze (§5). No gate changed.
+
 ### Shortest-safe-path MVP track (owner direction, 2026-10-27; local branches, not pushed)
 A demonstrable local Windows app, strictly paper-only, built in small approved steps. Every step is **MVP
 readiness only**: none of these items is M1–M4 acceptance, and none is evidence of strategy performance.

@@ -23,6 +23,7 @@ acceptance or formal (Target C) MVP acceptance.
 | CI `42752436724` | `28b4fe7` | **python ubuntu: 1867 passed, 0 failed** (ruff lint, ruff format, mypy strict also green); **python windows: 1864 passed, 1 failed**: the pre-existing flake `test_mvp2_paper.py::test_p4_incomplete_backfill_stays_awaiting_and_processes_nothing` (`RUNNING is AWAITING_BACKFILL`, §6); frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | First CI run covering the new API, hints, research status and walk-forward code |
 | CI `42754283876` | `ceb393c` (flake fix included) | **7/7 green on the first attempt**: python ubuntu **1873 passed**, python windows **1871 passed**, frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | One green Windows run does not prove the intermittent flakes are gone; the latency reproduction (§6) does the heavy lifting |
 | CI `42756815061` | `54af1ef` (review fixes) | **7/7 green on the first attempt**: python ubuntu **1880 passed**, python windows **1878 passed**, frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | Second consecutive fully green run |
+| CI `42761802261` | `65c0e2f` (docs) | **7/7 green on the first attempt** | Third consecutive fully green run |
 | Pre-existing CI flakes (before this session) | `954c7c6`, `1dec031`, `1acd38a` | 1–3 paper-runtime failures per run, Windows (jobs `129324514607`, `129332534067`, `129342046002`) and once Ubuntu (`129307675701`) | Being root-caused (§6) |
 
 ## 3. Owner runs read in this session (artifacts in `C:\Users\felip\tsc_runs`)
@@ -196,3 +197,15 @@ acceptance or formal (Target C) MVP acceptance.
 3. A stable platform: the owner PC showed hardware-like instability, recorded in §7, out of scope.
 
 **Research:** there is **no validated strategy**. The research workflow exists and rejects honestly, and the first real candidate (H1-v1) waits on the owner's review of its preregistration draft.
+
+## 11. Closure audit additions (2026-11-10, independent auditor)
+- **Independent replays on Linux at `65c0e2f`, on copies** (store SHA-256 unchanged before and after):
+  - `paper-bracket-20261106-104529` (1 h): PASS, 360 batches, 348 observed bars, ledger hashes equal;
+  - `recovery-20261109-2227` (crash recovery): PASS, 3,498 batches, ledger hashes equal.
+  - With the 25-minute session of §7, all three real sessions now replay identically on a second
+    operating system.
+- **Gate tests re-run:** the seven M3 fault-injection tests and the 13 Target A tests, 20 passed.
+- **New findings** are in [MVP_CLOSURE_HANDOFF](MVP_CLOSURE_HANDOFF.md): the walk-forward accepts
+  grade-X runs and its default start has no warm-up (both reproduced on a synthetic lake), and the
+  H1-v1 draft is not ready to freeze.
+- The status in §10 is unchanged.

@@ -6,6 +6,8 @@ gate in [ROADMAP](ROADMAP.md): M0 to M7, their literal gates, the 16 acceptance 
 "MVP = end of M5 plus the M6 export" stay as written. It also does not change the targets in
 [MVP_DELIVERY_TARGETS_PROPOSAL](MVP_DELIVERY_TARGETS_PROPOSAL.md).
 
+**Next session: start from [MVP_CLOSURE_HANDOFF](MVP_CLOSURE_HANDOFF.md)** (closure audit of 2026-11-10: M3 gate audit, walk-forward blockers, H1-v1 review, prioritized tasks).
+
 Companion documents:
 - [MVP_VALIDATION_REPORT](MVP_VALIDATION_REPORT.md): evidence and counts;
 - [MVP_USER_GUIDE](MVP_USER_GUIDE.md): how to run it;

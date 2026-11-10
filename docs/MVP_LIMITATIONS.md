@@ -8,6 +8,8 @@
   - The walk-forward driver exists and is tested on synthetic data only.
   - Real data must be run on the owner PC (the lake lives there).
   - The expected outcome of the first real runs is `NO_EDGE_DEMONSTRATED`, and that is a valid result.
+- **The walk-forward tool is not safe on real data yet** ([MVP_CLOSURE_HANDOFF](MVP_CLOSURE_HANDOFF.md) §4): it uses runs graded X, and its default start (2022-01-01) leaves no warm-up, which makes every training run grade X. Fix both before any real-data walk-forward.
+- **Backtests apply no risk gate** (`allow_all`), while the live baseline book requires net reward/risk ≥ 1.5. Research can validate trades that live would reject (handoff §6, I-1).
 - **Trial accounting is conservative.** The registry counts every (configuration, window) evaluated, so walk-forward certifications use a larger trial count than the grid size.
 - **Data scope** follows the M2 limited acceptance (D-22):
   - Spot 1m for 5 symbols, 2022–2025;
