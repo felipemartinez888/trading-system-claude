@@ -554,3 +554,28 @@ def test_backtest_latency_is_at_least_the_measured_live_p95() -> None:
     paper = -(-(decision + evidence["all"]["p50_ms"]) // MIN) * MIN  # Paper: open after release
     assert earliest_execution_ms(decision, cfg.decision_latency_ms) == paper == decision + 1 + MIN
     assert earliest_execution_ms(decision, 0) == decision + 1  # the optimistic minute, removed
+
+
+def test_walk_forward_reports_sum_the_policy_blocks_per_phase() -> None:
+    import types
+
+    from tsclaude.research import walkforward as wf
+
+    def run(policy: dict[str, Any] | None) -> Any:
+        integrity = {} if policy is None else {"risk_policy": policy}
+        return types.SimpleNamespace(metrics={"integrity": integrity})
+
+    live = {"mode": "live", "checks": 10, "blocked_by_rule": {"reward_risk": 4}, "halted": None}
+    gap = {"mode": "live", "checks": 3, "blocked_by_rule": {"data_freshness": 2, "reward_risk": 1},
+           "halted": "drawdown"}  # fmt: skip
+    ev = types.SimpleNamespace(by_key={
+        ("train", 0, "a"): run(live), ("train", 0, "b"): run(gap), ("test", 0, "a"): run(live),
+    })  # fmt: skip
+    out = wf._policy_blocks(ev)  # type: ignore[arg-type]
+    assert out == {
+        "test": {"runs": 1, "checks": 10, "blocked_by_rule": {"reward_risk": 4}, "halted": 0},
+        "train": {"runs": 2, "checks": 13, "halted": 1,
+                  "blocked_by_rule": {"data_freshness": 2, "reward_risk": 5}},
+    }  # fmt: skip
+    allow = types.SimpleNamespace(by_key={("train", 0, "a"): run(None)})
+    assert wf._policy_blocks(allow) is None  # type: ignore[arg-type]

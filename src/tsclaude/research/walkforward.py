@@ -1046,6 +1046,29 @@ def _describe_policy(cfg: BacktestConfig) -> dict[str, Any]:
     return describe(cfg.risk_policy, cfg.risk)
 
 
+def _policy_blocks(evaluator: RunnerEvaluator) -> dict[str, Any] | None:
+    """Under ``risk_policy: live``: per phase (train, test, final), the base books' risk checks,
+    the checks each paper rule blocked, and the runs whose base book was halted by the kill
+    switch, summed over every run of the plan (executed or reused), from the runs' own metrics.
+    Shows *why* candidates did not become trades; None under allow_all."""
+    out: dict[str, Any] = {}
+    seen = False
+    for (phase, _index, _config), run in sorted(evaluator.by_key.items()):
+        policy = ((run.metrics.get("integrity") or {}).get("risk_policy")) or {}
+        if policy.get("mode") != "live":
+            continue
+        seen = True
+        agg = out.setdefault(phase, {"runs": 0, "checks": 0, "blocked_by_rule": {}, "halted": 0})
+        agg["runs"] += 1
+        agg["checks"] += int(policy.get("checks") or 0)
+        for rule, n in (policy.get("blocked_by_rule") or {}).items():
+            agg["blocked_by_rule"][rule] = agg["blocked_by_rule"].get(rule, 0) + int(n)
+        agg["halted"] += 1 if policy.get("halted") else 0
+    for agg in out.values():
+        agg["blocked_by_rule"] = dict(sorted(agg["blocked_by_rule"].items()))
+    return out if seen else None
+
+
 def _live_compatibility(
     env: RunEnv,
     strategy_id: str,
@@ -1477,6 +1500,7 @@ def run_walk_forward(
         "final_selection": final,
         "live_compatibility": live,
         "risk_policy": _describe_policy(cfg),
+        "risk_policy_blocks": _policy_blocks(evaluator),
         "run_ids": [o.run_id for o in evaluator.runs],
         "n_trials_family_now": env.trials.n_trials(strategy_id),
     }
