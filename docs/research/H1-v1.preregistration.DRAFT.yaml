@@ -1,0 +1,85 @@
+# DRAFT preregistration for owner review: NOT frozen, NOT in preregistrations/, NOT usable by runs.
+# The research protocol (RESEARCH_PROTOCOL §1) requires the Lead/owner to review this file before
+# it is frozen and committed as preregistrations/H1-v1.yaml. Only then is the strategy implemented
+# and run. No result exists for it: this draft was written before any H1 code or run.
+prereg_id: H1-v1
+status: DRAFT            # DRAFT -> FROZEN only by an owner-approved commit under preregistrations/
+frozen: false
+hypothesis: >
+  Compression -> expansion breakout. After 15m volatility compression (low ATR percentile and a
+  narrow range), a close beyond the prior range with abnormal volume, in the direction of the 1h
+  trend, continues far enough to reach a take-profit before the stop more often than its
+  break-even win rate requires, net of costs.
+economic_rationale: >
+  Volatility clusters: quiet periods end in expansions; a range break with participation (volume)
+  is the observable start of an expansion. Costs make small expansions unprofitable, so the
+  cost filter is part of the rule, not a tuning knob.
+independence: >
+  Own hypothesis from RESEARCH_PROTOCOL §8. bracket_reference (REFERENCE) is loosely similar but
+  is a pipeline reference: it is NOT this strategy, its runs are not H1 evidence, and none of its
+  results were used to write this file (no bracket_reference real-data run existed when drafted).
+
+universe:
+  market: spot             # USD-M history and funding are not imported (D-22); shorts deferred
+  symbols: [BTCUSDT, ETHUSDT, SOLUSDT, DOGEUSDT, XRPUSDT]   # the M2-accepted scope
+  sides: [long]
+timeframes:
+  decision: 15m            # derived from canonical 1m bars
+  context: 1h              # trend filter, closed 1h bars only
+causality:
+  - decisions at the close of 15m bar T use only bars with close_time <= T
+  - the 1h context uses the last 1h bar that closed at or before T (never a forming bar)
+  - entry at the next 1m open after T (market), never at T
+rules:
+  compression: "atr_percentile_rank(atr_n, rank_m) at T-1 <= rank_max"
+  range: "close_T > range_high(range_n) at T-1"
+  participation: "volume_zscore(vol_n) at T >= vol_z_min"
+  trend_1h: "close of the last closed 1h bar > ema(ema_span_1h) of 1h closes"
+  early_watch: "compression and trend_1h and 0 <= range_high(T-1) - close_T <= watch_atr x ATR_T"
+  confirmed_entry: "compression and range and participation and trend_1h and cost filter"
+  cost_filter: "planned all-taker round-trip cost (PlanningCosts) <= max_cost_r (in R)"
+  stop: "close_T - stop_atr x ATR_T"
+  take_profit: "close_T + tp_r x (close_T - stop)"
+  time_exit: "optional, after time_exit_bars 15m bars"
+  ambiguity: "SL first when stop and take-profit are both inside one 1m bar (simulator rule)"
+parameter_space:          # every configuration evaluated is a recorded trial
+  atr_n: [14]
+  rank_m: [96]
+  rank_max: [0.25, 0.35]
+  range_n: [20]
+  vol_n: [20]
+  vol_z_min: [1.0, 2.0]
+  ema_span_1h: [50]
+  stop_atr: [1.0, 1.5]
+  tp_r: [0.5, 1.0, 1.5]    # high-win-rate geometries included (ADR-0012)
+  max_cost_r: [0.2]
+  watch_atr: [0.5]
+  time_exit_bars: [null]
+trial_budget: 24           # 2 x 2 x 2 x 3 = 24 configurations; no grid extension without a new prereg id
+cost_model: "configured cost model at freeze time (version recorded in every manifest)"
+risk: "configs/risk.yaml and backtest.yaml at freeze time (hashes recorded in manifests)"
+splits:                    # D-05
+  development: [2022-01-01, 2025-01-01]   # anchored walk-forward only
+  validation: [2025-01-01, 2026-01-01]    # ONE evaluation of the walk-forward-selected configuration
+  holdout: [2026-01-01, 2026-10-01]       # sealed; one owner unlock, result recorded whatever it is
+walk_forward:
+  command: "tsclaude backtest walkforward"
+  initial_train_months: 12
+  test_months: 3
+  embargo_minutes: 1440    # >= one maximum holding period for these geometries (to be checked at freeze)
+  n_min: 30
+  selection: "margin_lcb, then p_lcb, then config id (train windows only)"
+primary_metric: "certified win-rate margin lower bound margin_lcb = p_lcb - p* (ADR-0012)"
+secondary_metrics: [expectancy_lcb, max_drawdown, profit_factor, cost_stress_x1.5, cost_stress_x2, random_control]
+rejection_criteria:        # any one rejects H1-v1 (grade D); a new version needs a new id
+  - "stitched development OOS verdict is not OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY"
+  - "validation margin_lcb <= 0 or expectancy_lcb <= 0"
+  - "fewer than n_required validation trades (power 80 %)"
+  - "fails cost stress x1.5"
+  - "does not beat its random-entry control (same exits, frequency, hour of day)"
+  - "any integrity problem in range (grade X)"
+admission: "grade A requires validation AND holdout passes; until then the strategy is at most CANDIDATE"
+owner_review_questions:
+  - "Is spot long-only acceptable for v1 (shorts need USD-M history, D-02/D-22)?"
+  - "Is the 24-configuration budget acceptable?"
+  - "Embargo 1440 minutes: confirm it covers the maximum holding period."
