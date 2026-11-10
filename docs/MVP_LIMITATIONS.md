@@ -23,6 +23,11 @@
 - **The reference strategy traded 0 times** in real-data BTC 2024-Q1 with default parameters. It is a pipeline reference, not a research subject.
 
 ## Paper runtime and recovery
+- **Paper's decision latency changed from 0 to 3,000 ms** (`configs/backtest.yaml`, `1cc2693`, 2026-11-10).
+  - The three real sessions were recorded at 0 (paper config digest `7a68bcfc…`).
+  - No real session has been recorded under the current configuration (`676d69b6…`) yet.
+  - A session recorded with the older default configs does not restore after an update. It is refused, and the reason names the changed field.
+  - Details: [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md), "Configuration change".
 - **Restart equivalence is not guaranteed** (P-1; seeds 13073 and 465923499). An entry can fill in a minute that a downtime overlaps.
 - **An unobserved live minute restarts the reference warm-up** (about 7.8 days of history, reloaded from the store).
 - **NB-1 residual clock risk** is accepted for the supervised paper-only MVP (D-21). It has no fixed error bound.

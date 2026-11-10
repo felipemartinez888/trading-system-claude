@@ -11,11 +11,40 @@ in risk rule, crash mid-fill) all block or recover correctly."*
 
 | Requirement | Evidence |
 |---|---|
-| A recorded live session replays to an identical ledger hash | Three real Windows paper sessions pass `verify-replay`: 1 h (2026-11-06, 360 batches), 25 min (2026-11-09, 150 batches), crash recovery after a PC restart (2026-11-09, 3,498 batches). All three also replay identically on Linux, with the store's SHA-256 unchanged before and after |
+| A recorded live session replays to an identical ledger hash | Three real Windows paper sessions pass `verify-replay`: 1 h (2026-11-06, 360 batches), 25 min (2026-11-09, 150 batches), crash recovery after a PC restart (2026-11-09, 3,498 batches). All three also replay identically on Linux, with the store's SHA-256 unchanged before and after. **All three were recorded at decision latency 0** (paper config digest `7a68bcfc…`), not under the current configuration (see "Configuration change" below) |
 | Stale stream blocks | `tests/unit/sim/test_paper_session.py:240`; in the real app a clock 3.4 s and 6.9 s off blocked all observation (fail closed) |
 | Exception in a risk rule blocks | `tests/unit/sim/test_paper_session.py:223`; `tests/unit/risk/test_risk_rules.py:187,197` |
 | Crash mid-fill blocks or recovers | `tests/unit/sim/test_paper_restart.py:168`; a real PC restart mid-session recovered with replay PASS (not timed mid-fill) |
 | The tests run green | Audit re-run: 20 gate tests passed. CI 7/7 green on many commits since, latest listed in [MVP_VALIDATION_REPORT](MVP_VALIDATION_REPORT.md) |
+| Strategy to fill (Target A, deterministic) | 13 Target A tests, since task T1 run with the production paper latency (3,000 ms, read through `build_paper_config`), plus a latency-0 case of the next-open rule and a test that fails if Target A and the production latency drift apart (`tests/unit/sim/test_target_a_e2e.py`) |
+
+## Configuration change after the recorded sessions (2026-11-10)
+- **What changed.** Paper reads `decision_latency_ms` from `configs/backtest.yaml`
+  (`build_paper_config`, `runtime/paper_runtime.py`). The value is part of the session
+  configuration (`PaperConfig.describe()`, and so the paper config digest). `1cc2693` changed it
+  from 0 to 3,000 ms, at least the measured live p95 of 2,170 ms, so that backtests and Paper use
+  the same execution timing.
+- **Digests**, recomputed with `session_evidence.config_digest`, Paper enabled with
+  `bracket_reference`:
+  - configs as at `65c0e2f`, latency 0: `7a68bcfc…`;
+  - current configs, 3,000 ms: `676d69b6…`.
+- **Evidence recorded before the change (the three sessions above).**
+  - It is replay evidence for the latency-0 configuration.
+  - It passes `verify-replay` with each session's own config folder (last run at `65c0e2f` and
+    `2c7d343`; repeating it at the accepted commit is an owner step).
+  - Checked against the repository's current `configs/`, it is INCONCLUSIVE ("configuration
+    differs"), never a false PASS (operational-readiness review R-01).
+- **Evidence under the current configuration.**
+  - Target A runs at 3,000 ms (tests only).
+  - No real session has been recorded or replayed at 3,000 ms yet. The owner's fresh supervised
+    session is the step that produces it.
+- **Expected live behaviour.** Entries still fill at the second 1m open after the decision close,
+  because a live bar is released after the next minute has opened. This is an expectation backed by
+  tests (the timing function, Target A at 3,000 ms), not yet by a real session.
+- **Sessions recorded with the older default configs** do not restore after an update. They are
+  refused (fail closed), and since task T3 the reason names the changed field
+  (`decision_latency_ms: 0 -> 3000`) and the hint gives the recovery. Either start with the
+  session's own config folder, or record a new session in a new data folder.
 
 ## Residual limitations (stated, not hidden)
 1. **No strategy book traded in a real session (U1).** Only the benchmark book traded. The reference strategy
@@ -35,6 +64,10 @@ in risk rule, crash mid-fill) all block or recover correctly."*
   planned before a separate owner decision).
 
 ## Options
+The decision must also state which configuration it covers:
+- the three latency-0 sessions only (`7a68bcfc…`);
+- or also the current configuration (`676d69b6…`), through the fresh session.
+
 1. **Accept** with limitations 1–4 restated (recommended).
 2. Accept after a longer supervised session (it would not close U1: no real signal is expected).
 3. Do not accept now. No engineering work is blocked either way.
