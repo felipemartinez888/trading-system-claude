@@ -70,8 +70,30 @@ def production_risk() -> RiskConfig:
     return load_risk_config(REPO / "configs" / "risk.yaml")
 
 
-def paper_config() -> PaperConfig:
-    return PaperConfig(instruments=(spot_spec(),), starting_equity=START, risk=production_risk())
+def production_paper_config() -> PaperConfig:
+    """The paper configuration the app builds from the repository's `configs/`
+    (`build_paper_config`: instruments, risk and the decision latency from `backtest.yaml`)."""
+    from tsclaude.runtime.paper_runtime import PaperSettings, build_paper_config
+
+    return build_paper_config(PaperSettings(), REPO / "configs")
+
+
+def production_latency_ms() -> int:
+    """The decision latency Paper runs with today (`configs/backtest.yaml`, 3,000 ms since
+    `1cc2693`). Target A runs with it (operational-readiness review R-02, task T1)."""
+    return production_paper_config().decision_latency_ms
+
+
+def paper_config(decision_latency_ms: int | None = None) -> PaperConfig:
+    """Target A's books: the fixture's one instrument, the production `risk.yaml` and, unless a
+    test asks for another value, the production decision latency."""
+    latency = production_latency_ms() if decision_latency_ms is None else decision_latency_ms
+    return PaperConfig(
+        instruments=(spot_spec(),),
+        starting_equity=START,
+        risk=production_risk(),
+        decision_latency_ms=latency,
+    )
 
 
 # ---------------------------------------------------------------------------------- driving
@@ -120,7 +142,11 @@ class Run:
 
 
 def run_reference(
-    bars: Sequence[Bar] | None = None, *, lag_ms: int = POLL_LAG_MS, poll_every: int = 1
+    bars: Sequence[Bar] | None = None,
+    *,
+    lag_ms: int = POLL_LAG_MS,
+    poll_every: int = 1,
+    decision_latency_ms: int | None = None,
 ) -> Run:
     """The real `bracket_reference` over the fixture, from the first cycle after its warm-up.
 
@@ -128,7 +154,7 @@ def run_reference(
     `trade_from` guards are covered by `tests/unit/strategies`, not here)."""
     all_bars = list(fx.fixture_bars() if bars is None else bars)
     trade_from = fx.trade_from_ms()
-    cfg = paper_config()
+    cfg = paper_config(decision_latency_ms)
     adapter = ReferenceLiveStrategy.create(cfg.cost_model, [KEY], trade_from_ms=trade_from)
     adapter.warm_up([b for b in all_bars if b.close_time_ms < trade_from])
     journal = MemoryJournal()
@@ -279,23 +305,42 @@ def assert_market_entry_at_the_open(t: TradeRecord, cm: CostModel) -> None:
     assert abs(t.entry_price - D(str(bar.close)) * (1 + slip)) > TICK
 
 
-def test_a_minute_released_at_its_close_fills_at_the_very_next_open_and_never_earlier() -> None:
-    """With the release at the close (+1 ms) nothing delays execution: the fill is the next 1m
-    open, exactly one millisecond after the decision. This is the bound the 1.5 s poll hides.
+@pytest.mark.parametrize(
+    "latency", ["production", 0], ids=["production_latency", "latency_0_pure_next_open"]
+)
+def test_a_minute_released_at_its_close_fills_at_the_first_open_after_the_latency(
+    latency: str | int,
+) -> None:
+    """With the release at the close (+1 ms) only the decision latency delays execution. The
+    fill is the first 1m open strictly after the decision time plus the latency
+    (`sim.engine.earliest_execution_ms`), and never earlier.
+    - **Production latency (3,000 ms):** a decision at hh:mm:59.999 fills at the open of the
+      minute after the next one (decision + 1 ms + 1 minute). This is the configuration Paper
+      runs with.
+    - **Latency 0:** the pure next-open rule, exactly one millisecond after the decision. This
+      bound is what the 1.5 s poll hides. It is kept to pin that rule through the paper path.
 
     Limit, stated: in the live paper path the release time (`not_before_ms`) is always a lower
-    bound as well, so a fill EARLIER than the next open cannot be told apart from the release
-    bound through this path alone. `earliest_execution_ms` itself (the pure next-open rule) is
-    covered by the simulator's own causality tests (a mutant that moves it two minutes earlier is
-    caught by `tests/unit/sim/test_m3_audit_carryovers.py`, among others)."""
-    run = run_reference(lag_ms=1)
+    bound as well, so a fill EARLIER than the bound cannot be told apart from the release bound
+    through this path alone. `earliest_execution_ms` itself is covered by the simulator's own
+    causality tests (a mutant that moves it two minutes earlier is caught by
+    `tests/unit/sim/test_m3_audit_carryovers.py`, among others)."""
+    from tsclaude.sim.engine import earliest_execution_ms
+
+    latency_ms = production_latency_ms() if latency == "production" else int(latency)
+    run = run_reference(lag_ms=1, decision_latency_ms=latency_ms)
     assert run.svc.state is ServiceState.RUNNING, run.svc.fault
+    assert run.cfg.decision_latency_ms == latency_ms
     shadow = run.svc.session.sim.books[SHADOW]
     by_signal = {s.signal_id: s for s in signals(run)}
     assert len(shadow.trades) >= 2
     for t in shadow.trades:
         decision = by_signal[str(t.signal_id)].record["decision_time_ms"]
-        assert t.entry_bar_open_ms == decision + 1
+        assert t.entry_bar_open_ms == earliest_execution_ms(decision, latency_ms)
+        # the bound stated in numbers, so a change of the rule itself is caught here as well
+        whole_minutes = -(-latency_ms // MS_PER_MINUTE)  # 0 ms -> 0, 3,000 ms -> 1
+        assert t.entry_bar_open_ms == decision + 1 + whole_minutes * MS_PER_MINUTE
+        assert t.entry_bar_open_ms > decision + latency_ms  # never before decision + latency
         assert_market_entry_at_the_open(t, run.cfg.cost_model)
     # the baseline verdicts do not depend on the release lag
     rejected = [e for e in flatten(run.journal.batches()) if e.type == "sim_request_rejected"]
@@ -539,6 +584,18 @@ def test_the_same_inputs_reproduce_the_same_journal_and_hashes() -> None:
     s1, s2 = run_synthetic(), run_synthetic()
     assert canonical(s1.journal) == canonical(s2.journal)
     assert s1.svc.ledger_hashes() == s2.svc.ledger_hashes()
+
+
+def test_target_a_runs_with_the_production_paper_latency() -> None:
+    """Operational-readiness review R-02 (task T1): Target A ran at latency 0 while Paper runs at
+    the latency `build_paper_config` reads from `configs/backtest.yaml`. Fails if they drift."""
+    production = production_paper_config()
+    assert production.decision_latency_ms == 3_000  # configs/backtest.yaml since 1cc2693
+    assert paper_config().decision_latency_ms == production.decision_latency_ms
+    # the two scenarios build their books from paper_config(): both run at that latency
+    assert run_synthetic().cfg.decision_latency_ms == production.decision_latency_ms
+    assert paper_config().risk.config_hash == production.risk.config_hash
+    assert paper_config().cost_model.describe() == production.cost_model.describe()
 
 
 def test_production_thresholds_and_costs_are_the_ones_under_test() -> None:
