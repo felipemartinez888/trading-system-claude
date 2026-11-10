@@ -10,6 +10,7 @@ Endpoints (all JSON, ISO-8601 `Z` timestamps, metric-like values as `Sourced`):
 | GET  | `/api/ingestion` | read-only ingestion progress (catch-up, history, writer) |
 | GET  | `/api/events?after_seq=&limit=` | event page (newest page if `after_seq` is omitted) |
 | GET  | `/api/backtests`, `/api/backtests/{run_id}` | recorded backtest runs (`BACKTEST`) |
+| GET  | `/api/agents/status` | agent mode, budget and cost ledger (`SYSTEM`, read-only) |
 | POST | `/api/monitoring/start` | token; 409 invalid transition; 423 chain failed / no session |
 | POST | `/api/monitoring/stop` | token; 409 invalid transition |
 | POST | `/api/app/quit` | token; 202; closes the session, then stops the server |
@@ -33,6 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from tsclaude.api import pages
+from tsclaude.api.agents import agents_router
 from tsclaude.api.backtests import backtests_router
 from tsclaude.api.context import (
     MAX_EVENTS_LIMIT,
@@ -302,6 +304,15 @@ def create_app(
     # the working directory the launcher starts the app in (as for backtest preregistrations)
     app.include_router(
         research_router(context.store.path.parent / "runs", Path.cwd(), context.clock)
+    )
+
+    # agent status (M5): read-only, from configs/agents.yaml and the persisted cost ledger
+    app.include_router(
+        agents_router(
+            Path.cwd() / "configs" / "agents.yaml",
+            context.store.path.parent / "agents",
+            context.clock,
+        )
     )
 
     # ------------------------------------------------------------------ paper trading (MVP-2)
