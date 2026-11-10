@@ -1,12 +1,14 @@
 name: CI docs tier
 
-# CI proposal P3: runs for pushes that touch docs. When every pushed file is a doc that nothing
-# reads (see the docs-tier patterns in ci.yml), ci.yml does not run at all, so this workflow is the
-# only check of the push and is NOT evidence for code (scripts/ci/evidence.sh refuses it). When
-# the push also touches anything else, ci.yml runs as well and this job only reports.
+# CI proposal P3: runs for pushes that touch docs. When every pushed file is a doc outside the
+# docs-tier patterns of ci.yml, ci.yml does not run at all, so this workflow is the only check of
+# the push and is NOT evidence for code (scripts/ci/evidence.sh refuses it). It therefore runs the
+# same two safety guards as ci.yml (copied verbatim; tests/unit/test_ci_docs_tier.py keeps them
+# identical), because a docs-only push can still add a .env file or a key-like string. When the
+# push also touches anything else, ci.yml runs as well and this job only reports.
 on:
   push:
-    branches: [main, "task/**", "acceptance/**"]
+    branches: [main, "task/**"]
     paths:
       - "docs/**"
       - "*.md"
@@ -32,3 +34,20 @@ jobs:
         run: >-
           python3 -I scripts/ci/docs_tier.py classify
           "${{ github.event.before }}" "${{ github.sha }}" --summary "$GITHUB_STEP_SUMMARY"
+      - name: No private/signed exchange endpoints or order placement (paper-only rule)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern='/api/v3/order|/fapi/v1/order|/sapi/|listenKey|X-MBX-APIKEY|signature=|/api/v3/account|/fapi/v2/account'
+          if grep -rEn "$pattern" src frontend/src 2>/dev/null; then
+            echo "::error::Private/signed Binance endpoint referenced in product code"
+            exit 1
+          fi
+      - name: No committed secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.env$'; then echo "::error::.env committed"; exit 1; fi
+          if git grep -nE 'sk-ant-[A-Za-z0-9_-]{20,}' -- . ':!*.md'; then
+            echo "::error::Anthropic key-like string committed"; exit 1
+          fi

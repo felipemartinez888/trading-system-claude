@@ -56,6 +56,8 @@ def test_every_doc_that_something_reads_runs_the_full_ci() -> None:
         ("pyproject.toml", True),
         ("docs/research/H1_DECISION_PACKAGE.md", True),
         ("docs/research/evidence/new.json", True),
+        # built at run time by test_preregistration.py, invisible to the literal scan
+        ("docs/research/H1-v3.preregistration.DRAFT.yaml", True),
         ("docs/tasks/M3-PB.md", True),
         ("docs/EVALUATION_PROTOCOL.md", True),
         ("README.md", True),
@@ -83,7 +85,12 @@ def test_pattern_rules_follow_github_last_match_semantics() -> None:
 
 def test_unsupported_pattern_forms_are_refused(tmp_path: Path) -> None:
     bad = tmp_path / "ci.yml"
-    cases = [('- "**"\n- "docs/?.md"\n', "not supported"), ('- "docs/**"\n', "must start")]
+    cases = [
+        ('- "**"\n- "docs/?.md"\n', "not supported"),
+        ('- "**"\n- "!docs/**/*.md"\n', "not supported"),  # GitHub's '**/' is not emulated
+        ('- "**"\n- "!**.md"\n', "not supported"),
+        ('- "docs/**"\n', "must start"),
+    ]
     for body, message in cases:
         bad.write_text(f"{tier.BEGIN}\n{body}{tier.END}\n", "utf-8")
         with pytest.raises(ValueError, match=message):
@@ -98,6 +105,49 @@ def test_the_docs_workflow_only_triggers_on_docs_and_has_its_own_group() -> None
     assert 'group: "ci-${{ github.ref }}-' in ci  # ci.yml's groups never start with ci-docs-
 
 
-def test_classify_reports_a_new_branch_or_a_missing_base_as_full() -> None:
-    assert tier.classify("0" * 40, "HEAD")[0] == "full"
-    assert tier.classify("not-a-commit", "HEAD")[0] == "full"
+def test_classify_never_claims_a_verdict_it_cannot_know(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert tier.classify("0" * 40, "HEAD")[0] == "unknown"  # a new branch: GitHub's own diff
+    assert tier.classify("not-a-commit", "HEAD")[0] == "unknown"
+    many = "\n".join(f"docs/devlog/n{i}.md" for i in range(tier.GITHUB_FILTER_LIMIT + 1))
+    monkeypatch.setattr(tier, "_git", lambda *args: many)
+    assert tier.classify("a" * 40, "b" * 40)[0] == "too-large"
+    assert tier.main(["classify", "a" * 40, "b" * 40]) == 1  # the docs-tier job fails
+    monkeypatch.setattr(tier, "_git", lambda *args: "docs/devlog/n1.md\nsrc/x.py")
+    assert tier.classify("a" * 40, "b" * 40)[0] == "full"
+
+
+def test_the_marked_list_is_the_push_paths_filter_of_ci_yml() -> None:
+    import yaml
+
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "ci.yml").read_text("utf-8"))
+    on = wf.get("on", wf.get(True))
+    assert on["push"]["paths"] == PATS
+    assert "paths" not in (on.get("pull_request") or {})  # pull requests are never filtered
+    assert "workflow_dispatch" in on  # the unfiltered, uncancellable formal-run route (P1)
+
+
+def test_formal_checkpoints_never_depend_on_a_filtered_push() -> None:
+    import yaml
+
+    for name in ("ci.yml", "ci-docs.yml"):
+        wf = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text("utf-8"))
+        branches = wf.get("on", wf.get(True))["push"]["branches"]
+        assert not any(b.startswith("acceptance/") for b in branches), name
+
+
+def _guard_steps(name: str) -> list[dict[str, str]]:
+    import yaml
+
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / name).read_text("utf-8"))
+    steps = [s for job in wf["jobs"].values() for s in job["steps"]]
+    return [
+        {"name": s["name"], "run": s["run"]}
+        for s in steps
+        if s.get("name", "").startswith(("No private/signed", "No committed secrets"))
+    ]
+
+
+def test_the_docs_tier_runs_the_same_safety_guards_as_the_full_ci() -> None:
+    full, docs = _guard_steps("ci.yml"), _guard_steps("ci-docs.yml")
+    assert len(full) == 2
+    assert docs == full

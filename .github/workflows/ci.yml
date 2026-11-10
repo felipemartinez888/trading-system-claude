@@ -2,12 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main, "task/**", "acceptance/**"]
+    # CI proposal P3 (review B2): no acceptance/** push trigger here. The paths filter below
+    # applies to every pushed branch, so a docs-only push could never start a formal run. A
+    # formal checkpoint is a workflow_dispatch run (never filtered, never cancelled; P1).
+    branches: [main, "task/**"]
     # CI proposal P3: a push runs this workflow when at least one pushed file matches this list
-    # (the last matching pattern decides). Docs that code, tests, scripts or configs read are
-    # included back; tests/unit/test_ci_docs_tier.py fails if one is missing. Other docs-only
-    # pushes run ci-docs.yml instead and never start, cancel or replace a run of this workflow.
-    # workflow_dispatch and pull_request are not filtered.
+    # (the last matching pattern decides). Docs whose name code, tests, scripts or configs
+    # contain are included back, and so are docs/research/** and docs/tasks/**, which tests also
+    # read through built paths; tests/unit/test_ci_docs_tier.py fails if a named doc is missing.
+    # Other docs-only pushes run ci-docs.yml instead (secrets and endpoint guards included) and
+    # never start, cancel or replace a run of this workflow. workflow_dispatch and pull_request
+    # are not filtered. Limits: GitHub runs the workflow when it cannot compute the diff, but it
+    # matches only the first 300 changed files; ci-docs.yml fails a push of more than 300.
     # docs-tier patterns: begin
     paths:
       - "**"
@@ -47,9 +53,8 @@ permissions:
 
 # P1 (CI proposal): an ordinary push still supersedes the run of an older push on the same
 # branch. A dispatched run (formal acceptance, benchmark) gets a group of its own (its run id),
-# so no push or other dispatch can cancel it or replace it while pending. A push to
-# acceptance/** gets one group per commit: only another run of the same commit on the same
-# branch (for example the branch deleted and pushed again) can replace it while it is pending.
+# so no push or other dispatch can cancel it or replace it while pending. (The acceptance/**
+# clause below only matters if that branch pattern is triggered again; see on.push.)
 concurrency:
   group: "ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || startsWith(github.ref, 'refs/heads/acceptance/') && format('sha-{0}', github.sha) || 'push' }}"
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/heads/acceptance/') }}
