@@ -27,6 +27,10 @@ stateDiagram-v2
   computed (shadow outcome), which is how veto quality is measured.
 - A `run_mode` field is `LIVE` (created during an observed session), `REPLAY` or `BACKTEST`. Only `LIVE`
   signals enter the forward trial and A/B evaluation.
+- **Agent veto is advisory (L-12).** The `CONFIRMED → VETOED` edge above is taken by the risk
+  gate only. An agent `VETOED_AGENT` never changes the lifecycle status, which follows the
+  `baseline` book. It is recorded as the signal's *advisory* status in the review event and keeps
+  the signal out of `agent_gated` (§4).
 
 ## 2. Signal record (REQ-SIG-03)
 
@@ -73,7 +77,7 @@ flowchart LR
 | Packet builder (code) | — | Facts only: bars window, computed features, regime labels, costs, spread, funding, data-health flags, risk state, strategy description. Prices normalized (relative to entry, in ATR units), symbol and calendar dates masked. |
 | **Analyst** (Claude) | 1 regime/context, 2 technical validation, 3 volatility/liquidity, 4 risk | Per dimension: `score ∈ {-2..+2}`, `evidence_refs[]` (must cite packet field IDs), `concerns[]`; overall `stance` |
 | **Skeptic** (Claude) | 5 adversarial analysis | `objections[]` each with `severity ∈ {minor, material, fatal}` and `evidence_refs[]` |
-| Synthesis (code) | 6 final decision | Rule table → `APPROVED`, `DOWNGRADED` (priority lowered, stays in baseline book only), `VETOED_AGENT` |
+| Synthesis (code) | 6 final decision | Rule table → `APPROVED`, `DOWNGRADED` (blocks `agent_gated` only; stays in the baseline book; changes nothing else), `VETOED_AGENT` |
 
 Rules that keep agents honest:
 - Agents may **only** approve, downgrade or veto. They cannot change entry/SL/TP, size, or approve a
@@ -102,6 +106,35 @@ Rules that keep agents honest:
   only and is labeled `AI_UNAVAILABLE` / `BUDGET_EXHAUSTED`. The `agent_gated` book does **not** take it
   (it has no review), and that is counted in coverage statistics.
 - A `cost_ledger` event records model, input/output/cached tokens, cost estimate and latency per call.
+
+### Paper wiring (M5-3, implemented with the mock client; devlog 2026-11-10-m5-runtime-wiring)
+
+- A paper session created while the mode is `confirmed` has a fourth book, `agent_gated`, with
+  the baseline's risk hook, sizing configuration and kill switch. With mode `off` it does not
+  exist and the session is byte-identical to before. Changing the mode of an existing session
+  needs a new paper session, because its configuration description changes.
+- **Request:** every signal whose `baseline` order was accepted at submit (it passed the risk
+  check) is queued for review (`AGENT_REVIEW_REQUESTED`, same journal batch). The review runs on
+  a worker thread; the bar loop never waits for it.
+- **Outcome:** each finished review is journaled as its own batch (`AGENT_REVIEW_COMPLETED`:
+  state, verdict, reason, latency, calls, review key, cost-ledger reference) **before** it is
+  used. Outcomes are applied in request order. Replay re-applies the recorded outcomes, never
+  calls a client, and fails closed on a missing, reordered or malformed outcome.
+- **Admission:** only `REVIEWED` + `APPROVED` admits. `DOWNGRADED` and `VETOED_AGENT` block.
+  `AI_UNAVAILABLE`, `BUDGET_EXHAUSTED`, `AGENT_OUTPUT_INVALID` and `NOT_REQUESTED` keep the signal
+  out and are counted. The admitted request is the baseline's own request (entry rule, stop,
+  take-profit, validity), sized by `agent_gated` from its own equity: no agent output sets a
+  price, size or time.
+- **Latency mapping:** the outcome is available at the poll that journals it; the entry is
+  submitted at the first observed bar of the signal's instrument released at or after that time,
+  and executes no earlier than the next 1m open. If the signal's validity ends first, `agent_gated` does not take it. A signal
+  invalidated before admission is skipped; one invalidated after admission exits `agent_gated`.
+- **Restart:** a review still in flight when the process stops is recorded `AI_UNAVAILABLE`
+  ("review interrupted") at the first poll after the restore. It is never re-requested or
+  approved late.
+- `GET /api/agents/status` reports `runtime_wired: true` and the session's counts (`runtime`,
+  labelled `SYSTEM` or `UNAVAILABLE`); `/api/paper/books` lists `agent_gated`. The real adapter
+  is still a stub, so outside tests every review is `AI_UNAVAILABLE`.
 
 ## 5. Cost estimate (API list prices verified 2026-10-19)
 
