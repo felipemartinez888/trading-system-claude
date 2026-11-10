@@ -99,3 +99,19 @@ is not derivable: no regime label is recorded).
 - **Without a store** (`--no-store`) only internal consistency is checked. The hashes are unkeyed, so a
   fully re-chained forgery cannot be told apart from a genuine export; the store comparison (or the
   committed chain-head evidence) is the control.
+
+## Real recorded sessions (overnight, Linux, on copies)
+Copies of three real Windows paper sessions staged from the owner's `tsc_runs` folder (the store
+files' SHA-256 were the same before and after; nothing was written to them):
+
+| Session | Events exported | `verify` (with store) | Ledger hashes: scorer vs session-end evidence |
+|---|---|---|---|
+| `paper-bracket-20261106-104529` (1 h) | 421 | ok, covers the whole store | baseline, benchmark, shadow: 3 of 3 equal |
+| `paper-20261109-2201` (25 min) | 202 (150 steps) | ok, covers the whole store | 3 of 3 equal |
+| `recovery-20261109-2227` (crash recovery) | 3,608 | ok, covers the whole store | 3 of 3 equal |
+
+So the stdlib-only scorer, reading the export alone, reproduces every book's ledger hash that the app
+recorded at session end, on real data. **Copy the whole data folder**: a store copied without its
+`state.db-wal` silently lacks the uncheckpointed events (the 25-minute session gave 98 events instead of
+202). These sessions have no signal records (no strategy confirmed), so signal scoring is exercised by
+the synthetic tests only.

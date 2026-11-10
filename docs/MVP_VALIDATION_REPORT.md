@@ -226,3 +226,14 @@ Details: [devlog](devlog/2026-11-10-track-a-and-m4-walkforward-infrastructure.md
 strategy effectiveness (none demonstrated), live trading (none; not planned before a separate owner
 decision).
 
+## 13. Overnight session (2026-11-10)
+Full record: [MVP_OVERNIGHT_REPORT](MVP_OVERNIGHT_REPORT.md). Evidence added here:
+- **CI `42776226802` on `45cf45a`: 7/7 green** (python ubuntu 2166 passed, windows 2164; frontend vitest and build on both OS).
+- **M6 export on real sessions:** three real Windows sessions (copies) exported, verified against their stores and scored;
+  the stdlib scorer reproduced **9 of 9** session-end ledger hashes from the export alone
+  ([M6 devlog](devlog/2026-11-10-m6-evaluation-export.md)).
+- Independent reviews: Fable (M4 infrastructure, preregistration + M6, M5) each CHANGES REQUESTED, all findings fixed;
+  causality audits of Track A and of the H1 draft CONDITIONAL PASS, findings fixed.
+
+**Status unchanged: MVP FUNCTIONAL — VALIDATION INCOMPLETE.** No strategy is validated; M3 formal acceptance (D-A) is open.
+

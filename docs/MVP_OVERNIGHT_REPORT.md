@@ -28,6 +28,7 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | Map | `docs/MVP_SEMANTIC_MAP.md` (Sonnet agent, grep-verified symbols) | `f10daad` | — | written |
 | Queue | `docs/MVP_TASK_QUEUE.md` | `f1a604f` | — | written |
 | M6-1 | Evaluation export v1, 11 schemas, verifier, stdlib scorer, CLI | `2d7191c` `088f3a3` `e63743b` | `tests/unit/evaluation` 41 passed, 1 skipped (fastapi), plus the import guard 3 | IMPLEMENTED, TESTED locally; CI pending |
+| M6-real | Export, verify and score of **three real recorded Windows sessions** (copies of the staged owner runs) | — | 9 of 9 ledger hashes equal the session-end evidence | **VERIFIED on real sessions** (see the M6 devlog) |
 | P0 | M3 acceptance request | `a0e2d76` | — | written; **D-A is the owner's** |
 | Review | Fable review of P1 + M6: CHANGES REQUESTED (2 blocking: a selection record could unlock the holdout; free-text policy values) | fixes `afcd1a2` | prereg 37, evaluation 42 + 1 skipped, resume run-side 2 | fixed |
 | M5-1 | Agent layer, mock client, advise-only, budget, breaker, cache, mode off, status API | `78fdbd2`…`0605795` + review fixes | `tests/unit/agents` 148 passed | IMPLEMENTED, TESTED; Fable review CHANGES REQUESTED (budget not a hard cap) fixed; not wired into the runtime |
@@ -41,7 +42,7 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | M3 | Gate VERIFIED technically; formal acceptance open (D-A, [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md)) |
 | M4 | Tooling IMPLEMENTED and TESTED; no preregistration frozen, no hypothesis implemented as runnable, no real-data research run |
 | M5 | Mock-testable part IMPLEMENTED and TESTED (148 passed, reviewed, fixed); runtime wiring, `agent_gated` book and Agent tab DEFERRED; the real-key clause BLOCKED (paid API, owner) |
-| M6 (export) | IMPLEMENTED, TESTED locally; CI pending; real-session export is an owner step |
+| M6 (export) | IMPLEMENTED, TESTED (CI `42776226802`); **verified on three real recorded sessions**: the stdlib scorer reproduces all 9 session-end ledger hashes from the export alone. Not accepted: D-06 (format agreed with the other team) and the gate's wider dashboard metrics remain |
 
 ## Research readiness
 **No validated strategy** (NO_VALIDATED_STRATEGY). The tooling can run a first preregistered H1
@@ -79,9 +80,9 @@ All **NORMAL PowerShell** (no Administrator). Nothing below trades, sends an ord
    ```powershell
    cd C:\Users\felip\Projects\tsc-mvp
    uv run tsclaude backtest walkforward --strategy bracket_reference --grid docs\research\grids\bracket_reference_dryrun.json --symbols spot:BTCUSDT --hypothesis B2-DRYRUN
-   Copy-Item C:\Users\felip\tsc_runs\paper-20261109-2201\data\state.db $env:TEMP\tsc-export.db
-   uv run tsclaude evaluation export --db $env:TEMP\tsc-export.db --out $env:TEMP\tsc-export
-   uv run tsclaude evaluation verify --export $env:TEMP\tsc-export --db $env:TEMP\tsc-export.db
+   Copy-Item C:\Users\felip\tsc_runs\paper-20261109-2201\data $env:TEMP\tsc-export-data -Recurse   # with state.db-wal
+   uv run tsclaude evaluation export --db $env:TEMP\tsc-export-data\state.db --out $env:TEMP\tsc-export
+   uv run tsclaude evaluation verify --export $env:TEMP\tsc-export --db $env:TEMP\tsc-export-data\state.db
    uv run tsclaude evaluation score --export $env:TEMP\tsc-export
    ```
 
