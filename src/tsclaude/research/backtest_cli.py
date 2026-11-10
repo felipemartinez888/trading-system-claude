@@ -170,37 +170,44 @@ def load_grid(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def _cmd_walkforward(args: argparse.Namespace) -> int:
-    """Anchored walk-forward on the development segment only (RESEARCH_PROTOCOL §3)."""
+    """Anchored walk-forward on the development segment only (RESEARCH_PROTOCOL §3).
+
+    Without ``--from`` the anchor is the earliest UTC month start (not before the development
+    segment) whose warm-up lies inside the stored data; an explicit earlier anchor is refused
+    (audit WF-2)."""
     from tsclaude.contracts.timeutil import MS_PER_MINUTE
-    from tsclaude.research.runner import BacktestConfig, RunEnv, segment_of
+    from tsclaude.research.runner import DEV_START_MS, BacktestConfig, RunEnv, segment_of
     from tsclaude.research.trials import TrialRegistry
-    from tsclaude.research.walkforward import WalkForwardError, plan_folds, run_walk_forward
+    from tsclaude.research.walkforward import (
+        WalkForwardError,
+        check_anchor,
+        data_start_ms,
+        earliest_anchor_ms,
+        grid_warmup_ms,
+        plan_folds,
+        run_walk_forward,
+    )
     from tsclaude.store.eventstore import EventStore
     from tsclaude.store.holdout import EventStoreUnlocks, HoldoutError, HoldoutGuard
 
     settings = Settings.from_env()
     try:
         grid = load_grid(Path(args.grid))
-        from_ms, to_ms = parse_time(args.from_), parse_time(args.to)
-        if segment_of(from_ms, to_ms) != "development":
-            raise WalkForwardError(
-                "walk-forward selection runs on the development segment only "
-                "(2022-01-01 to 2025-01-01); validation and holdout are evaluated once, later"
-            )
         if len(grid) > args.max_configs:
             raise WalkForwardError(
                 f"{len(grid)} configurations exceed the trial budget --max-configs "
                 f"{args.max_configs}; shrink the grid (every evaluation is a recorded trial)"
             )
-        folds = plan_folds(
-            from_ms,
-            to_ms,
-            initial_train_months=args.initial_train_months,
-            test_months=args.test_months,
-            embargo_ms=args.embargo_minutes * MS_PER_MINUTE,
-        )
+        to_ms = parse_time(args.to)
+        explicit_from = None if args.from_ is None else parse_time(args.from_)
+        if explicit_from is not None and segment_of(explicit_from, to_ms) != "development":
+            raise WalkForwardError(
+                "walk-forward selection runs on the development segment only "
+                "(2022-01-01 to 2025-01-01); validation and holdout are evaluated once, later"
+            )
         symbols = parse_symbols(args.symbols, args.market)
-    except (ValueError, OSError) as exc:
+        warmup = grid_warmup_ms(args.strategy, grid)
+    except (ValueError, TypeError, OSError) as exc:  # TypeError: unknown parameter names
         print(json.dumps({"ok": False, "refused": "walkforward", "error": str(exc)}))
         return 2
     cfg_path = Path(args.config)
@@ -229,6 +236,31 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
             repo_root=Path(args.repo_root),
             exchange_interruptions=interruptions,
         )
+        try:  # the anchor and the folds need the data's coverage; nothing is recorded yet
+            start = data_start_ms(env.reader, symbols)
+            if start is None:
+                raise WalkForwardError("no stored 1m bars for the requested symbols")
+            from_ms = (
+                explicit_from
+                if explicit_from is not None
+                else max(DEV_START_MS, earliest_anchor_ms(start, warmup))
+            )
+            check_anchor(from_ms, data_start_ms=start, warmup_ms=warmup)
+            if segment_of(from_ms, to_ms) != "development":
+                raise WalkForwardError(
+                    "walk-forward selection runs on the development segment only "
+                    "(2022-01-01 to 2025-01-01); validation and holdout are evaluated once, later"
+                )
+            folds = plan_folds(
+                from_ms,
+                to_ms,
+                initial_train_months=args.initial_train_months,
+                test_months=args.test_months,
+                embargo_ms=args.embargo_minutes * MS_PER_MINUTE,
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "refused": "walkforward", "error": str(exc)}))
+            return 2
         try:
             report = run_walk_forward(
                 env,
@@ -255,6 +287,7 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
                 "folds": len(report["folds"]),
                 "n_train_evaluations": report["n_train_evaluations"],
                 "n_test_evaluations": report["n_test_evaluations"],
+                "warmup": report["warmup"],
                 "oos": report["oos"],
                 "provenance": "BACKTEST",
             },
@@ -307,7 +340,12 @@ def register(sub: Any) -> None:
     wf.add_argument("--grid", required=True, help="JSON file: [params, ...] or {id: params}")
     wf.add_argument("--symbols", required=True, help="e.g. spot:BTCUSDT,spot:ETHUSDT")
     wf.add_argument("--market", default="spot", help="market for symbols without a prefix")
-    wf.add_argument("--from", dest="from_", default="2022-01-01", help="UTC month start")
+    wf.add_argument(
+        "--from",
+        dest="from_",
+        default=None,
+        help="anchor, a UTC month start; default: the earliest one whose warm-up is in the data",
+    )
     wf.add_argument("--to", default="2025-01-01", help="UTC month start (exclusive)")
     wf.add_argument("--initial-train-months", type=int, default=12)
     wf.add_argument("--test-months", type=int, default=3)

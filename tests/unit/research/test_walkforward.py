@@ -14,15 +14,21 @@ import pytest
 from tsclaude.research.runner import BacktestConfig
 from tsclaude.research.walkforward import (
     INSUFFICIENT_OOS_EVIDENCE,
+    INVALID_OOS_EVIDENCE,
     NO_EDGE_DEMONSTRATED,
     OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY,
     Fold,
+    OosRun,
     Score,
     WalkForwardError,
     add_months,
     certify_oos,
+    check_anchor,
     config_id_of,
+    earliest_anchor_ms,
+    month_start_at_or_after,
     plan_folds,
+    run_problems,
     select,
     verdict,
     walk_forward,
@@ -126,14 +132,20 @@ class Recorder:
     train: dict[str, Score]
     test: dict[str, list[float]]
     calls: list[tuple[str, str, int, int]] = field(default_factory=list)
+    #: fold index -> integrity problems of that fold's test run
+    test_problems: dict[int, tuple[str, ...]] = field(default_factory=dict)
 
     def score(self, config_id: str, fold: Fold) -> Score:
         self.calls.append(("train", config_id, fold.train_from_ms, fold.train_to_ms))
         return self.train[config_id]
 
-    def oos(self, config_id: str, fold: Fold) -> tuple[list[float], str | None]:
+    def oos(self, config_id: str, fold: Fold) -> OosRun:
         self.calls.append(("test", config_id, fold.test_from_ms, fold.test_to_ms))
-        return list(self.test[config_id]), f"bt-{config_id}-{fold.index}"
+        return OosRun(
+            tuple(self.test[config_id]),
+            f"bt-{config_id}-{fold.index}",
+            self.test_problems.get(fold.index, ()),
+        )
 
     def rescore(self, scores: list[Score], fold: Fold) -> list[Score]:
         return scores
@@ -267,3 +279,115 @@ def test_config_ids_are_stable_content_hashes() -> None:
     assert a == config_id_of({"stop_atr": 1.5, "tp_r": 1.0})
     assert a != config_id_of({"stop_atr": 1.5, "tp_r": 0.5})
     assert len(a) == 12
+
+
+# ---------------------------------------------------------------- integrity gates (audit WF-1)
+BAD = ("integrity: data gaps in warm-up: 5 missing 1m bars before 'from'",)
+
+
+def test_an_invalid_train_run_is_ineligible_whatever_its_numbers() -> None:
+    scores = [
+        Score("a", 500, 0.50, 0.90, "bt-a", BAD),  # the best numbers, but graded X
+        Score("b", 100, 0.01, 0.55, "bt-b"),
+    ]
+    best, reasons = select(scores, n_min=30)
+    assert best is not None
+    assert best.config_id == "b"
+    assert reasons == []
+    none, why = select([Score("a", 500, 0.5, 0.9, "bt-a", BAD)], n_min=30)
+    assert none is None
+    assert any("failed integrity" in r and "a" in r for r in why)
+    # an invalid score's numbers are not reported as evidence
+    assert scores[0].to_dict() == {
+        "config_id": "a", "n": None, "margin_lcb": None, "p_lcb": None, "run_id": "bt-a",
+        "valid": False, "problems": list(BAD),
+    }  # fmt: skip
+
+
+def test_a_fold_whose_train_runs_all_fail_runs_no_test_and_is_reported() -> None:
+    folds = plan_folds(DEV_START, DEV_END, initial_train_months=12, test_months=3, embargo_ms=DAY)
+    rec = Recorder(train={"a": Score("a", 100, 0.1, 0.6, "bt-a", BAD)}, test={"a": [1.0] * 10})
+    result = walk_forward(["a"], folds, rec, n_min=30)
+    assert all(c[0] == "train" for c in rec.calls)  # no test window was ever evaluated
+    assert {f.status for f in result.folds} == {"NO_SELECTION"}
+    assert result.folds[0].to_dict()["train_invalid"] == ["a"]
+    out = verdict(result, None, n_trials=1)
+    assert out["verdict"] == INSUFFICIENT_OOS_EVIDENCE
+    assert out["folds_without_valid_train"] == list(range(len(folds)))
+    assert "data quality only" in out["coverage_note"]
+
+
+def test_a_failed_test_run_voids_the_stitched_verdict_and_stops_the_walk_forward() -> None:
+    folds = plan_folds(DEV_START, DEV_END, initial_train_months=12, test_months=3, embargo_ms=DAY)
+    assert len(folds) == 8
+    rec = Recorder(
+        train={"a": Score("a", 100, 0.1, 0.6)},
+        test={"a": ([1.0] * 3 + [-1.0]) * 50},  # a strong edge, but fold 2's test run is invalid
+        test_problems={2: ("integrity: data gaps: 3 missing 1m bars in range",)},
+    )
+    result = walk_forward(["a"], folds, rec, n_min=30)
+    assert [f.status for f in result.folds] == ["TESTED", "TESTED", "TEST_INVALID"]
+    assert result.failed_test_folds == [2]
+    assert result.planned_folds == 8
+    assert len([c for c in rec.calls if c[0] == "test"]) == 3  # nothing ran after the failure
+    with pytest.raises(WalkForwardError, match="void"):
+        result.oos_outcomes()
+    out = verdict(result, None, n_trials=1)
+    assert out["verdict"] == INVALID_OOS_EVIDENCE
+    assert out["oos_trades"] is None
+    assert "margin_lcb" not in out
+    assert any("fold 2" in r and "missing 1m bars" in r for r in out["reasons"])
+    assert any("5 planned fold(s) not run" in r for r in out["reasons"])
+    failed = result.folds[2].to_dict()
+    assert failed["oos_valid"] is False
+    assert failed["oos_trades"] is None
+    assert failed["oos_problems"] == ["integrity: data gaps: 3 missing 1m bars in range"]
+    # a certification over a void set is refused, never reported
+    cert = certify_oos([1.0, -1.0] * 2, cfg=CFG, n_trials=1, max_loss_r=1.5,
+                       max_loss_source="t", seed=1)  # fmt: skip
+    with pytest.raises(WalkForwardError, match="void"):
+        verdict(result, cert, n_trials=1)
+
+
+@pytest.mark.parametrize(
+    ("metrics", "expected"),
+    [
+        (None, "no metrics"),
+        ({"evidence_grade": "C"}, "no integrity record"),
+        ({"evidence_grade": "C", "integrity": {}}, "no integrity record"),
+        ({"evidence_grade": "X", "integrity": {"problems": ["no bars in range"]}}, "no bars"),
+        (
+            {"evidence_grade": "X", "grade_reasons": ["r"], "integrity": {"problems": []}},
+            "graded X",
+        ),
+        ({"integrity": {"problems": []}}, "no evidence grade"),
+    ],
+)
+def test_run_problems_fail_closed(metrics: dict[str, object] | None, expected: str) -> None:
+    problems = run_problems(metrics)
+    assert problems
+    assert any(expected in p for p in problems)
+
+
+def test_a_clean_run_has_no_problems() -> None:
+    assert run_problems({"evidence_grade": "C", "integrity": {"problems": []}}) == []
+    assert run_problems({"evidence_grade": "D", "integrity": {"problems": []}}) == []
+
+
+# ---------------------------------------------------------------- warm-up anchor (audit WF-2)
+def test_the_earliest_anchor_leaves_the_whole_warm_up_inside_the_data() -> None:
+    warmup = 1185 * M
+    assert earliest_anchor_ms(DEV_START, 0) == DEV_START
+    assert earliest_anchor_ms(DEV_START, warmup) == ms(2022, 2)
+    assert earliest_anchor_ms(ms(2021, 12, 31), 2 * DAY) == ms(2022, 2)
+    assert earliest_anchor_ms(ms(2021, 12, 31), DAY) == ms(2022, 1)  # exactly enough
+    assert month_start_at_or_after(ms(2022, 3)) == ms(2022, 3)
+    assert month_start_at_or_after(ms(2022, 3) + 1) == ms(2022, 4)
+    assert month_start_at_or_after(ms(2022, 12, 5)) == ms(2023, 1)
+    check_anchor(ms(2022, 2), data_start_ms=DEV_START, warmup_ms=warmup)  # valid: no error
+    with pytest.raises(WalkForwardError, match="earliest valid anchor is 2022-02-01"):
+        check_anchor(DEV_START, data_start_ms=DEV_START, warmup_ms=warmup)
+    with pytest.raises(WalkForwardError, match="no stored 1m bars"):
+        check_anchor(ms(2022, 2), data_start_ms=None, warmup_ms=warmup)
+    with pytest.raises(WalkForwardError, match="negative"):
+        earliest_anchor_ms(DEV_START, -1)

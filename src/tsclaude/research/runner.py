@@ -252,6 +252,13 @@ def git_version() -> dict[str, Any]:
     return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
 
 
+def warmup_ms_of(strategy: Strategy[Any]) -> int:
+    """History a run reads before its ``from``: the strategy's trailing window. A run whose
+    warm-up is not fully inside the stored data reports a warm-up gap and is graded X; callers
+    that choose ``from`` (the walk-forward anchor) use this same value."""
+    return strategy.window_bars * strategy.interval.ms
+
+
 def segment_of(from_ms: int, to_ms: int) -> str:
     for name, lo, hi in (
         ("development", DEV_START_MS, DEV_END_MS),
@@ -848,8 +855,7 @@ def run_backtest(
         raise ValueError(f"from/to must be aligned to the strategy interval {strat.interval}")
     if req.to_ms - req.from_ms <= cfg.flat_margin_bars * interval_ms:
         raise ValueError("range is shorter than the end-of-run flat margin")
-    warmup_ms = strat.window_bars * interval_ms
-    read_from = req.from_ms - warmup_ms
+    read_from = req.from_ms - warmup_ms_of(strat)
     segment = segment_of(req.from_ms, req.to_ms)
     created = env.now_ms()
     planning = _planning(env, req)

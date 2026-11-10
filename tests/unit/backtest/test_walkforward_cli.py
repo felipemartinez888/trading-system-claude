@@ -19,7 +19,8 @@ from tsclaude.store.lake_reader import LakeReader
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     d = tmp_path / "data"
-    write_lake(d, [(Market.SPOT, "BTCUSDT", synthetic_rows(ms(2024, 1, 1), ms(2024, 3, 1)))])
+    # a month of data before the first possible anchor: the runs' warm-up lies inside the data
+    write_lake(d, [(Market.SPOT, "BTCUSDT", synthetic_rows(ms(2023, 12, 1), ms(2024, 3, 1)))])
     monkeypatch.setenv("TSC_DATA_DIR", str(d))
 
     def reader(data: Path, guard: HoldoutGuard) -> LakeReader:
@@ -59,6 +60,9 @@ def _argv(env: dict[str, Path], *extra: str) -> list[str]:
         (("--max-configs", "1"), "exceed the trial budget"),
         (("--from", "2024-01-15", "--to", "2024-03-01"), "not a UTC month start"),
         (("--embargo-minutes", "0"), "at least one minute"),
+        # WF-2: the data starts 2023-12-01 and the warm-up is about 20 hours
+        (("--from", "2023-12-01", "--to", "2024-03-01"), "earliest valid anchor is 2024-01-01"),
+        (("--symbols", "spot:ETHUSDT"), "no stored 1m bars"),
     ],
 )
 def test_refusals_happen_before_anything_runs(
@@ -84,18 +88,30 @@ def test_a_malformed_grid_is_refused(
     assert "grid must be" in str(out["error"])
 
 
+def test_a_grid_with_an_unknown_parameter_is_refused(
+    env: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    env["grid"].write_text(json.dumps([{"no_such_param": 1}]), encoding="utf-8")
+    code, out = _run(capsys, *_argv(env))
+    assert code == 2
+    assert out["ok"] is False
+    assert not (env["data"] / "runs").exists()
+
+
 def test_a_full_walk_forward_writes_its_report(
     env: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Without --from the anchor is the first month start whose warm-up is in the data."""
     code, out = _run(
         capsys,
         *_argv(
             env,
-            "--from", "2024-01-01", "--to", "2024-03-01",
+            "--to", "2024-03-01",
             "--initial-train-months", "1", "--test-months", "1", "--n-min", "5",
         ),
     )  # fmt: skip
     assert code == 0
+    assert out["warmup"]["anchor"] == "2024-01-01T00:00:00Z"  # type: ignore[index]
     assert out["ok"] is True
     assert out["folds"] == 1
     assert out["n_train_evaluations"] == 2

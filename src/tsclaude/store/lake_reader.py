@@ -155,6 +155,27 @@ class LakeReader:
         )
         return int(rows[0]["open_time_ms"]) if rows else None
 
+    # ------------------------------------------------------------------ coverage metadata
+    def first_bar_ms(
+        self, market: Market, symbol: str, *, dataset_ids: Collection[str] | None = None
+    ) -> int | None:
+        """Open time of the earliest stored 1m bar of a symbol, from the part index only (no row
+        is read, no price is returned). Sealed parts are not consulted. None without data.
+
+        Used to place a walk-forward anchor so that every run's warm-up lies inside the data;
+        it does not prove the data is gap-free (each run still checks that, fail closed)."""
+        wanted = set(dataset_ids) if dataset_ids is not None else None
+        firsts = [
+            ip.part.first_time_ms
+            for ip in self._lake.index()
+            if ip.part.market == str(market)
+            and ip.part.kind == str(LakeKind.BARS_1M)
+            and ip.part.symbol == symbol
+            and (wanted is None or ip.dataset_id in wanted)
+            and not ip.part.sealed
+        ]
+        return min(firsts) if firsts else None
+
     # ------------------------------------------------------------------ internals
     def _parts(
         self,
