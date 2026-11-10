@@ -58,6 +58,11 @@ class EventType(StrEnum):
     SIM_BOOK_RESET = "sim_book_reset"
     SIM_OBSERVATION_CHANGED = "sim_observation_changed"
 
+    # advisory agents in paper trading (M5-3, ADR-0007, L-12): additive
+    AGENT_REVIEW_REQUESTED = "agent_review_requested"
+    AGENT_REVIEW_COMPLETED = "agent_review_completed"
+    AGENT_GATED_ADMISSION = "agent_gated_admission"
+
 
 class AggregateType(StrEnum):
     RUNTIME = "runtime"
@@ -67,6 +72,7 @@ class AggregateType(StrEnum):
     SIGNAL = "signal"
     RESEARCH = "research"
     SIM = "sim"
+    AGENT = "agent"  # M5-3: advisory agent reviews (aggregate id = signal id)
 
 
 class NewEvent(BaseModel):

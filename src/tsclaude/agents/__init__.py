@@ -19,4 +19,8 @@ Modules:
 - `gate`      -- the orchestrator: `AgentGate.review(...)` -> `AgentOutcome`.
 - `real_client` -- key-presence check and a stub for the real Anthropic adapter (not implemented).
 - `status`    -- read-only status snapshot for ``GET /api/agents/status``.
+- `wiring`    -- M5-3: the deterministic ``agent_gated`` state of a paper session (requests,
+  journaled outcomes, admissions; replayable, never calls a client).
+- `worker`    -- M5-3: reviews on a worker thread off the event loop, packet inputs from closed
+  bars, the paper runtime's reviewer factory.
 """

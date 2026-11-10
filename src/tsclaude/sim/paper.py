@@ -36,11 +36,23 @@ abandoning the old one; the old session stays in the hash chain, read-only.
 
 Fail closed: a step that raises, or a journal append that fails, puts the service in ``FAULTED``
 (no further bars processed, so no entries) until it is restored from its journal.
+
+Advisory agents (M5-3, `agents.wiring`, ADR-0007, L-12): with ``PaperConfig.agent_gated`` (agents
+mode ``confirmed`` at session start) the session has a fourth book, ``agent_gated``, with the
+baseline's risk hook and configuration. Every signal the baseline book accepts at submit is
+queued for review; a finished review is journaled as its own batch (input kind ``agent_review``)
+before it is applied, and only an APPROVED review admits the signal to ``agent_gated``, at the
+first observed bar released after the outcome. The baseline book never depends on a review.
+Reviews run off the event loop (`agents.worker`); replay re-applies the journaled outcomes and
+never calls a client. Without the flag (the default) nothing of this exists and every journal
+byte is as before.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -48,6 +60,15 @@ from enum import StrEnum
 from functools import partial
 from typing import Any, Protocol
 
+from tsclaude.agents.wiring import (
+    AGENT_GATED,
+    INTERRUPTED,
+    REVIEW_KIND,
+    AgentGatedState,
+    AgentReplayMismatch,
+    unavailable_payload,
+)
+from tsclaude.agents.wiring import describe as describe_agent_gated
 from tsclaude.contracts.events import NewEvent
 from tsclaude.contracts.market import Bar, BarSource, Market
 from tsclaude.contracts.signals import EntryRuleKind, RunMode, Side, SignalRecord, SignalStatus
@@ -83,6 +104,8 @@ from tsclaude.sim.money import ONE, dstr, floor_to
 from tsclaude.sim.orders import EntryRequest, ExitRequest, InstrumentSpec
 from tsclaude.store.eventstore import EventStore
 
+log = logging.getLogger(__name__)
+
 BASELINE = PAPER_STATUS_BOOK
 SHADOW = SHADOW_BOOK
 BENCHMARK = "benchmark"
@@ -106,6 +129,19 @@ class Invalidate:
 
 
 type Intent = SignalRecord | Confirm | Invalidate
+
+
+class Reviewer(Protocol):
+    """Live agent reviewer (`agents.worker.ReviewWorker`): reviews run elsewhere, never in a
+    step; `completed` returns finished outcomes in submission order without blocking."""
+
+    def submit(self, signal: SignalRecord) -> None: ...
+
+    def completed(self) -> list[tuple[str, dict[str, Any]]]: ...
+
+    def snapshot(self) -> dict[str, Any]: ...
+
+    def close(self) -> None: ...
 
 
 class LiveStrategy(Protocol):
@@ -146,6 +182,9 @@ class PaperConfig:
     decision_latency_ms: int = 0
     shadow: bool = True
     benchmark: bool = True
+    #: M5-3: the ``agent_gated`` book (agents mode ``confirmed`` at session start). False (the
+    #: default) leaves the session, its configuration description and its journal unchanged.
+    agent_gated: bool = False
 
     def __post_init__(self) -> None:
         if not self.instruments:
@@ -166,7 +205,7 @@ class PaperConfig:
         )
 
     def describe(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "paper_version": PAPER_VERSION,
             "starting_equity": dstr(self.starting_equity),
             "decision_latency_ms": self.decision_latency_ms,
@@ -180,6 +219,10 @@ class PaperConfig:
             ],
             "instruments": [s.to_payload() for s in self.instruments],
         }
+        if self.agent_gated:  # only then: an agent-free session describes itself as before
+            out["books"].append(AGENT_GATED)
+            out["agent_gated"] = describe_agent_gated()
+        return out
 
 
 class RestoreError(RuntimeError):
@@ -234,6 +277,11 @@ class _PaperSource:
             except (LifecycleError, ValueError, TypeError) as exc:
                 self.errors.append(f"intent_rejected:{type(exc).__name__}:{exc}")
         requests.extend(self._benchmark(bar))
+        agents = self.session.agents
+        if agents is not None:  # approved reviews whose outcome was available by this release
+            gated, events = agents.due(bar, self.session.released_at_ms, lc)
+            requests.extend(gated)
+            self.lifecycle_events.extend(events)
         return requests
 
     def _translate(self, intent: Intent, bar: Bar) -> list[EntryRequest | ExitRequest]:
@@ -261,13 +309,15 @@ class _PaperSource:
         # Invalidate: only books where this signal holds the order / position are told to exit
         holders = tuple(
             name
-            for name in books
+            for name in self.session.exit_books
             if self.session.sim.books[name].holder(record.market, record.symbol) == intent.signal_id
         )
         if state.status is not SignalStatus.OPEN:
             self.lifecycle_events.append(
                 lc.transition(intent.signal_id, SignalStatus.INVALIDATED, ts, intent.reason)
             )
+        if self.session.agents is not None:  # a pending agent_gated admission is skipped
+            self.session.agents.invalidate(intent.signal_id)
         if not holders:
             return []
         return [
@@ -346,7 +396,29 @@ class PaperSession:
                     config=config.benchmark_config(),
                 )
             )
+        #: M5-3: the agent state and book exist only with `PaperConfig.agent_gated`
+        self.agents: AgentGatedState | None = None
+        if config.agent_gated:
+            books.append(
+                Book(
+                    AGENT_GATED,
+                    config.starting_equity,
+                    config.cost_model,
+                    self.hook,  # the baseline's risk engine, configuration and recording
+                    instruments=config.instruments,
+                    config=config.baseline_config(),
+                    kill_switch_drawdown=config.risk.drawdown_kill_switch,
+                )
+            )
+            self.agents = AgentGatedState()
         self.signal_books: tuple[str, ...] = (BASELINE, SHADOW) if config.shadow else (BASELINE,)
+        #: books an invalidation may have to exit (the agent_gated book receives its entries
+        #: separately, after a review)
+        self.exit_books: tuple[str, ...] = self.signal_books + (
+            (AGENT_GATED,) if self.agents is not None else ()
+        )
+        #: release time of the bar being stepped (agent_gated admissions wait for it)
+        self.released_at_ms: int | None = None
         self.lifecycle = SignalLifecycle()
         self.source = _PaperSource(self)
         self.source.strategy = strategy
@@ -377,6 +449,8 @@ class PaperSession:
         self._cursor = len(self.sim.events)
         lifecycle = [*self.source.lifecycle_events, *self.lifecycle.transitions_from_sim(new)]
         lifecycle.extend(extra)
+        if self.agents is not None:  # review requests for this step's baseline submissions
+            lifecycle.extend(self.agents.on_sim_events(new))
         if self.batches == 0:
             head = {**head, "session": self.config.describe()}
         head = {
@@ -423,6 +497,7 @@ class PaperSession:
         if self.closed_through_ms is not None and bar.open_time_ms < self.closed_through_ms:
             raise ValueError(f"bar {order_key(bar)} is in a minute already closed")
         self.source.begin(recorded, recorded_errors)
+        self.released_at_ms = released_at_ms
         self.sim.step(bar, observed=observed, not_before_ms=released_at_ms)
         extra: list[NewEvent] = []
         if not observed:  # WATCH signals whose window passed while we were not watching
@@ -486,6 +561,23 @@ class PaperSession:
         head["note"] = note
         head["requested_at_ms"] = requested_at_ms
         return self._collect(head, ts_ms)
+
+    def agent_review(self, review: Mapping[str, Any], available_at_ms: int) -> Batch:
+        """Journal input for one finished agent review (M5-3): the outcome as recorded, and
+        when it became available (the poll that journals it). It changes no book here; an
+        approved signal is submitted to ``agent_gated`` at a later observed bar step. Raises
+        `AgentReplayMismatch` (nothing changed) if the outcome does not match the next request
+        or the session has no agent_gated book."""
+        agents = self.agents
+        if agents is None:
+            raise AgentReplayMismatch("agent review in a session without the agent_gated book")
+        agents.check(review)
+        self.source.begin(None)
+        last = self.last_minute_ms
+        ts = 0 if last is None else last + MS_PER_MINUTE - 1
+        event = agents.apply(review, available_at_ms, ts)
+        head = {"kind": REVIEW_KIND, "review": dict(review), "available_at_ms": available_at_ms}
+        return self._collect(head, ts, [event])
 
     # ------------------------------------------------------------ results
     def ledger_hashes(self) -> dict[str, str]:
@@ -558,6 +650,12 @@ def replay(
                 head["note"],
                 head.get("requested_at_ms"),
             )
+        elif kind == REVIEW_KIND:
+            # a recorded outcome is re-applied, never re-requested: no client exists here
+            try:
+                out = session.agent_review(head["review"], head["available_at_ms"])
+            except (AgentReplayMismatch, KeyError, TypeError) as exc:
+                raise RestoreError(f"batch {i}: agent review replay mismatch: {exc}") from exc
         else:
             raise RestoreError(f"batch {i}: unknown input kind {kind!r}")
         if views.remaining:
@@ -757,6 +855,7 @@ class PaperTradingService:
         start_ms: int | None = None,
         session_id: str = SESSION_AGGREGATE_ID,
         observation_gated: bool = False,
+        reviewer: Reviewer | None = None,
     ) -> None:
         self.config = config
         self.journal = journal
@@ -784,6 +883,19 @@ class PaperTradingService:
         self.session = session
         self.state = ServiceState.RUNNING
         self.fault: str | None = None
+        #: M5-3 live agent reviews (only with an agent_gated session; ignored otherwise). A
+        #: failure here stops the agent_gated admissions (`agent_fault`), never the books.
+        self.reviewer = reviewer if session.agents is not None else None
+        self.agent_fault: str | None = None
+        self._launched: set[str] = set()
+        self._agent_ready: deque[tuple[str, dict[str, Any]]] = deque()
+        self._agent_done: dict[str, dict[str, Any]] = {}
+        if session.agents is not None:
+            # restored with reviews in flight: their outcome is lost with the old process; they
+            # are journaled AI_UNAVAILABLE at the first poll (fail closed, never re-approved)
+            for sid in session.agents.awaiting():
+                self._launched.add(sid)
+                self._agent_ready.append((sid, unavailable_payload(sid, INTERRUPTED)))
         #: set by `restore`: live bars must continue the journal without a gap
         self._check_continuity = False
         #: while AWAITING_BACKFILL: "market:symbol" -> minute opens still missing
@@ -896,6 +1008,8 @@ class PaperTradingService:
             return 0
         if not self._contiguous():
             return 0
+        if not self._agent_collect(now_ms):  # outcomes are journaled before any bar of a poll
+            return 0
         done = 0
         released = self.clock.release(now_ms)
         for i, bar in enumerate(released):
@@ -910,8 +1024,92 @@ class PaperTradingService:
             )
             if not self._process(step):
                 break
+            self._agent_launch()
             done += 1
         return done
+
+    # ------------------------------------------------------------ agent reviews (M5-3)
+    def _agent_launch(self) -> None:
+        """Hand every new review request (journaled with the step) to the reviewer. Never
+        blocks and never raises: a failure is an ``AI_UNAVAILABLE`` outcome for that signal."""
+        agents = self.session.agents
+        if agents is None or self.agent_fault is not None:
+            return
+        for sid in agents.awaiting():
+            if sid in self._launched:
+                continue
+            self._launched.add(sid)
+            if self.reviewer is None:
+                self._agent_ready.append((sid, unavailable_payload(sid, "no agent reviewer")))
+                continue
+            try:
+                state = self.session.lifecycle.get(sid)
+                if state is None:
+                    raise LifecycleError(f"unknown signal {sid}")
+                self.reviewer.submit(SignalRecord.model_validate(state.record))
+            except Exception as exc:
+                reason = f"review could not be started: {type(exc).__name__}"
+                self._agent_ready.append((sid, unavailable_payload(sid, reason)))
+
+    def _agent_collect(self, now_ms: int) -> bool:
+        """Journal finished reviews, in request order, each as its own batch, before anything
+        uses them (`available_at_ms` = this poll). A reviewer failure or an outcome that does
+        not match the next request sets `agent_fault`: no further review is journaled or
+        launched in this run, so agent_gated takes nothing more; the books carry on. Returns
+        False only if journaling an outcome faulted the service (as any failed batch does)."""
+        agents = self.session.agents
+        if agents is None or self.agent_fault is not None:
+            return True
+        try:
+            finished = list(self._agent_ready)
+            self._agent_ready.clear()
+            if self.reviewer is not None:
+                finished.extend(self.reviewer.completed())
+        except Exception as exc:
+            self._set_agent_fault(f"reviewer_failed:{type(exc).__name__}")
+            return True
+        awaiting = set(agents.awaiting())
+        for sid, payload in finished:
+            tagged = payload.get("signal_id") if isinstance(payload, Mapping) else None
+            if sid not in awaiting or tagged != sid or sid in self._agent_done:
+                self._set_agent_fault(f"unexpected_review_outcome:{sid}")
+                return True
+            self._agent_done[sid] = payload
+        while True:
+            head = agents.head()
+            if head is None or head not in self._agent_done:
+                return True
+            payload = self._agent_done.pop(head)
+            try:
+                agents.check(payload)
+            except Exception as exc:
+                self._set_agent_fault(f"invalid_review_outcome:{type(exc).__name__}:{exc}")
+                return True
+            if not self._process(partial(self.session.agent_review, payload, now_ms)):
+                return False
+
+    def _set_agent_fault(self, reason: str) -> None:
+        self.agent_fault = reason
+        log.error("agent reviews stopped for this run", extra={"agent_fault": reason})
+
+    def agent_status(self) -> dict[str, Any] | None:
+        """Coverage of the agent_gated book (SYSTEM values), or None without it."""
+        agents = self.session.agents
+        if agents is None:
+            return None
+        reviewer: dict[str, Any] | None = None
+        if self.reviewer is not None:
+            try:
+                reviewer = self.reviewer.snapshot()
+            except Exception as exc:
+                reviewer = {"error": type(exc).__name__}
+        return {
+            "book": AGENT_GATED,
+            "coverage": agents.coverage(),
+            "awaiting_review": agents.awaiting(),
+            "fault": self.agent_fault,
+            "reviewer": reviewer,
+        }
 
     def _contiguous(self) -> bool:
         """After a restore: may live bars be processed (no unresolved gap after the journal)?"""
@@ -1083,6 +1281,7 @@ class PaperTradingService:
             "clock": vars(self.clock.stats).copy(),
             "books": books,
             "ledger_hashes": self.ledger_hashes(),
+            **({} if self.session.agents is None else {"agents": self.agent_status()}),
         }
 
     # ------------------------------------------------------------ async driver
