@@ -30,8 +30,13 @@ Sources:
 | Configuration | the H1 draft defaults: `rank_max` 0.35, `vol_z_min` 1.0, `stop_atr` 1.5, `max_cost_r` 0.2. This is the most permissive entry setting of the H1-v3 grid, and `tp_r` enters no stage, so it is the ceiling for all 24 configurations at its interval | same |
 
 Copied from the owner's PC read-only, and checked here: the content hash, the config hash and
-every per-symbol counter. A v2 count does not record its code commit. From feasibility-v3 on,
-each file carries `code` (commit, dirty).
+every per-symbol counter. `tests/unit/research/test_h1_feasibility_evidence.py` pins the bytes,
+the counts and the numbers below. Notes on the format:
+- A v2 count does not record its code commit. From feasibility-v3 on, each file carries `code`
+  (commit, dirty).
+- The owner's files have CRLF line endings: feasibility-v2 wrote in text mode, which gives CRLF on
+  Windows. `.gitattributes` keeps these two files byte for byte.
+- From this change on, counts and power plans are written with LF on every platform.
 
 ## 2. 15m: recorded finding
 

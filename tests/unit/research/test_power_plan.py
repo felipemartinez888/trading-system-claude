@@ -220,6 +220,7 @@ def test_the_cli_plans_from_a_feasibility_file(
     assert main(["backtest", "power-plan", "--feasibility", str(path), "--out", str(out_file)]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert out_file.read_bytes()[:1] == b"{"
+    assert b"\r" not in out_file.read_bytes()  # LF on every platform, Windows included
     assert json.loads(out_file.read_text(encoding="utf-8")) == printed
     unwritable = main(
         ["backtest", "power-plan", "--feasibility", str(path), "--out", str(tmp_path)]

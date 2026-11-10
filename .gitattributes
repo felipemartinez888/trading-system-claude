@@ -4,3 +4,5 @@
 *.ps1 text eol=crlf
 *.parquet binary
 *.png binary
+# owner evidence copied byte for byte (written on Windows): never normalize line endings
+docs/research/evidence/h1_feasibility_*.json -text

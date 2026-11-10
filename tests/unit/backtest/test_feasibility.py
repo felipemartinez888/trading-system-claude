@@ -543,6 +543,8 @@ def test_cli_uses_the_registry_next_to_the_config_and_refuses_a_broken_one(
     body = {k: v for k, v in written.items() if k not in added}
     assert content_hash(body) == written["content_hash"]
     assert Path(out["results"][0]["path"]).parent.name == f"feas-{written['content_hash'][:12]}"
+    # LF on every platform (the owner's Windows files at feasibility-v2 had CRLF)
+    assert b"\r" not in Path(out["results"][0]["path"]).read_bytes()
 
 
 # ---------------------------------------------------------------- diagnostics (feasibility-v2)

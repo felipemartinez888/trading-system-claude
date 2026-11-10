@@ -58,7 +58,7 @@ def cmd_power_plan(args: argparse.Namespace) -> int:
     text = json.dumps({"ok": True, **result}, indent=2)
     if args.out:
         try:
-            Path(args.out).write_text(text + "\n", encoding="utf-8")
+            Path(args.out).write_text(text + "\n", encoding="utf-8", newline="\n")
         except OSError as exc:
             print(json.dumps({"ok": False, "refused": "power_plan", "error": f"{exc}"}))
             return 2

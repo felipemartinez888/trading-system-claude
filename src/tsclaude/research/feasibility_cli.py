@@ -156,7 +156,9 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
             out_dir = out_root / f"feas-{result['content_hash'][:12]}"
             out_dir.mkdir(parents=True, exist_ok=True)
             path = out_dir / "feasibility.json"
-            path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            # "\n" on every platform (text mode would write CRLF on Windows): the same count
+            # gives the same file bytes on Windows and Linux
+            path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n")
             summaries.append(
                 {
                     "config_id": cid,
