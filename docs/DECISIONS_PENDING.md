@@ -106,6 +106,9 @@ policies below.
 | **D-G** | Commit `uv.lock` and the pnpm lock files after review | ⏳ **OPEN** (recommended: commit before the first research run) | Without them, CI and the owner PC resolve dependencies at run time. The walk-forward plan id records the Python and numpy versions, so a resume never mixes environments, but a rerun elsewhere may not reproduce the same hashes. **Strongly recommended before** the first H1 walk-forward |
 | **D-H** | Merge `task/mvp-integration` | ⏳ **OPEN** | Nothing technical depends on it |
 
+A fill-in record of every item needed for the H1 freeze, with options and recommendations, is in
+[research/H1_DECISION_RECORD.md](research/H1_DECISION_RECORD.md) (blank until the owner decides).
+
 **Smallest set that unblocks the first valid H1 walk-forward:** D-C, D-E and D-F1 (D-G strongly
 recommended), then the owner's review and freeze of a revised H1 preregistration (handoff §5:
 H1-1 to H1-12, informed by the P&L-free feasibility count). D-D and D-F2 are needed only later, for
