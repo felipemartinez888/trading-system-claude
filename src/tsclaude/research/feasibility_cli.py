@@ -144,6 +144,12 @@ def cmd_feasibility(args: argparse.Namespace) -> int:
                     "content_hash": result["content_hash"],
                     "stages": result["stages"],
                     "totals": {k: v["total"] for k, v in result["symbols"].items()},
+                    "diagnostics": {
+                        "busiest_hours_candidate_share": result["diagnostics"]["by_utc_hour"][
+                            "busiest_hours_candidate_share"
+                        ],
+                        "ablation_ladder": result["diagnostics"].get("ablation_ladder"),
+                    },
                 }
             )
     print(

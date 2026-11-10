@@ -47,9 +47,9 @@ STAGES = [
 ]  # fmt: skip
 TOP_KEYS = {
     "kind", "version", "provenance", "pnl_free", "segment", "strategy", "range", "stages",
-    "counting", "planning_costs", "symbols", "dataset_ids", "content_hash",
+    "counting", "planning_costs", "symbols", "diagnostics", "dataset_ids", "content_hash",
 }  # fmt: skip
-SYMBOL_KEYS = {"years", "total", "warmup", "conflicts", "bars_1m"}
+SYMBOL_KEYS = {"years", "total", "warmup", "conflicts", "bars_1m", "by_utc_hour"}
 YEAR_KEYS = {"decision_bars", "cumulative", "missing_minutes", "history_resets"}
 
 
@@ -159,6 +159,18 @@ def test_output_key_set_has_no_outcome_fields(march: tuple[Path, list[str]]) -> 
         assert all(set(c) == {"stage", "bars"} for c in y["cumulative"])
     assert set(out["range"]) == {"from_ms", "to_ms", "from", "to", "read_from_ms", "warmup_ms"}
     assert set(out["planning_costs"]["spot:BTCUSDT"]) == {"round_trip_frac", "basis"}
+    assert set(sym["by_utc_hour"]) == {
+        "decision_bars",
+        "candidates",
+        "busiest_hours_candidate_share",
+    }
+    assert set(out["diagnostics"]) == {
+        "decision_bars",
+        "stage_filter",
+        "by_utc_hour",
+        "structural_stages",
+        "notes",
+    }  # fmt: skip  (the reference strategy declares no ablation ladder)
     keys = _all_keys({k: v for k, v in out.items() if k != "strategy"})  # params are inputs
     for word in ("pnl", "equity", "win", "trade", "exit", "expectancy", "return", "price", "r_"):
         assert not [k for k in keys if word in k.lower() and k != "pnl_free"], word
@@ -422,3 +434,97 @@ def test_cli_refuses_both_params_and_grid(
     )  # fmt: skip
     assert code == 2
     assert out["refused"] == "feasibility"
+
+
+# ---------------------------------------------------------------- diagnostics (feasibility-v2)
+
+
+def test_diagnostics_agree_with_the_cumulative_counts(march: tuple[Path, list[str]]) -> None:
+    """Hour-of-day histograms sum to the counts they split, the stage filter's cumulative column
+    is the per-symbol total, and marginal / leave-one-out bound the cumulative count."""
+    data_dir, _ = march
+    out = count_feasibility(
+        _reader(data_dir), fast_strategy(max_cost_r=0.3), [SPOT_BTC], ms(2024, 3, 2),
+        ms(2024, 3, 6), costs_for=COSTS_FOR,
+    )  # fmt: skip
+    d = out["diagnostics"]
+    cum = _cum(out)
+    assert d["decision_bars"] == out["symbols"]["spot:BTCUSDT"]["total"]["decision_bars"]
+    assert [r["cumulative"] for r in d["stage_filter"]] == cum
+    hours = d["by_utc_hour"]
+    assert sum(hours["decision_bars"]) == d["decision_bars"]
+    assert len(hours["decision_bars"]) == 24
+    assert hours["decision_bars"] == [16] * 24  # 4 days x 4 bars of 15m per hour
+    for stage, row in zip(STAGES, d["stage_filter"], strict=True):
+        assert sum(hours["cumulative"][stage]) == row["cumulative"]
+        assert row["marginal"] >= cum[-1]
+        assert row["leave_one_out"] >= cum[-1]
+    sym_hours = out["symbols"]["spot:BTCUSDT"]["by_utc_hour"]
+    assert sum(sym_hours["candidates"]) == cum[-1]
+    assert hours["busiest_hours_decision_share"] == pytest.approx(0.25)  # uniform: 6 / 24
+    prev = d["decision_bars"]
+    for row in d["stage_filter"]:
+        assert row["pass_rate_from_previous"] == (row["cumulative"] / prev if prev else None)
+        prev = row["cumulative"]
+
+
+def test_stage_filter_marginal_and_leave_one_out_on_known_flags() -> None:
+    """Exact values on hand-made flags (no data): structural stages gate the marginal count."""
+    from tsclaude.research.feasibility import _Diagnostics
+
+    names = ("warmup_ready", "features_defined", "a", "b", "stop_valid", "cost_ok")
+    diag = _Diagnostics(names, (("a", ("a",)), ("a+b", ("a", "b"))))
+    s = dict.fromkeys(names, True)
+
+    def flags(**kw: bool) -> dict[str, bool]:
+        return {**s, **kw}
+
+    diag.add(flags(), 3)  # all pass
+    diag.add(flags(a=False), 3)  # only a fails
+    diag.add(flags(b=False), 4)  # only b fails
+    diag.add(flags(a=False, b=False), 5)  # both fail
+    diag.add(flags(cost_ok=False), 5)  # structural failure: no marginal, no rung
+    out = diag.out()
+    rows = {r["stage"]: r for r in out["stage_filter"]}
+    # cumulative in stage order: bar 5 passes a and b before failing cost_ok
+    assert rows["a"]["cumulative"] == 3  # bars 1, 3, 5
+    assert rows["b"]["cumulative"] == 2  # bars 1, 5
+    assert rows["a"]["marginal"] == 2  # a passes with every structural stage
+    assert rows["b"]["marginal"] == 2
+    assert rows["a"]["leave_one_out"] == 2  # all pass, or only a fails
+    assert rows["b"]["leave_one_out"] == 2
+    assert rows["cost_ok"]["leave_one_out"] == 2  # all pass, or only cost_ok fails
+    assert rows["cost_ok"]["structural"] is True
+    assert [r["candidates"] for r in out["ablation_ladder"]] == [2, 1]
+    assert out["by_utc_hour"]["cumulative"]["cost_ok"][3] == 1
+    with pytest.raises(ValueError, match="unknown stages"):
+        _Diagnostics(names, (("x", ("nope",)),))
+
+
+def test_the_h1_draft_declares_an_ablation_ladder_over_its_own_stages() -> None:
+    from tsclaude.research.feasibility import ABLATION_LADDERS, STRUCTURAL_STAGES, stage_names
+    from tsclaude.strategies import build_draft_strategy
+
+    h1 = build_draft_strategy("h1_compression_breakout", {})
+    ladder = ABLATION_LADDERS["h1_compression_breakout"]
+    stages = set(stage_names(h1))
+    assert {c for _, rung in ladder for c in rung} <= stages - STRUCTURAL_STAGES
+    rungs = [set(r) for _, r in ladder]
+    assert all(a < b for a, b in itertools.pairwise(rungs))  # strictly nested
+    # the last rung plus the structural stages is the full CONFIRMED rule
+    assert rungs[-1] | (STRUCTURAL_STAGES & stages) == stages - {"warmup_ready"} | {"warmup_ready"}
+
+
+def test_the_h1_ladder_ends_at_the_confirmed_count(tmp_path: Path) -> None:
+    """On the H1 draft, the most conditioned rung equals the full rule's candidate count, and
+    each rung is a superset of the next (nested condition sets, the same structural stages)."""
+    from tsclaude.strategies import build_draft_strategy
+
+    data_dir, _ = _lake(tmp_path, synthetic_rows(ms(2024, 3, 1), ms(2024, 3, 20)))
+    h1 = build_draft_strategy("h1_compression_breakout", {"max_cost_r": 0.5})
+    out = count_feasibility(
+        _reader(data_dir), h1, [SPOT_BTC], ms(2024, 3, 5), ms(2024, 3, 20), costs_for=COSTS_FOR
+    )
+    rungs = [r["candidates"] for r in out["diagnostics"]["ablation_ladder"]]
+    assert rungs[-1] == _cum(out)[-1] > 0
+    assert all(a >= b for a, b in itertools.pairwise(rungs))

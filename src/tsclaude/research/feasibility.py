@@ -28,6 +28,24 @@ that revealed the gap; resets while reading the warm-up are reported under ``war
 
 Interpretation limits: the count after the last stage is an **upper bound** on entries (position
 overlap, validity windows and exits are not simulated) and is not evidence of an edge.
+
+Diagnostics (feasibility-v2, all P&L-free, all from the same stage flags; mathematical audit F1, F2,
+`docs/research/MATHEMATICAL_STRATEGY_FOUNDATIONS.md`), under ``diagnostics``:
+
+- ``by_utc_hour``: decision bars and the cumulative stage counts by the UTC hour of the decision
+  bar's close (overall), and decision bars / last-stage candidates by hour per symbol, with the
+  share of candidates in the 6 busiest hours (a time-of-day confound check, audit A12);
+- ``stage_filter``: per stage, the cumulative count, the pass rate from the previous stage, and the
+  **marginal** count (bars passing that stage when every *structural* stage passes, whatever the
+  other conditions say) and the **leave-one-out** count (bars passing every stage except that
+  one): how binding each condition is;
+- ``ablation_ladder`` (only for a strategy with a declared ladder, `ABLATION_LADDERS`): candidate
+  counts for each rung of nested condition sets, e.g. H1 trend → + breakout → + compression →
+  + volume. These are the candidate pools a conditional random control would draw from. They are
+  counts, not controls: no outcome is evaluated and nothing here enters selection.
+
+Structural stages (`STRUCTURAL_STAGES`) are the ones that make a bar evaluable at all (warm-up,
+defined features, a valid stop) and the cost filter, which every rung keeps.
 """
 
 from __future__ import annotations
@@ -49,10 +67,26 @@ from tsclaude.store.holdout import Purpose, touches_holdout
 from tsclaude.store.lake_reader import ReadResult
 from tsclaude.strategies.base import PlanningCosts, Strategy
 
-FEASIBILITY_VERSION = "feasibility-v1"
+FEASIBILITY_VERSION = "feasibility-v2"  # v2: diagnostics (hour of day, stage filter, ladder)
 KIND = "feasibility_count"
 
 type CostsFor = Callable[[Market, str], PlanningCosts]
+
+HOURS = 24
+BUSIEST_HOURS = 6
+#: stages that make a decision bar evaluable, plus the cost filter: kept in every marginal count
+#: and every ablation rung (a condition is never "ablated" into an untradable or unevaluable bar)
+STRUCTURAL_STAGES = frozenset({"warmup_ready", "features_defined", "stop_valid", "cost_ok"})
+#: nested condition sets per strategy id, from the least to the most conditioned (audit F1, R-6).
+#: The structural stages are added to every rung.
+ABLATION_LADDERS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "h1_compression_breakout": (
+        ("trend", ("trend_1h",)),
+        ("trend+breakout", ("trend_1h", "breakout")),
+        ("trend+breakout+compression", ("trend_1h", "breakout", "compressed")),
+        ("trend+breakout+compression+volume", ("trend_1h", "breakout", "compressed", "volume_ok")),
+    ),
+}
 
 
 class FeasibilityRefused(ValueError):
@@ -165,6 +199,8 @@ class _Year:
 @dataclass
 class _SymbolLog:
     years: dict[int, _Year] = field(default_factory=dict)
+    hour_decisions: list[int] = field(default_factory=lambda: [0] * HOURS)
+    hour_candidates: list[int] = field(default_factory=lambda: [0] * HOURS)
     warmup_missing_minutes: int = 0
     warmup_history_resets: int = 0
     conflicts: int = 0
@@ -277,6 +313,7 @@ def count_feasibility(
     names = stage_names(strategy)
     logs: dict[SymbolKey, _SymbolLog] = {}
     datasets: set[str] = set()
+    diag = _Diagnostics(names, ABLATION_LADDERS.get(strategy.strategy_id, ()))
     for d in iter_decisions(
         reader,
         strategy,
@@ -288,12 +325,18 @@ def count_feasibility(
         logs=logs,
         datasets=datasets,
     ):
-        yr = logs[(d.market, d.symbol)].year(utc_year(d.decision_ms), len(names))
+        log = logs[(d.market, d.symbol)]
+        yr = log.year(utc_year(d.decision_ms), len(names))
         yr.decision_bars += 1
         for k, name in enumerate(names):
             if not d.stages[name]:
                 break
             yr.passed[k] += 1
+        hour = utc_hour(d.decision_ms)
+        log.hour_decisions[hour] += 1
+        if all(d.stages[n] for n in names):
+            log.hour_candidates[hour] += 1
+        diag.add(d.stages, hour)
 
     years = range(utc_year(from_ms), utc_year(to_ms - 1) + 1)
     per_symbol: dict[str, Any] = {}
@@ -316,6 +359,11 @@ def count_feasibility(
             },
             "conflicts": log.conflicts,
             "bars_1m": log.bars_1m,
+            "by_utc_hour": {
+                "decision_bars": list(log.hour_decisions),
+                "candidates": list(log.hour_candidates),
+                "busiest_hours_candidate_share": busiest_share(log.hour_candidates),
+            },
         }
     costs = {f"{m}:{s}": costs_for(m, s) for m, s in symbols}
     read_from = from_ms - warmup_ms_of(strategy)
@@ -344,10 +392,101 @@ def count_feasibility(
             for k, c in sorted(costs.items())
         },
         "symbols": per_symbol,
+        "diagnostics": diag.out(),
         "dataset_ids": sorted(datasets),
     }
     result["content_hash"] = content_hash(result)
     return result
+
+
+def utc_hour(ms: int) -> int:
+    """UTC hour of a decision bar's close time (= the hour the bar opened in, for <= 1h bars)."""
+    return (ms // 3_600_000) % HOURS
+
+
+def busiest_share(by_hour: Sequence[int], k: int = BUSIEST_HOURS) -> float | None:
+    """Share of the counts in the ``k`` busiest hours (uniform: k / 24 = 0.25 for k = 6)."""
+    total = sum(by_hour)
+    return None if total == 0 else sum(sorted(by_hour, reverse=True)[:k]) / total
+
+
+class _Diagnostics:
+    """P&L-free statistics over the stage flags of every decision bar (see the module docs)."""
+
+    def __init__(self, names: Sequence[str], ladder: Sequence[tuple[str, Sequence[str]]]) -> None:
+        self.names = tuple(names)
+        self.structural = tuple(n for n in self.names if n in STRUCTURAL_STAGES)
+        unknown = sorted({c for _, rung in ladder for c in rung} - set(self.names))
+        if unknown:
+            raise ValueError(f"ablation ladder names unknown stages {unknown}")
+        self.ladder = tuple((label, tuple(rung)) for label, rung in ladder)
+        self.decisions = 0
+        self.cumulative = [0] * len(self.names)
+        self.marginal = [0] * len(self.names)
+        self.leave_one_out = [0] * len(self.names)
+        self.rungs = [0] * len(self.ladder)
+        self.hour_decisions = [0] * HOURS
+        self.hour_cumulative = [[0] * HOURS for _ in self.names]
+
+    def add(self, stages: Mapping[str, bool], hour: int) -> None:
+        self.decisions += 1
+        self.hour_decisions[hour] += 1
+        for k, name in enumerate(self.names):
+            if not stages[name]:
+                break
+            self.cumulative[k] += 1
+            self.hour_cumulative[k][hour] += 1
+        base = all(stages[n] for n in self.structural)
+        failed = [n for n in self.names if not stages[n]]
+        for k, name in enumerate(self.names):
+            if base and stages[name]:
+                self.marginal[k] += 1
+            if not failed or failed == [name]:
+                self.leave_one_out[k] += 1
+        for r, (_, rung) in enumerate(self.ladder):
+            if base and all(stages[c] for c in rung):
+                self.rungs[r] += 1
+
+    def out(self) -> dict[str, Any]:
+        rows = []
+        prev = self.decisions
+        for k, name in enumerate(self.names):
+            rows.append({
+                "stage": name,
+                "structural": name in STRUCTURAL_STAGES,
+                "cumulative": self.cumulative[k],
+                "pass_rate_from_previous": None if prev == 0 else self.cumulative[k] / prev,
+                "marginal": self.marginal[k],
+                "leave_one_out": self.leave_one_out[k],
+            })  # fmt: skip
+            prev = self.cumulative[k]
+        out: dict[str, Any] = {
+            "decision_bars": self.decisions,
+            "stage_filter": rows,
+            "by_utc_hour": {
+                "decision_bars": list(self.hour_decisions),
+                "cumulative": {
+                    n: list(h) for n, h in zip(self.names, self.hour_cumulative, strict=True)
+                },
+                "busiest_hours": BUSIEST_HOURS,
+                "busiest_hours_candidate_share": busiest_share(self.hour_cumulative[-1])
+                if self.names
+                else None,
+                "busiest_hours_decision_share": busiest_share(self.hour_decisions),
+            },
+            "structural_stages": list(self.structural),
+            "notes": (
+                "P&L-free counts from the stage flags; marginal = structural stages and that "
+                "stage pass; leave_one_out = every stage except that one passes. Not used by "
+                "selection or certification"
+            ),
+        }
+        if self.ladder:
+            out["ablation_ladder"] = [
+                {"rung": label, "conditions": list(rung), "candidates": n}
+                for (label, rung), n in zip(self.ladder, self.rungs, strict=True)
+            ]
+        return out
 
 
 def content_hash(result: Mapping[str, Any]) -> str:
