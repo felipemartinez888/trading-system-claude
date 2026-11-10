@@ -58,6 +58,7 @@ def _argv(env: dict[str, Path], *extra: str) -> list[str]:
         (("--from", "2024-10-01", "--to", "2025-04-01"), "development segment only"),
         (("--max-configs", "1"), "exceed the trial budget"),
         (("--from", "2024-01-15", "--to", "2024-03-01"), "not a UTC month start"),
+        (("--embargo-minutes", "0"), "at least one minute"),
     ],
 )
 def test_refusals_happen_before_anything_runs(

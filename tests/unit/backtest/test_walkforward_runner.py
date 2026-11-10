@@ -15,10 +15,12 @@ from bt_helpers import FAST_PARAMS, TEST_CONFIG, make_env, ms, synthetic_rows, w
 
 from tsclaude.contracts.market import Market
 from tsclaude.contracts.timeutil import from_iso
+from tsclaude.research.runner import load_run
 from tsclaude.research.walkforward import (
     INSUFFICIENT_OOS_EVIDENCE,
     NO_EDGE_DEMONSTRATED,
     OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY,
+    RunnerEvaluator,
     config_id_of,
     plan_folds,
     run_walk_forward,
@@ -81,3 +83,32 @@ def test_walk_forward_end_to_end_on_a_synthetic_lake(tmp_path: Path) -> None:
     written = json.loads((tmp_path / "wf" / "walkforward.json").read_text(encoding="utf-8"))
     assert written["oos"]["verdict"] == oos["verdict"]
     assert written["provenance"] == "BACKTEST"
+
+
+def test_rescore_certifies_every_train_run_of_a_fold_with_one_common_trial_count(
+    tmp_path: Path,
+) -> None:
+    """The first run was certified with n_trials 1, the second with 2; after rescoring both
+    carry the certification for the registry's common count (2)."""
+    start, end = ms(2024, 1, 1), ms(2024, 3, 1)
+    write_lake(tmp_path, [(Market.SPOT, "BTCUSDT", synthetic_rows(start, end))])
+    env = make_env(tmp_path)
+    base = dataclasses.asdict(FAST_PARAMS)
+    grid = {"tp1": {**base, "tp_r": 1.0}, "tp05": {**base, "tp_r": 0.5}}
+    (fold,) = plan_folds(start, end, initial_train_months=1, test_months=1, embargo_ms=DAY)
+    ev = RunnerEvaluator(
+        env, TEST_CONFIG, strategy_id="bracket_reference", grid=grid,
+        symbols=[(Market.SPOT, "BTCUSDT")], hypothesis_id="WF-RESCORE",
+    )  # fmt: skip
+    first, second = ev.score("tp1", fold), ev.score("tp05", fold)
+    stored = [ev.runs[0].metrics["n_trials"], ev.runs[1].metrics["n_trials"]]
+    assert stored == [1, 2]
+    rescored = ev.rescore([first, second], fold)
+    assert [s.config_id for s in rescored] == ["tp1", "tp05"]
+    for score in rescored:
+        assert score.run_id is not None
+        loaded = load_run(env.runs_dir, score.run_id, env.trials, recompute=True)
+        assert loaded is not None
+        assert loaded["summary"]["n_trials"] == 2  # the common count
+        assert score.margin_lcb == loaded["summary"]["margin_lcb"]
+    assert rescored[1] == second  # already certified with the common count: unchanged

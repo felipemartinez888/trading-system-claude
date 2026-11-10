@@ -97,8 +97,11 @@ def plan_folds(
     """Anchored folds inside ``[start_ms, end_ms)``; only whole test windows are kept."""
     if initial_train_months < 1 or test_months < 1:
         raise WalkForwardError("initial_train_months and test_months must be >= 1")
-    if embargo_ms < 0 or embargo_ms % MS_PER_MINUTE:
-        raise WalkForwardError("embargo_ms must be a non-negative whole number of minutes")
+    if embargo_ms < MS_PER_MINUTE or embargo_ms % MS_PER_MINUTE:
+        raise WalkForwardError(
+            "embargo_ms must be a whole number of minutes, at least one minute (use at least "
+            "one maximum holding period; every run is also flat at its own window end)"
+        )
     folds: list[Fold] = []
     train_to = add_months(start_ms, initial_train_months)
     while True:
@@ -169,6 +172,13 @@ class Evaluator(Protocol):
         id of the run that produced them."""
         ...
 
+    def rescore(self, scores: list[Score], fold: Fold) -> list[Score]:
+        """The fold's train scores made comparable before selection: every score certified with
+        one common trial count (review finding: each run is certified with the registry count at
+        its own record time, so later grid entries would face a stricter correction). An
+        evaluator whose scores are already comparable returns them unchanged."""
+        ...
+
 
 @dataclass
 class FoldResult:
@@ -223,7 +233,9 @@ def walk_forward(
         raise WalkForwardError("configuration ids must be unique")
     results: list[FoldResult] = []
     for fold in folds:
-        scores = [evaluator.score(c, fold) for c in config_ids]
+        scores = evaluator.rescore([evaluator.score(c, fold) for c in config_ids], fold)
+        if [s.config_id for s in scores] != list(config_ids):
+            raise WalkForwardError("rescore must keep one score per configuration, in order")
         best, reasons = select(scores, n_min=n_min)
         result = FoldResult(fold, scores, None if best is None else best.config_id, reasons)
         if best is not None:
@@ -367,6 +379,31 @@ class RunnerEvaluator:
             run_id=out.run_id,
         )
 
+    def rescore(self, scores: list[Score], fold: Fold) -> list[Score]:
+        """Re-certify every train run of the fold with the registry's count **now** (the same
+        for all of them: nothing is recorded in between), via the runner's own recompute
+        (`load_run(..., recompute=True)`, audit N1). A run whose stored count already equals it
+        keeps its stored certification, which used that count."""
+        from tsclaude.research.runner import load_run
+
+        out: list[Score] = []
+        for s in scores:
+            loaded = (
+                None
+                if s.run_id is None
+                else load_run(self._env.runs_dir, s.run_id, self._env.trials, recompute=True)
+            )
+            if loaded is None:
+                out.append(Score(s.config_id, s.n, None, None, s.run_id))  # unreadable: ineligible
+                continue
+            current = loaded.get("current") or {}
+            cert = current.get("certification") if current else None
+            if cert is None and not current:
+                cert = (loaded.get("metrics") or {}).get("certification")
+            cert = cert or {}
+            out.append(Score(s.config_id, s.n, cert.get("margin_lcb"), cert.get("p_lcb"), s.run_id))
+        return out
+
     def oos(self, config_id: str, fold: Fold) -> tuple[list[float], str | None]:
         from tsclaude.research.parquet import read_table
 
@@ -377,7 +414,10 @@ class RunnerEvaluator:
         return [float(r["r"]) for r in base], out.run_id
 
     def max_loss(self) -> tuple[float, str]:
-        """The most conservative measured max loss among the test runs (never below 1.5R)."""
+        """The largest max-loss bound among this walk-forward's runs (train and test), as each
+        run measured it (L-10: worst losing exit on the development segment x safety factor,
+        never below the safety factor times the planned stop). It feeds only the expectancy
+        bound of the stitched certification, never selection. 1.5R if no run recorded one."""
         values: list[tuple[float, str]] = []
         for out in self.runs:
             ctx = out.metrics.get("evaluation_inputs") or {}

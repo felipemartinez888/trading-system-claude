@@ -64,19 +64,20 @@ Companion documents:
 |---|---|---|---|---|---|
 | A1 | A | Reconcile repo and milestone status | Opus (lead) | ✅ done | §2 |
 | A2 | A | Analyze the owner's 2026-11-09 runs (Stage B, Stage C) | Opus | ✅ done | MVP_VALIDATION_REPORT §3 |
-| A3 | A | Root-cause and fix the paper-runtime CI flakes, without weakening any assertion | **Fable** subagent (separate worktree) | 🔄 running | §6 |
+| A3 | A | Root-cause and fix the paper-runtime CI flakes, without weakening any assertion | **Fable** subagent (separate worktree) | ✅ root cause proven; tests-only fix merged (`a3ba353`, `ceb393c`); CI on it: see the validation report | MVP_VALIDATION_REPORT §6 |
 | A4 | A/D | Clock offset: measured −3.41 s against Binance, confirmed −3.45 s against NTP by the owner, fixed by "Sync now" (0.001 s) | Owner + Opus | ✅ resolved operationally | MVP_VALIDATION_REPORT §3 |
 | B1 | B/E | Research status API plus a NO VALIDATED STRATEGY panel | Opus | ✅ code (`a268ab7`, `f1658fe`); frontend CI green | MVP_VALIDATION_REPORT §2 |
 | B2 | D/E | Actionable paper-blocker hints (API + Paper page) | Opus | ✅ code (`84653e1`); frontend CI green; Python CI pending | same |
 | C1 | C | Anchored walk-forward, train-only selection, stitched OOS verdict, CLI | Opus | ✅ code (`1c40da2`); local tests 18 passed; **no real-data run** | same |
 | F1 | F | Unattended owner evidence run (clock check, crash recovery, Paper O-1, backtest reproducibility) | Opus (script) + owner (run) | 🔄 handed to the owner | `scripts/owner_checks/mvp_evidence.ps1` |
 | F2 | F | MVP docs (these 4) | Opus | ✅ first version | — |
-| F3 | F | Final independent acceptance review | **Fable** subagent | ⏳ after A3 and CI | — |
+| F3 | F | Final independent acceptance review | **Fable** subagent | ✅ APPROVE WITH NOTES; findings fixed | MVP_VALIDATION_REPORT §8 |
+| F4 | F | Native crash (0xC0000005) when recovering the PC-restart session on Windows | Owner retry with faulthandler + Opus | 🔄 open | MVP_VALIDATION_REPORT §7 |
 
 **Next engineering actions**, in order:
-1. Merge the Fable flake fix after review, then get CI green on both OS.
-2. Read and record the owner's evidence run.
-3. Independent final review.
+1. Get CI green on both OS on the branch head.
+2. Triage the native recovery crash from the faulthandler retry.
+3. Record the owner's paper session and backtest results.
 4. Next research step: H1 (compression → expansion breakout) preregistration and strategy, then the first real-data walk-forward.
    - Owner-run, minutes to hours.
    - The expected and reportable outcome is `NO_EDGE_DEMONSTRATED`.

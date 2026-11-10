@@ -57,9 +57,10 @@ def test_anchored_folds_on_the_development_segment() -> None:
 
 def test_only_whole_test_windows_are_kept() -> None:
     folds = plan_folds(
-        ms(2022, 1), ms(2023, 5), initial_train_months=12, test_months=3, embargo_ms=0
+        ms(2022, 1), ms(2023, 5), initial_train_months=12, test_months=3, embargo_ms=M
     )
     assert [(f.train_to_ms, f.test_to_ms) for f in folds] == [(ms(2023, 1), ms(2023, 4))]
+    assert folds[0].test_from_ms == ms(2023, 1) + M
 
 
 @pytest.mark.parametrize(
@@ -67,20 +68,21 @@ def test_only_whole_test_windows_are_kept() -> None:
     [
         ({"initial_train_months": 0}, "must be >= 1"),
         ({"test_months": 0}, "must be >= 1"),
-        ({"embargo_ms": -M}, "non-negative"),
+        ({"embargo_ms": -M}, "at least one minute"),
+        ({"embargo_ms": 0}, "at least one minute"),
         ({"embargo_ms": 30_000}, "whole number of minutes"),
         ({"embargo_ms": 100 * DAY}, "longer than a test window"),
     ],
 )
 def test_invalid_fold_plans_are_refused(kwargs: dict[str, int], message: str) -> None:
-    args = {"initial_train_months": 12, "test_months": 3, "embargo_ms": 0, **kwargs}
+    args = {"initial_train_months": 12, "test_months": 3, "embargo_ms": M, **kwargs}
     with pytest.raises(WalkForwardError, match=message):
         plan_folds(DEV_START, DEV_END, **args)
 
 
 def test_no_fold_fits_and_month_starts_are_required() -> None:
     with pytest.raises(WalkForwardError, match="no whole fold fits"):
-        plan_folds(ms(2022, 1), ms(2022, 6), initial_train_months=12, test_months=3, embargo_ms=0)
+        plan_folds(ms(2022, 1), ms(2022, 6), initial_train_months=12, test_months=3, embargo_ms=M)
     with pytest.raises(WalkForwardError, match="not a UTC month start"):
         add_months(ms(2022, 1, 15), 1)
     assert add_months(ms(2022, 11), 3) == ms(2023, 2)
@@ -133,6 +135,20 @@ class Recorder:
         self.calls.append(("test", config_id, fold.test_from_ms, fold.test_to_ms))
         return list(self.test[config_id]), f"bt-{config_id}-{fold.index}"
 
+    def rescore(self, scores: list[Score], fold: Fold) -> list[Score]:
+        return scores
+
+
+@dataclass
+class Rescoring(Recorder):
+    """Train scores certified at their own record time; rescore applies one common count."""
+
+    common: dict[str, Score] = field(default_factory=dict)
+
+    def rescore(self, scores: list[Score], fold: Fold) -> list[Score]:
+        self.calls.append(("rescore", ",".join(s.config_id for s in scores), 0, 0))
+        return [self.common[s.config_id] for s in scores]
+
 
 def test_selection_never_sees_a_test_window_and_only_the_winner_is_tested() -> None:
     folds = plan_folds(DEV_START, DEV_END, initial_train_months=12, test_months=3, embargo_ms=DAY)
@@ -160,8 +176,34 @@ def test_selection_never_sees_a_test_window_and_only_the_winner_is_tested() -> N
         assert max(idx) < test_idx
 
 
+def test_selection_uses_the_rescored_comparable_scores() -> None:
+    """Review finding: scores certified with different trial counts are not comparable, so the
+    fold's scores are rescored with one common count before selection."""
+    folds = plan_folds(DEV_START, ms(2023, 4), initial_train_months=12, test_months=3, embargo_ms=M)
+    rec = Rescoring(
+        train={"a": Score("a", 50, 0.10, 0.6), "b": Score("b", 50, 0.05, 0.6)},  # a looks best
+        test={"a": [1.0], "b": [1.0, -1.0]},
+        common={"a": Score("a", 50, 0.01, 0.5), "b": Score("b", 50, 0.04, 0.55)},  # b is best
+    )
+    result = walk_forward(["a", "b"], folds, rec, n_min=30)
+    assert result.folds[0].selected == "b"
+    kinds = [c[0] for c in rec.calls]
+    assert kinds == ["train", "train", "rescore", "test"]  # rescored after all train runs
+
+
+def test_rescore_must_keep_one_score_per_configuration_in_order() -> None:
+    folds = plan_folds(DEV_START, ms(2023, 4), initial_train_months=12, test_months=3, embargo_ms=M)
+    rec = Rescoring(
+        train={"a": Score("a", 50, 0.1, 0.6), "b": Score("b", 50, 0.1, 0.6)},
+        test={"a": [], "b": []},
+        common={"a": Score("b", 50, 0.1, 0.6), "b": Score("a", 50, 0.1, 0.6)},
+    )
+    with pytest.raises(WalkForwardError, match="one score per configuration"):
+        walk_forward(["a", "b"], folds, rec, n_min=30)
+
+
 def test_a_fold_without_an_eligible_configuration_runs_no_test() -> None:
-    folds = plan_folds(DEV_START, ms(2023, 4), initial_train_months=12, test_months=3, embargo_ms=0)
+    folds = plan_folds(DEV_START, ms(2023, 4), initial_train_months=12, test_months=3, embargo_ms=M)
     rec = Recorder(train={"a": Score("a", 3, 0.5, 0.9)}, test={"a": [1.0]})
     result = walk_forward(["a"], folds, rec, n_min=30)
     assert result.folds[0].selected is None
@@ -170,7 +212,7 @@ def test_a_fold_without_an_eligible_configuration_runs_no_test() -> None:
 
 
 def test_the_grid_must_be_non_empty_and_unique() -> None:
-    folds = plan_folds(DEV_START, DEV_END, initial_train_months=12, test_months=3, embargo_ms=0)
+    folds = plan_folds(DEV_START, DEV_END, initial_train_months=12, test_months=3, embargo_ms=M)
     rec = Recorder(train={}, test={})
     with pytest.raises(WalkForwardError, match="empty"):
         walk_forward([], folds, rec, n_min=1)
@@ -183,7 +225,7 @@ CFG = BacktestConfig(n_resamples=2000)
 
 
 def _result(outcomes: list[float]) -> object:
-    folds = plan_folds(DEV_START, ms(2023, 4), initial_train_months=12, test_months=3, embargo_ms=0)
+    folds = plan_folds(DEV_START, ms(2023, 4), initial_train_months=12, test_months=3, embargo_ms=M)
     rec = Recorder(train={"a": Score("a", 100, 0.1, 0.6)}, test={"a": outcomes})
     return walk_forward(["a"], folds, rec, n_min=30)
 

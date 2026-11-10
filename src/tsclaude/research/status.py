@@ -14,8 +14,9 @@ Tiers, first match wins:
 
 =============  ===============================================================================
 REFERENCE      a pipeline reference strategy (`REFERENCE_STRATEGIES`)
-VALIDATED      a verified, preregistered run graded ``A`` ("credible": validation **and** holdout
-               passed, robust to cost stress); grade A is the only grade called validated
+VALIDATED      a verified, preregistered **holdout** run graded ``A`` ("credible": validation
+               **and** holdout passed, robust to cost stress); grade A is the only grade called
+               validated, and an A on another segment does not count
 REJECTED       a verified, preregistered validation or holdout run graded ``D``
 CANDIDATE      at least one verified, preregistered run, none of them A or D
 UNREGISTERED   no verified preregistered run: exploratory at best, never evidence
@@ -97,9 +98,15 @@ def _tier(strategy_id: str, runs: Sequence[RunEvidence]) -> tuple[StrategyTier, 
             f"{untrusted} run(s) ignored: metrics not verified against the manifest or no "
             "preregistration id"
         )
-    if any(r.evidence_grade == "A" for r in trusted):
-        ids = sorted(r.run_id for r in trusted if r.evidence_grade == "A")
-        return StrategyTier.VALIDATED, [f"grade A (credible) on run(s) {', '.join(ids)}", *notes]
+    # grade A means validation AND holdout passed (RESEARCH_PROTOCOL §6): only a holdout run
+    # can carry it; an A on any other segment is not trusted as validation (fail closed)
+    credible = [r for r in trusted if r.evidence_grade == "A" and r.segment == "holdout"]
+    if credible:
+        ids = sorted(r.run_id for r in credible)
+        return StrategyTier.VALIDATED, [
+            f"grade A (credible) on holdout run(s) {', '.join(ids)}",
+            *notes,
+        ]
     rejected = [
         r for r in trusted if r.evidence_grade == "D" and (r.segment or "") in _GRADED_SEGMENTS
     ]

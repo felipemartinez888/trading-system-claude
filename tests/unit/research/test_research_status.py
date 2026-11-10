@@ -65,6 +65,9 @@ def test_a_reference_stays_reference_even_with_a_verified_grade_a_run() -> None:
     ("run", "tier"),
     [
         (_run("bt-a", grade="A", segment="holdout"), StrategyTier.VALIDATED),
+        # grade A means validation AND holdout: an A outside the holdout is not validation
+        (_run("bt-a-val", grade="A", segment="validation"), StrategyTier.CANDIDATE),
+        (_run("bt-a-dev", grade="A", segment="development"), StrategyTier.CANDIDATE),
         (_run("bt-d", grade="D"), StrategyTier.REJECTED),
         (_run("bt-d-holdout", grade="D", segment="holdout"), StrategyTier.REJECTED),
         (_run("bt-b", grade="B"), StrategyTier.CANDIDATE),

@@ -21,7 +21,7 @@ acceptance or formal (Target C) MVP acceptance.
 | Local walk-forward | `1c40da2` | `tests/unit/research/test_walkforward.py` **17 passed**; `tests/unit/backtest/test_walkforward_runner.py` **1 passed** (synthetic lake through `run_backtest`) | Includes the train-only selection canary |
 | CI `42751246117` | `f1658fe` | frontend ubuntu ✅, frontend windows ✅, M2 cross-OS ubuntu ✅ / windows ✅, safety guards ✅; python jobs **cancelled** by the next push | The vitest run covers the research panel and the Paper hint |
 | CI `42752436724` | `28b4fe7` | **python ubuntu: 1867 passed, 0 failed** (ruff lint, ruff format, mypy strict also green); **python windows: 1864 passed, 1 failed**: the pre-existing flake `test_mvp2_paper.py::test_p4_incomplete_backfill_stays_awaiting_and_processes_nothing` (`RUNNING is AWAITING_BACKFILL`, §6); frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅ | First CI run covering the new API, hints, research status and walk-forward code |
-| CI `42754283876` | `ceb393c` (flake fix included) | frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅; python ubuntu/windows: pending at the time of writing | To be recorded |
+| CI `42754283876` | `ceb393c` (flake fix included) | frontend ✅ ✅, M2 cross-OS ✅ ✅, safety guards ✅; python ubuntu/windows: see the latest entry below | — |
 | Pre-existing CI flakes (before this session) | `954c7c6`, `1dec031`, `1acd38a` | 1–3 paper-runtime failures per run, Windows (jobs `129324514607`, `129332534067`, `129342046002`) and once Ubuntu (`129307675701`) | Being root-caused (§6) |
 
 ## 3. Owner runs read in this session (artifacts in `C:\Users\felip\tsc_runs`)
@@ -37,8 +37,15 @@ acceptance or formal (Target C) MVP acceptance.
 ### Stage C: Paper O-1 (`paper-20261109-125923`, `paper.yaml` enabled, `strategy: bracket_reference`)
 - **9-day history loaded on demand:** 6 pairs × 12 pages, 11,520 rows each (69,120), 0 errors, from 19:00:00 to 19:00:29 UTC. That is well inside the 120 s per-pair and 600 s per-run budgets.
 - **Paper opened:** `sim_run_started`, then 48 paper steps (6 instruments × 8 minutes, 18:59 to 19:06 UTC).
-- **No bar was observed.** The clock round gave −3,409 ms, the anchor was refused (`clock_offset_skew`), and the fresh-round retries backed off (17, 33, 62, 122 s). The reference strategy is built at the first observed minute, so it **never started**. This is fail-closed as designed.
-- **The session ended abruptly** about 19:07:03 UTC. The heartbeat at 19:07:02.99 is the last write; there is no `monitoring_stopped` and the WAL was not checkpointed. Owner: **"pc restarted"**. The app was in light steady state at that moment. No `verify-replay` is possible for this session (no session-end evidence).
+- **No bar was observed.**
+  - Persisted: `clock_skew_changed` offset −3,409 ms (threshold 1,000 ms) and `sim_observation_changed observed: false`; every `ws_live` bar was processed unobserved.
+  - **Inferred** from the code (`observation_bound`) and the log's timing, not persisted: the anchor refusal code `clock_offset_skew`, and the fresh-round retries roughly 17, 33, 62 and 122 s apart (server-time requests in the log).
+  - The reference strategy is built at the first observed minute, so it **never started**. This is fail-closed as designed.
+- **The session ended abruptly** about 19:07:04 UTC.
+  - Last writes: the heartbeat at 19:07:02.99 and the 19:06 paper steps (bars ingested at 19:07:03.5–03.9).
+  - There is no `monitoring_stopped`, and the WAL was not checkpointed.
+  - Owner: **"pc restarted"**. The app was in light steady state at that moment.
+  - No `verify-replay` is possible for this session (no session-end evidence).
 
 ### Clock finding
 - **App measurement:** −3,409 ms against Binance (5 samples, median round trip 232 ms, so error at most ±116 ms).
@@ -68,14 +75,14 @@ acceptance or formal (Target C) MVP acceptance.
 | Mandatory core functions implemented | ✅ except the formal M4/M5/M6 scope (Target C) |
 | Integration scenarios verified | ⚠️ 5, 6, 8, 10, 11 partial (§4) |
 | Applicable safety gates | ⚠️ M3 literal gates open; paper-only isolation holds (no order code, no keys; safety-guard CI job green) |
-| Relevant regression tests executed successfully | ⚠️ local and frontend CI green; **Python CI pending**; pre-existing flakes being fixed |
+| Relevant regression tests executed successfully | ⚠️ local green. CI `42752436724`: ubuntu 1867/1867, windows 1864/1865, the 1 failure being the pre-existing flake fixed since. CI on the flake fix: see §2 |
 | Paper isolated from real trading | ✅ by construction (no signed endpoints, no keys; CLAUDE.md rule 2; safety guards in CI) |
 | Dashboard reflects system state | ✅ for the parts shown. New: research status and actionable blockers |
 | Recovery tested | ✅ tests; ⚠️ real crash recovery pending |
 | Reproducible backtest / replay evidence | ⚠️ replay real ✅; backtest real pending |
 | Startup/shutdown procedure | ✅ [MVP_USER_GUIDE](MVP_USER_GUIDE.md) |
 | Limitations transparent | ✅ [MVP_LIMITATIONS](MVP_LIMITATIONS.md) |
-| Independent final review, no critical blocker | ⏳ not yet run |
+| Independent final review, no critical blocker | ✅ run (Fable, fresh context, read-only, on `ceb393c`): **APPROVE WITH NOTES** for the code. Its one blocking item, recording the native recovery crash before declaring a status, is done (§7). Its non-blocking findings are fixed (§8) |
 
 ## 6. Open item: paper-runtime CI flakes
 - **Failures:**
@@ -109,3 +116,20 @@ acceptance or formal (Target C) MVP acceptance.
   - **Next:** one bounded retry with `PYTHONFAULTHANDLER=1`, which prints the Python stack on an access violation. A crash at the same point would be a deterministic, data- or Windows-specific defect; no crash would point to the open hardware issue.
 - **Fresh paper session** (`paper-20261109-2201`, 1 h): started normally after the crash. Results pending.
 - **Reference backtest twice:** pending.
+
+## 8. Independent final review (Fable, fresh context, read-only, commit `ceb393c`)
+**Verdict: APPROVE WITH NOTES (code).**
+- **Checked by the reviewer:**
+  - no look-ahead, no weakened assertion, no unsafe script command;
+  - the Stage B statements match the state database;
+  - the Stage C counts match (6 × 11,520 rows, 48 unobserved steps, −3,409 ms, last heartbeat 19:07:02.991);
+  - CI `42752436724` counts confirmed;
+  - its local subset: 268 passed.
+- **Blocking (for the status declaration only):** record the native crash in the recovery step. Done in §7.
+- **Non-blocking findings, all fixed after the review:**
+  1. **Walk-forward train scores were not comparable within a fold.** Each run was certified with the registry count at its own record time, so selection depended on grid order. Fold scores are now re-certified with one common count (`rescore`, via the runner's own recompute) before `select`. Tests: a fake proves selection follows the rescored values; a synthetic-lake test proves both train runs carry the common count.
+  2. **An embargo of 0 was accepted.** It is now at least one minute, refused in `plan_folds` and at the CLI. Runs are also flat at their own window end.
+  3. **The max-loss docstring was wrong.** Corrected: it is the largest bound among the walk-forward's runs, development-segment measurement, used only for the expectancy bound.
+  4. **VALIDATED now requires a holdout-segment grade A** (an A on another segment does not count). Tests added.
+  5. **The evidence script's step exit was only the live code.** It is now the first non-zero of live, replay and chain, so a native crash is never hidden. Faulthandler is on for child processes.
+  6. **Report wording:** pending/running items updated; heartbeat timing made precise; inferred and persisted Stage C details separated.

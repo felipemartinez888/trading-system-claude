@@ -51,6 +51,8 @@ function Set-Step([string]$name, [int]$code, [string]$note) {
 }
 
 Set-Location -LiteralPath $Repo
+# print the Python stack of every thread if a child process crashes natively (access violation)
+$env:PYTHONFAULTHANDLER = '1'
 $uvRun = @('run')
 if (Test-Path -LiteralPath 'uv.lock') { $uvRun += '--frozen' }
 
@@ -105,8 +107,13 @@ function Invoke-Live([string]$name, [string]$dataDir, [string]$configDir, [doubl
     }
     $rcode = Invoke-Uv "$name.verify_replay" @('tsclaude', 'verify-replay', '--data-dir', $dataDir, '--config-dir', $configDir)
     $ccode = Invoke-Uv "$name.verify_chain" @('tsclaude', 'verify-chain')
-    Set-Step $name $code ("verify_live exit $code (0 pass, 1 monitoring did not run, 2 gate criteria not met); " +
-        "verify-replay exit $rcode (0 PASS, 1 FAIL, 2 INCONCLUSIVE); verify-chain exit $ccode (0 ok)")
+    # the step's exit is the FIRST non-zero code (live, then replay, then chain), so a native crash
+    # (negative code) or a replay FAIL is never hidden behind another step's result
+    $first = 0
+    foreach ($c in @($code, $rcode, $ccode)) { if ($first -eq 0 -and $c -ne 0) { $first = $c } }
+    Set-Step $name $first ("verify_live exit $code (0 pass, 1 monitoring did not run, 2 gate criteria not met; " +
+        "-1073741819 = native access violation); verify-replay exit $rcode (0 PASS, 1 FAIL, 2 INCONCLUSIVE); " +
+        "verify-chain exit $ccode (0 ok)")
 }
 
 # ------------------------------------------------------------------ 2. crash recovery (a copy)
