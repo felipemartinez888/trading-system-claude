@@ -205,10 +205,18 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
         return 2
     cfg_path = Path(args.config)
     cfg = BacktestConfig.load(cfg_path) if cfg_path.is_file() else BacktestConfig()
-    from tsclaude.quality.interruptions import EMPTY_REGISTRY, load_registry
+    from tsclaude.quality.interruptions import (
+        EMPTY_REGISTRY,
+        InterruptionRegistryError,
+        load_registry,
+    )
 
     registry_path = cfg_path.parent / "exchange_interruptions.yaml"
-    interruptions = load_registry(registry_path) if registry_path.is_file() else EMPTY_REGISTRY
+    try:  # as `backtest run`: no file -> empty registry; a broken file refuses
+        interruptions = load_registry(registry_path) if registry_path.is_file() else EMPTY_REGISTRY
+    except InterruptionRegistryError as exc:
+        print(json.dumps({"ok": False, "refused": "exchange_interruptions", "error": str(exc)}))
+        return 5
     clock = SystemClock()
     stamp = clock.now_ms()
     with EventStore(settings.state_db_path) as store:
