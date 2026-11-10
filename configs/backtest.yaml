@@ -2,7 +2,10 @@
 version: backtest-config-v2
 starting_equity: "10000"
 risk_per_trade: "0.005"        # SIMULATION §6 default
-decision_latency_ms: 0         # raise to >= observed live p95 once measured (SIMULATION §2)
+decision_latency_ms: 3000      # >= observed live p95 (SIMULATION §2): p95 2170 ms, max 2920 ms over
+                               # 576 live bars of 3 real sessions (docs/research/evidence/
+                               # live_release_latency_2026-11-10.json); any 1 ms..59 s value fills at
+                               # the second open after the decision close, as Paper does
 alpha: 0.05
 min_power: 0.80
 n_resamples: 10000

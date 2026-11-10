@@ -106,3 +106,22 @@ D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H ([DECISIONS_PENDING](DECISIONS_PEN
 - 2026-11-10 ~04:00 local: `95ae656` (M5 review fixes, H1 draft + causality fixes, prereg review fixes, agent status card, semantic map update).
 - 2026-11-10 ~06:30 local: `b6f9522` (re-review fixes N1–N5, M6 real-session evidence, agent status card, morning actions); CI `42786327337` 7/7.
 - 2026-11-10 ~08:30 local: closure-review fixes `1d253e2` and this report; pushed; CI `42791493309` 7/7 on `2fa8bbc`.
+
+## Morning session (2026-11-10, owner present)
+Owner direction under D-E: keep the 1.5 floor, design a compatible search space for review, and
+apply identical risk policies in backtesting and Paper. Nothing was frozen, merged or accepted, no
+official trial was recorded, and no holdout data was touched.
+
+| Item | Commits | Evidence | Status |
+|---|---|---|---|
+| P1-6: backtests apply the paper risk policy (`risk_policy: live`). `data_freshness` is computed from bars as in the paper tracker; kill switch and base cost model in every book | `9f2cabc` `0429135` | `test_backtest_risk_policy.py`; Fable review CONDITIONAL PASS, 0 blocking; F1–F5 and F8–F10 fixed; 3 surviving mutants now killed | VERIFIED: CI `42829517341` 7/7 on `0429135` (python ubuntu 2307 passed, windows 2305; frontend both OS) |
+| A kept floor is enforced at `validate`, `freeze` and run time (run cost model and risk config) | `5ea287e` `b7abde7` | `test_preregistration.py` (47), run-side test | validate/freeze VERIFIED in CI `42829517341`; run-side check (`b7abde7`) IMPLEMENTED, TESTED |
+| H1-v3 live-compatible draft (2, 2.5, 3 R); [H1_DECISION_BRIEF](research/H1_DECISION_BRIEF.md) (D-C, D-E, D-F1, ADR-0012 Amendment 6, sequence, commands) | `9c681ca` + later edits | validates; 0 problems with the floor kept (v2: 24) | DRAFT for owner review |
+| Walk-forward status and table show the risk rules used | `79908c7` | `test_research_status.py`; frontend test runs in CI | IMPLEMENTED, TESTED (backend) |
+| Decision latency 3,000 ms (SIMULATION §2: at least the live p95). Measured p95 2,170 ms, max 2,920 ms over 576 live bars; latency 0 had filled entries one minute earlier than Paper can | this checkpoint | `docs/research/evidence/live_release_latency_2026-11-10.json`; latency test | IMPLEMENTED, TESTED |
+| M5-3: agent gate in the paper runtime | branch `task/m5-runtime-wiring` (separate worktree, not merged) | in progress | ACTIVE |
+
+**Findings for the owner.**
+- 2 R holds the floor only while take-profits fill as maker orders: it nets 1.52, or 1.4995 if
+  they fill as taker orders. {2.5, 3, 3.5} keeps a margin either way (brief §3).
+- Applying the paper policy and the real latency makes backtests more conservative, by design.

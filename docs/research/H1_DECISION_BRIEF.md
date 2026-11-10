@@ -116,9 +116,9 @@ admits only stops ≥ 1.30 % of price. At that smallest stop the paper engine co
 
 Net RR rises with the stop distance, so COMPATIBLE at the smallest stop means every confirmable
 trade passes, at modelled slippage and at zero decision latency. The fill-stage check re-prices
-from the close just before the executing bar. With `decision_latency_ms` above 0 (H1-11 plans to
-set it), that close can differ from the decision close, and a trade near the 2 R margin can then
-be refused at fill. The live engine also uses half the live spread when that is
+from the close just before the executing bar. With `decision_latency_ms` above 0 (now 3,000 ms,
+§5), the entry executes one minute after the next open, as in Paper. That close can differ from
+the decision close, and a trade near the 2 R margin can then be refused at fill. The live engine also uses half the live spread when that is
 larger; wide spreads can still reject a trade, and the ×1.5 and ×2 cost-stress runs carry that risk.
 At 2 R the margin is thin: 1.52 against 1.5. It holds only because take-profits are modelled as
 maker limit fills without slippage, which is how Paper and the backtests model them today
@@ -199,7 +199,11 @@ Owner steps are marked **(owner)**; everything else is prepared on the branch.
    - pinned `data.dataset_ids`. The feasibility run's `feasibility.json` records the exact dataset
      ids it read (`dataset_ids`); for the 4-symbol universe these are the pins. The D-17 composite
      id applies to XRP;
-   - `decision_latency_ms` and instrument filters, per H1-11.
+   - instrument filters, per H1-11. `decision_latency_ms` is now set to 3,000 in
+     `configs/backtest.yaml` by SIMULATION §2's own rule (at least the live p95). The
+     measured live p95 is 2,170 ms (max 2,920) over 576 bars of the three real sessions, in
+     `docs/research/evidence/live_release_latency_2026-11-10.json`. Before this, backtests
+     filled entries one minute earlier than Paper ever can.
 5. **(owner)** Promote `h1_compression_breakout` from DRAFT to the runnable registry and freeze. The
    freeze pins the code, the implementation hash, the anchor and the backtest config hash, including
    the risk policy. Commit the file.

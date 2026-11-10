@@ -534,3 +534,23 @@ def test_a_run_of_a_keep_floor_preregistration_rechecks_policy_and_costs(
     with pytest.raises(wf.WalkForwardError, match=r"with the live floor min_rr_net 1\.5"):
         conform(costly, live.risk)
     assert conform(env, live.risk) is not None  # the preregistered run itself conforms
+
+
+def test_backtest_latency_is_at_least_the_measured_live_p95() -> None:
+    """SIMULATION §2: backtests assume a decision latency >= the observed live p95. Paper fills a
+    live entry at the first open at or after the bar's release (0.2-2.9 s after the close in the
+    recorded sessions), i.e. the second open after the decision; latency 0 would fill one minute
+    earlier than Paper ever can."""
+    from tsclaude.sim.engine import earliest_execution_ms
+
+    evidence = json.loads(
+        (REPO / "docs/research/evidence/live_release_latency_2026-11-10.json").read_text("utf-8")
+    )
+    cfg = BacktestConfig.load(REPO / "configs" / "backtest.yaml")
+    assert cfg.decision_latency_ms >= evidence["all"]["p95_ms"]
+    assert cfg.decision_latency_ms >= evidence["all"]["max_ms"]
+    assert cfg.decision_latency_ms < MIN  # still the same execution minute as every live release
+    decision = T0  # a bar close
+    paper = -(-(decision + evidence["all"]["p50_ms"]) // MIN) * MIN  # Paper: open after release
+    assert earliest_execution_ms(decision, cfg.decision_latency_ms) == paper == decision + 1 + MIN
+    assert earliest_execution_ms(decision, 0) == decision + 1  # the optimistic minute, removed

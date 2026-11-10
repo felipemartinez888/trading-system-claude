@@ -1,0 +1,37 @@
+{
+  "what": "release latency of live paper bars (bar close_time -> released to the simulator), journaled per batch as release_latency_ms (sim/paper.py)",
+  "source": "M6 exports of three real recorded Windows paper sessions (owner PC), staged 2026-11-10; observed bars only",
+  "method": "nearest-rank percentiles over every observed bar batch",
+  "sessions": {
+    "paper-bracket-20261106-104529": {
+      "observed_bars": 348,
+      "p50_ms": 448,
+      "p95_ms": 1533,
+      "p99_ms": 2687,
+      "max_ms": 2687
+    },
+    "paper-20261109-2201 (state.db with its WAL)": {
+      "observed_bars": 144,
+      "p50_ms": 725,
+      "p95_ms": 2170,
+      "p99_ms": 2250,
+      "max_ms": 2250
+    },
+    "recovery-20261109-2227": {
+      "observed_bars": 84,
+      "p50_ms": 614,
+      "p95_ms": 2920,
+      "p99_ms": 2920,
+      "max_ms": 2920
+    }
+  },
+  "all": {
+    "observed_bars": 576,
+    "p50_ms": 509,
+    "p95_ms": 2170,
+    "p99_ms": 2920,
+    "max_ms": 2920
+  },
+  "consequence": "every observed release is > 0 ms and < 60 s after the close, so a live entry decided at close T executes at the first 1m open at or after the release, i.e. T + 1 min + 1 ms (the second open after the decision), never T + 1 ms",
+  "rule": "SIMULATION.md \u00a72: backtests assume a decision latency at least the observed live p95"
+}
