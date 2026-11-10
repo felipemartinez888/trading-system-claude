@@ -138,7 +138,8 @@ trial was recorded; no holdout data, risk threshold or Codex repository was touc
 | P1-9: P&L-free feasibility diagnostics (stage filter, UTC-hour split overall, per symbol and per ablation rung, month totals) | `87ad417` + review fixes | `test_feasibility.py` (27) | IMPLEMENTED, TESTED |
 | P1-10: power plan (`tsclaude backtest power-plan`), walk-forward `exit_mix` and `power_reading` | `c750fe8` + review fixes | `test_power_plan.py` (12), rehearsal | IMPLEMENTED, TESTED |
 | Decision package: D-C with R-4, D-E with Amendment 6 and the take-profit sets compared mechanically, D-F1, D-G, R-1..R-8, authorized vs proposed, readiness, owner steps | `9126512` + this checkpoint | [H1_DECISION_PACKAGE](research/H1_DECISION_PACKAGE.md) | for owner decision |
-| Independent review of the three commits | — | Fable: **CONDITIONAL PASS, 0 blocking**; M1–M4 and minors fixed, one declined with a reason (devlog) | fixes IMPLEMENTED, TESTED; CI after the push |
+| Independent review of the three commits | `347e87f` (fixes) | Fable: **CONDITIONAL PASS, 0 blocking**; M1–M4 and minors fixed, one declined with a reason (devlog); full unit suite 1941 passed, 16 env-only failures | **VERIFIED: CI `42854101526` 7/7 on `f6ce164`** (python ubuntu 2338 passed, windows 2336; frontend both OS) |
+| The detectable margin in the research status API and the walk-forward table | `1e2339b` | `test_research_status.py` 18 passed; frontend test in CI | IMPLEMENTED, TESTED (backend); CI `42858830369` running at the time of writing |
 
 **H1 readiness (package §7):** no engineering blocker remains up to the out-of-sample verdict. Still
 open: the owner's feasibility count and power plan (NORMAL PowerShell, package §8), then D-C, D-E with

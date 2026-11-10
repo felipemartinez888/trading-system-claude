@@ -20,6 +20,8 @@ without certification does not rule out a smaller margin (audit §9 item 4). Bac
 only (no node_modules in this container; a strict tsc pass on the changed files shows no error
 beyond the missing packages).
 
+CI: `42854101526` 7/7 on `f6ce164` (python ubuntu 2338 passed, windows 2336; frontend both OS).
+
 ## Reconciliation in short
 
 - Audited revision `1cc2693`; reconciled against `2b63d4c`. Every implementation claim was checked against the code at
