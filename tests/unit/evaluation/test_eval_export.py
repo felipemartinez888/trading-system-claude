@@ -624,7 +624,8 @@ def _as_v1(src: Path, dst: Path) -> None:
             "last_line_hash": prev if out else None,
         }
     manifest.update(format_version=1, files=files, schemas=SchemaSet(schema_dir_for(1)).digests())
-    (dst / MANIFEST).write_text(scorer_mod.canonical_json(manifest) + "\n", encoding="utf-8")
+    # bytes, as the exporter writes them: text mode would give CRLF on Windows (not canonical)
+    (dst / MANIFEST).write_bytes((scorer_mod.canonical_json(manifest) + "\n").encode("utf-8"))
 
 
 def test_the_current_export_is_format_v2_with_an_empty_agents_file(exported: Path) -> None:
@@ -658,7 +659,7 @@ def test_an_unknown_format_version_is_refused(exported: Path, tmp_path: Path) ->
     root = _copy(exported, tmp_path)
     manifest = json.loads((root / MANIFEST).read_text("utf-8"))
     manifest["format_version"] = 3
-    (root / MANIFEST).write_text(scorer_mod.canonical_json(manifest) + "\n", encoding="utf-8")
+    (root / MANIFEST).write_bytes((scorer_mod.canonical_json(manifest) + "\n").encode("utf-8"))
     report, export = check_export(root)
     assert export is None
     assert "format_version 3" in report.problems[0]
