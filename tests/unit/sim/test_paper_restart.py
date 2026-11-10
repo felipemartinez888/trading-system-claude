@@ -5,6 +5,7 @@ the service FAULTED and a restore + re-delivery reproduces the uninterrupted ses
 
 from __future__ import annotations
 
+from decimal import Decimal as D
 from typing import Any
 
 import pytest
@@ -108,6 +109,48 @@ def test_restart_resolves_downtime_on_backfill_without_entries() -> None:
     ]
     assert len(downtime_steps) == 8
     assert all(p["intents"] == [] for p in downtime_steps)
+
+
+def test_restore_with_another_configuration_names_the_change_and_fails_closed() -> None:
+    """Operational-readiness review R-04 (task T3): after `configs/backtest.yaml` moved the
+    decision latency 0 -> 3000, a session recorded at 0 would not restore, and the reason said
+    only "batch 0 (bar) diverged from the journal". It is now refused before any batch is
+    replayed, naming the differing fields, and it is still a RestoreError (fail closed)."""
+    from tsclaude.sim.paper import ConfigurationMismatch, RestoreError
+
+    svc, journal = _reference()
+    recorded = journal.batches()
+    with pytest.raises(ConfigurationMismatch) as info:
+        PaperTradingService.restore(config(decision_latency_ms=3_000), journal)
+    assert isinstance(info.value, RestoreError)
+    assert info.value.differences == ("decision_latency_ms: 0 -> 3000",)
+    assert "recorded with a different paper configuration" in str(info.value)
+    assert "decision_latency_ms: 0 -> 3000" in str(info.value)
+    assert journal.batches() == recorded  # nothing appended
+    # several fields at once, each named
+    with pytest.raises(ConfigurationMismatch) as many:
+        replay(config(decision_latency_ms=3_000, starting_equity=D("5000")), recorded)
+    assert len(many.value.differences) == 2
+    assert any(d.startswith("starting_equity:") for d in many.value.differences)
+    # the recorded configuration still restores exactly as before
+    assert PaperTradingService.restore(config(), journal).ledger_hashes() == svc.ledger_hashes()
+
+
+def test_a_journal_without_a_recorded_configuration_keeps_the_batch_comparison() -> None:
+    """A first batch without the ``session`` key (none is written that way today) skips the new
+    check; the replay still refuses any divergence batch by batch, as before."""
+    from tsclaude.sim.journal import JournalEntry
+    from tsclaude.sim.paper import ConfigurationMismatch, RestoreError
+
+    _, journal = _reference()
+    batches = journal.batches()
+    head = batches[0][0]
+    payload = {k: v for k, v in head.payload.items() if k != "session"}
+    stripped = [[JournalEntry(head.type, head.aggregate_type, head.aggregate_id, head.ts_ms,
+                              payload), *batches[0][1:]], *batches[1:]]  # fmt: skip
+    with pytest.raises(RestoreError, match="diverged from the journal") as info:
+        replay(config(decision_latency_ms=3_000), stripped)
+    assert not isinstance(info.value, ConfigurationMismatch)
 
 
 def test_restore_of_empty_journal_starts_fresh() -> None:

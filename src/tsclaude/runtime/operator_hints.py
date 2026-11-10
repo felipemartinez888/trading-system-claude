@@ -94,6 +94,16 @@ def paper_hint(snapshot: Mapping[str, Any]) -> str | None:
             "the same data directory: stored bars and checkpoints are reused and only the rest is "
             "fetched (see /api/ingestion). Paper never opens on a partial history."
         )
+    if state == "UNAVAILABLE" and "recorded with a different paper configuration" in reason:
+        # sim.paper.ConfigurationMismatch (operational-readiness review R-04); fail closed
+        return (
+            "This data folder holds a paper session recorded with other settings (the fields "
+            "are named in the reason; nothing was opened, changed or traded). Either start again "
+            "with the configuration folder the session was recorded with (TSC_CONFIG_DIR), or "
+            "record a new paper session in a new data folder (TSC_DATA_DIR). The old session "
+            "stays verifiable: tsclaude verify-replay --data-dir <its data> --config-dir <its "
+            "configs>."
+        )
     if state == "AWAITING_BACKFILL":
         return (
             "Paper is waiting for missing minutes after a restart (see 'Awaiting missing'). It "

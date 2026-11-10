@@ -320,7 +320,17 @@ def test_p3_restore_with_a_different_configuration_is_unavailable(tmp_path: Path
         rig.config_factory = lambda: paper_config("5000")  # recorded decisions would differ
         await rig.supervisor.start("S2")
         assert rig.runtime.state is PaperState.UNAVAILABLE
-        assert "RestoreError" in str(rig.runtime.reason)
+        # the reason names the change (operational-readiness review R-04, task T3) ...
+        reason = str(rig.runtime.reason)
+        assert "ConfigurationMismatch" in reason
+        assert "recorded with a different paper configuration" in reason
+        assert "starting_equity: 10000 -> 5000" in reason
+        # ... and the published status carries the recovery hint
+        from tsclaude.runtime.operator_hints import paper_hint
+
+        hint = paper_hint({"state": str(rig.runtime.state), "reason": reason})
+        assert hint is not None
+        assert "TSC_CONFIG_DIR" in hint
         assert len(rig.journal()) == 2  # the old journal is untouched
         await rig.supervisor.close()
 

@@ -76,6 +76,24 @@ def test_no_hint_when_nothing_is_blocked_or_the_block_is_transient(
     assert paper_hint({"state": "RUNNING", "observation": observation}) is None
 
 
+def test_a_session_recorded_with_another_configuration_gets_a_recovery_hint() -> None:
+    """Operational-readiness review R-04 (task T3): the reason names the changed fields; the hint
+    says how to recover, without suggesting any change to the recorded session."""
+    reason = (
+        "paper session could not be opened: ConfigurationMismatch: the session was recorded "
+        "with a different paper configuration (decision_latency_ms: 0 -> 3000)"
+    )
+    hint = paper_hint({"state": "UNAVAILABLE", "reason": reason})
+    assert hint is not None
+    assert "TSC_CONFIG_DIR" in hint
+    assert "new data folder" in hint
+    assert "verify-replay" in hint
+    assert "nothing was opened, changed or traded" in hint
+    # other UNAVAILABLE reasons do not get it
+    other = paper_hint({"state": "UNAVAILABLE", "reason": "paper session could not be opened: x"})
+    assert other is None or "TSC_CONFIG_DIR" not in other
+
+
 def test_state_hints() -> None:
     incomplete = paper_hint(
         {

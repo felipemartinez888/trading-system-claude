@@ -41,6 +41,7 @@ Fail closed: a step that raises, or a journal append that fails, puts the servic
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -48,7 +49,7 @@ from enum import StrEnum
 from functools import partial
 from typing import Any, Protocol
 
-from tsclaude.contracts.events import NewEvent
+from tsclaude.contracts.events import NewEvent, canonical_json
 from tsclaude.contracts.market import Bar, BarSource, Market
 from tsclaude.contracts.signals import EntryRuleKind, RunMode, Side, SignalRecord, SignalStatus
 from tsclaude.contracts.timeutil import MS_PER_DAY, MS_PER_MINUTE
@@ -184,6 +185,46 @@ class PaperConfig:
 
 class RestoreError(RuntimeError):
     """A journal could not be replayed into exactly the recorded state (fail closed)."""
+
+
+class ConfigurationMismatch(RestoreError):
+    """The journal was recorded with another paper configuration than the one restoring it.
+
+    Its first batch records the session's `PaperConfig.describe()`. A different current
+    configuration (for example ``decision_latency_ms`` 0 -> 3000 after `configs/backtest.yaml`
+    changed) can never reproduce the recorded batches. The restore is refused with the
+    differing fields named, instead of the first diverging batch (operational-readiness review
+    R-04). Still a `RestoreError`: callers fail closed exactly as before."""
+
+    def __init__(self, differences: Sequence[str]) -> None:
+        self.differences = tuple(differences)
+        shown = "; ".join(self.differences[:6])
+        more = len(self.differences) - 6
+        super().__init__(
+            "the session was recorded with a different paper configuration "
+            f"({shown}{f'; {more} more' if more > 0 else ''})"
+        )
+
+
+def _flat(obj: Any, prefix: str = "") -> dict[str, Any]:
+    if isinstance(obj, Mapping):
+        out: dict[str, Any] = {}
+        for key in sorted(obj):
+            out.update(_flat(obj[key], f"{prefix}{key}."))
+        return out
+    return {prefix.rstrip("."): obj}
+
+
+def configuration_differences(recorded: Any, current: Any) -> list[str]:
+    """``key: recorded -> current`` for every differing leaf of two `describe()` payloads, in
+    their journaled (JSON) form."""
+    a = _flat(json.loads(canonical_json(recorded)))
+    b = _flat(json.loads(canonical_json(current)))
+    out = []
+    for key in sorted(set(a) | set(b)):
+        if a.get(key, "<absent>") != b.get(key, "<absent>"):
+            out.append(f"{key}: {a.get(key, '<absent>')} -> {b.get(key, '<absent>')}")
+    return out
 
 
 # ---------------------------------------------------------------- the source adapter
@@ -517,6 +558,12 @@ def replay(
     journal; fills, ledger, risk decisions and lifecycle are recomputed. The strategy itself is
     not re-run and the bars are not re-read from the lake.
     """
+    if verify and batches:
+        recorded = batches[0][0].payload.get("session")
+        if recorded is not None:
+            differences = configuration_differences(recorded, config.describe())
+            if differences:
+                raise ConfigurationMismatch(differences)
     views = RecordedViews()
     clock = HistoricalClock(_bars_of(batches), mode=mode)
     if session_id is None:
