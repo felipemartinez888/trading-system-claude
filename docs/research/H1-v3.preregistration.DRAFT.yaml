@@ -1,0 +1,129 @@
+# H1-v3: DRAFT search preregistration for owner review. NOT frozen, NOT in preregistrations/,
+# NOT usable by any run. Schema tsc-prereg-v1. Validate a copy named H1-v3.yaml (the prereg_id must
+# match the file stem; this draft's own name does not, by design).
+#
+# Why v3: owner direction of 2026-11-10 under decision D-E -- keep the paper/live net reward/risk
+# floor min_rr_net 1.5 (configs/risk.yaml) and apply identical risk policies in backtests and
+# Paper (configs/backtest.yaml `risk_policy: live`, research/risk_policy.py). H1-v2 keeps
+# ADR-0012's 0.5-1.5 R take-profits, which the floor rejects on every trade; v3 is H1-v2 with
+# ONLY the take-profit levels changed, so that every configuration can trade in the baseline book.
+#
+# No result exists for H1: no backtest, walk-forward or validation run of h1_compression_breakout
+# has been made. The take-profit levels below were derived from the live engine's cost-adjusted
+# reward/risk formula and the cost model only (research/live_compat.py), never from an outcome.
+#
+# Derivation (spot, CostModel defaults: 0.1 % fee each side, modelled slippage; round trip 0.26 %):
+#   The cost filter max_cost_r 0.2 admits only stops >= 0.26 % / 0.2 = 1.30 % of price.
+#   Net reward/risk of a long market bracket with stop distance d and take-profit tp_r x d, as the
+#   paper engine computes it (risk/engine.py cost_adjusted_rr), at the smallest admitted stop:
+#     tp_r 1.50 -> 1.10  INCOMPATIBLE  (gross 1.5 can never stay >= 1.5 after costs)
+#     tp_r 1.75 -> 1.31  CONDITIONAL   (passes only with stops >= 2.48 %)
+#     tp_r 2.00 -> 1.52  COMPATIBLE    (every trade the strategy can confirm passes)
+#     tp_r 2.50 -> 1.94  COMPATIBLE
+#     tp_r 3.00 -> 2.35  COMPATIBLE
+#   Net reward/risk grows with the stop distance (costs are a fixed fraction of price), so a
+#   configuration COMPATIBLE at its smallest admitted stop is COMPATIBLE for every trade.
+#   Caveat: "at modelled slippage". The live engine uses max(modelled slippage, half the live
+#   spread); a wide live spread can still reject a trade. Backtests have no spread history: the
+#   cost-stress runs (x1.5, x2) carry that risk. tp_r 2.0 is the thinnest margin (1.52 vs 1.5).
+#   `tsclaude prereg validate` re-checks this for every configuration once risk_compatibility is
+#   set to live-floor-kept-geometries-dropped (refused if any configuration is not COMPATIBLE).
+#
+# Consequences the owner should weigh (none is decided here):
+#   - Break-even win rate rises: for a pure bracket p* = (1 + c) / (1 + b) with c <= 0.2 R:
+#     b = 2 -> p* <= 0.40, b = 2.5 -> 0.343, b = 3 -> 0.30 (realized p* applies, because the time
+#     exit makes payoffs variable). These are trend-style geometries, not ADR-0012's high-win-rate
+#     profiles. ADR-0012 says high-win-rate geometries (0.5-1.5 R) are "explicitly included" in
+#     preregistered search spaces; keeping the floor needs an ADR-0012 amendment (proposal
+#     "Amendment 6" in docs/research/H1_DECISION_BRIEF.md). This is part of D-E.
+#   - Time exit 48 bars (12 h on 15m) is kept from v2. With 2-3 R targets more trades will end at
+#     the time exit; that is a property to test, not a reason to tune it now.
+#   - The 24-configuration budget is the same as v1/v2 (D-C decides what counts as a trial).
+#   - The H1-1 feasibility count is unaffected: tp_r enters no entry stage (every stage up to
+#     cost_ok is independent of the take-profit), so the 15m vs 1h counts apply to v3 as they are.
+#
+# Every other choice is H1-v2's (finite 1h trend, required time exit, embargo, SOL excluded,
+# coverage floor 1.0, proposed drawdown criterion); see that draft's audit notes H1-1 ... H1-12.
+schema: tsc-prereg-v1
+prereg_id: H1-v3
+kind: search
+title: "H1 compression -> expansion breakout, long only, spot, live-compatible exits (DRAFT v3)"
+rationale: >
+  Volatility clusters: quiet periods end in expansions, and a close beyond the prior range with
+  abnormal volume, in the direction of the closed-hour trend, is the observable start of one. After
+  15m (or 1h, pending H1-1) volatility compression the break continues far enough to reach the
+  take-profit before the stop or the time exit often enough to beat the break-even win rate net of
+  costs. Costs make small expansions unprofitable, so the cost filter (max_cost_r) is part of the
+  rule, not a tuning knob. Long only on spot: shorts need USD-M history and funding (D-02, D-22).
+  Own hypothesis (RESEARCH_PROTOCOL §8); bracket_reference results are not H1 evidence.
+strategy:
+  strategy_id: h1_compression_breakout
+  version: 0.1.0-draft
+search_space:        # 24 configurations = rank_max x vol_z_min x stop_atr x tp_r (2 x 2 x 2 x 3)
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.25, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.0, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 1.0, trend_n: 50, stop_atr: 1.5, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.0, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 2.5, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+  - {interval: 15m, atr_n: 14, rank_m: 96, rank_max: 0.35, range_n: 20, vol_n: 20, vol_z_min: 2.0, trend_n: 50, stop_atr: 1.5, tp_r: 3.0, max_cost_r: 0.2, watch_atr: 0.5, time_exit_bars: 48}
+universe:
+  market: spot
+  # SOLUSDT excluded pending owner decision D-F (its gaps make most training windows grade X, WF-3)
+  symbols: [BTCUSDT, ETHUSDT, DOGEUSDT, XRPUSDT]
+data:                # D-05; fixed, cannot be moved by a preregistration
+  development: ['2022-01-01', '2025-01-01']
+  validation: ['2025-01-01', '2026-01-01']
+  holdout: ['2026-01-01', '2026-10-01']   # D-F: the 2026 months must be accepted first (H1-9)
+  dataset_ids: null  # H1-11: pin the exact dataset ids before the freeze
+walk_forward:
+  anchor: auto       # freeze refuses 'auto': fix the first train month (after the
+                     # strategy warm-up) so the folds are pinned (re-review N2)
+  end: '2025-01-01'  # the last test window ends at or before this month start
+  initial_train_months: 12
+  test_months: 3
+  # Embargo from the required time exit (H1-7), interval 15m:
+  #   fill within 1 validity bar after the decision, then the time exit after time_exit_bars bars
+  #   max scheduled holding = (time_exit_bars + 1) x 15 min = (48 + 1) x 15 = 735 min
+  #   embargo 1440 min >= 735 min; the 705 min margin covers exits deferred by candles without
+  #   trades and short data gaps (book: `_hold_position`).
+  #   If H1-1 selects 1h: (48 + 1) x 60 = 2940 min -> the embargo must be raised (e.g. 4320).
+  embargo_minutes: 1440
+  time_exit_required: true
+  n_min: 300         # the certification floor (research/stats/certify.py)
+  min_oos_coverage: 1.0
+objective: certified_margin_lcb_then_p_lcb   # ADR-0012, fixed
+selection_rule: full-development-train-v1     # H1-2
+trial_budget:
+  max_configurations: 24
+  max_registry_trials: null
+  counting: PENDING          # owner decision D-C: configurations | registry_rows (H1-4)
+holdout_procedure: PENDING   # owner decision D-D: two-stage preregistration (H1-3)
+risk_compatibility: PENDING  # owner decision D-E; owner direction 2026-11-10 = keep the floor, i.e.
+                             # live-floor-kept-geometries-dropped (the owner sets it at the freeze)
+rejection_criteria:
+  - certified margin lower bound <= 0
+  - expectancy lower bound <= 0
+  - fewer than 300 effective trades
+  - cost stress x1.5 not certified
+  - no edge over the random-entry control
+  - any integrity problem (grade X)
+  - "validation max drawdown > 0.20 of peak equity (PROPOSED, H1-12; owner to confirm)"
+max_loss_r_policy: L-10 default

@@ -9,7 +9,7 @@
 #   1. rebuilds the dashboard bundle from this checkout (an old bundle would hide the new panels);
 #   2. refuses if anything already answers on the smoke port (default 8799, not the app's usual
 #      8765, so your real app is never touched), starts the app there, waits for /api/health;
-#   3. saves /api/research/status and /api/paper/status to the smoke folder and prints them;
+#   3. saves /api/research/status, /api/paper/status and /api/agents/status to the smoke folder;
 #   4. opens the dashboard so you can look; you then press Quit in the dashboard (a clean stop).
 # Output: <Runs>\smoke-<stamp>\summary.json. A PASS is evidence that the branch dashboard renders,
 # nothing more.
@@ -96,6 +96,11 @@ $pv = $paper.status.value
 $hasHintField = $null -ne $pv -and ($pv.PSObject.Properties.Name -contains 'hint')
 Check 'paper_status_api' ($null -ne $paper.status) ("paper state = {0}; hint field present = {1}; hint = {2}" -f $pv.state, $hasHintField, $pv.hint)
 
+$agents = Invoke-RestMethod "$base/api/agents/status"
+$agents | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $out 'agents_status.json') -Encoding utf8
+$am = $agents.status.value.mode
+Check 'agents_status_api' ($am -eq 'off') "agent mode = $am (expected off: no API key, no paid call)"
+
 $page = Invoke-WebRequest "$base/" -UseBasicParsing
 Check 'dashboard_served' ($page.StatusCode -eq 200 -and $page.Content -match '<script') "GET / status $($page.StatusCode)"
 
@@ -104,7 +109,8 @@ Write-Host 'Look at the dashboard now (it opens in your browser):' -ForegroundCo
 Write-Host '  1. Backtests page: a "No validated strategy" research panel.' -ForegroundColor Cyan
 Write-Host '  2. Paper page: its status card. A "What to do" hint appears only when paper is blocked' -ForegroundColor Cyan
 Write-Host '     or waiting (for example a PC clock more than 1 s off); paper is off in this smoke run.' -ForegroundColor Cyan
-Write-Host '  3. Then press Quit in the dashboard. This window waits up to 10 minutes.' -ForegroundColor Cyan
+Write-Host '  3. Health page: an "Advisory agents" card showing mode off.' -ForegroundColor Cyan
+Write-Host '  4. Then press Quit in the dashboard. This window waits up to 10 minutes.' -ForegroundColor Cyan
 Start-Process $base
 $proc.WaitForExit(600000) | Out-Null
 } finally {
@@ -115,7 +121,7 @@ $proc.WaitForExit(600000) | Out-Null
         Check 'clean_quit' ($proc.ExitCode -eq 0) "app exited with code $($proc.ExitCode)"
     }
 }
-$answer = Read-Host 'Did the research panel and the Paper page render? (y/n)'
+$answer = Read-Host 'Did the research panel, the Paper page and the Advisory agents card render? (y/n)'
 Check 'owner_visual_check' ($answer -match '^[yY]') "owner answered '$answer'"
 $summary.finished_utc = (Get-Date).ToUniversalTime().ToString('o')
 Save-Summary
