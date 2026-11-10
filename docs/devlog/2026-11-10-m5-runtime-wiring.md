@@ -186,3 +186,21 @@ Measured sizes (chars/4 estimate, no tokenizer offline), synthetic 1m paper sign
 
 - Contract additions made on the Lead's delegation (listed above); please review them as Lead.
 - `docs/ROADMAP.md` M5 row and `docs/devlog/metrics.csv` updated with this task.
+
+## Independent review (Fable, fresh context): CONDITIONAL PASS, 0 blocking
+
+The reviewer reproduced the mode-off identity on a `git archive` of `9c681ca`: 39 batches; the
+journal digest, fingerprint, config digest and three ledger hashes are all equal. It also confirmed
+strictly additive contracts, L-12/ADR-0007, no look-ahead, and replay that fails closed.
+20 of 21 mutants were killed. Focused suite: 759 passed.
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | `verify-replay` builds its config from the current `configs/`, which now includes `agents.yaml`. With mode `confirmed`, replays of the three off-mode real sessions (the D-A evidence) return INCONCLUSIVE ("configuration differs"), never a false PASS or FAIL; the same holds in reverse | **Operational rule:** run `verify-replay` of an off-mode session with `configs/agents.yaml` at `mode: "off"` (the repo default). A mode change needs a new paper session (decision 12). Recorded here and in DECISIONS_PENDING L-13 |
+| 2 | The off-mode API differs: `/api/paper/status` gains `"agents": null`; `/api/agents/status` reports `runtime_wired: true`. The fastapi integration test was not run in this container | OPEN until CI runs it (CI runs fastapi tests on every push to this branch) |
+| 3 | After an `agent_fault`, `awaiting_review` grows without bound in the status | FIXED. The status shows the exact `awaiting_review_count` and at most `AWAITING_SHOWN` (20) ids; test added |
+| 4 | Untested `released_at_ms is None` guard in `due()` | FIXED. Test added; the review's surviving mutant is now killed |
+| 5 | The status endpoint reads the cost ledger without the lock while the worker appends | Accepted (minor). A torn last line gives a transient "ledger unreadable" in status only; spend decisions take the lock |
+| 6 | `ReviewWorker.close()` does not wait for a running review | Accepted (minor). The gate deadline bounds it; the cost ledger stays consistent (append under lock) |
+| 7 | `sim/paper.py` imports `agents.wiring` (a sim↔agents layering change) | Accepted by the Lead (L-13) |
+| 8 | The journaled `reason` is the gate's text, clipped to 300 chars | Follow-up for the real adapter: sanitize provider exception text before it reaches the journal |

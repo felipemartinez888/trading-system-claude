@@ -839,6 +839,10 @@ class ServiceState(StrEnum):
     FAULTED = "FAULTED"  # a step or a journal write failed: nothing is processed until restore
 
 
+#: at most this many awaiting signal ids are published in the status (the count is exact)
+AWAITING_SHOWN = 20
+
+
 class PaperTradingService:
     """Facade for the Platform task: feed it market-data updates and snapshots, poll it."""
 
@@ -1106,7 +1110,9 @@ class PaperTradingService:
         return {
             "book": AGENT_GATED,
             "coverage": agents.coverage(),
-            "awaiting_review": agents.awaiting(),
+            # bounded (review F3): after an agent fault requests accumulate until a restart
+            "awaiting_review": agents.awaiting()[:AWAITING_SHOWN],
+            "awaiting_review_count": len(agents.awaiting()),
             "fault": self.agent_fault,
             "reviewer": reviewer,
         }

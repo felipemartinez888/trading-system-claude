@@ -57,6 +57,7 @@ from tsclaude.agents.wiring import (
     unavailable_payload,
 )
 from tsclaude.contracts.events import EventType
+from tsclaude.contracts.market import Market
 from tsclaude.contracts.signals import EntryRuleKind, SignalRecord, SignalStatus
 from tsclaude.contracts.timeutil import MS_PER_MINUTE
 from tsclaude.runtime.session_evidence import (
@@ -775,3 +776,40 @@ def test_an_outcome_is_applied_only_at_a_release_after_it_was_available() -> Non
     head = batches[adm_i][0].payload
     assert head["bar"]["open_time_ms"] == minute(5)  # released at close(5) + 1.5 s
     assert replay(gated_config(), batches).ledger_hashes() == svc.ledger_hashes()
+
+
+def test_a_step_without_a_release_time_admits_nothing() -> None:
+    """Review F4: the defensive guard in `due()`: an approved outcome waits for a step that has
+    a release time (live steps always have one) and is neither admitted nor dropped without."""
+    bars = two_symbol_bars(10)
+    strat = ScriptedStrategy({(minute(1), "BTCUSDT"): [record(1, 1, valid_bars=8)]})
+    held = HeldReviewer(worker(mock_client(approve()), bars))
+    svc, journal = new_service(gated_config(), strat, held)
+    for i in range(2):
+        step_minute(svc, bars, i)
+    payload = held.results[sid(1)]
+    held.order.clear()
+    journal.append(svc.session.agent_review(payload, minute(3)))
+    agents = svc.session.agents
+    assert agents is not None
+    assert agents.pending_admissions == 1
+    bar = bars[(Market.SPOT, "BTCUSDT")][4]
+    assert agents.due(bar, None, svc.session.lifecycle) == ([], [])
+    assert agents.pending_admissions == 1  # still waiting, not dropped
+
+
+def test_the_published_awaiting_list_is_bounded() -> None:
+    """Review F3: after an agent fault requests accumulate until a restart; the status shows
+    the exact count and at most AWAITING_SHOWN ids."""
+    from tsclaude.sim.paper import AWAITING_SHOWN
+
+    w = worker(mock_client(veto() * 3), scenario_bars())
+    svc, _ = run_scenario(gated_config(), w)
+    w.close()
+    agents = svc.session.agents
+    assert agents is not None
+    agents._awaiting.extend((f"s{i}", i) for i in range(AWAITING_SHOWN + 5))
+    st = svc.agent_status()
+    assert st is not None
+    assert len(st["awaiting_review"]) == AWAITING_SHOWN
+    assert st["awaiting_review_count"] == len(agents.awaiting())
