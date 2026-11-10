@@ -623,6 +623,27 @@ export interface ResearchStatus {
   preregistration_files: string[];
   reasons: string[];
   statement: string;
+  /** walk-forward reports as recorded (none of them is a validation result) */
+  walk_forwards?: WalkForwardSummary[];
+}
+
+export interface WalkForwardSummary {
+  report: string;
+  plan_id?: string | null;
+  strategy_id?: string | null;
+  reference?: boolean;
+  hypothesis_id?: string | null;
+  prereg_id?: string | null;
+  verdict?: string | null;
+  n_trials?: number | null;
+  oos_trades?: number | null;
+  oos_coverage?: number | null;
+  failed_test_folds?: number[] | null;
+  checks_passed?: boolean | null;
+  live_deployable?: boolean | null;
+  final_selection?: string | null;
+  not_validation?: boolean;
+  unreadable?: string;
 }
 
 export interface ResearchStatusResponse {

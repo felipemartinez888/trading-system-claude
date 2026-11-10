@@ -91,4 +91,40 @@ describe("research status", () => {
       "VALIDATED (grade A)",
     );
   });
+
+  it("lists walk-forward reports as recorded and never as validation", () => {
+    render(
+      <ResearchStatusView
+        status={status({
+          walk_forwards: [
+            {
+              report: "abcd",
+              strategy_id: "bracket_reference",
+              reference: true,
+              verdict: "INVALID_OOS_EVIDENCE",
+              n_trials: 21,
+              oos_coverage: 0.25,
+              checks_passed: true,
+              live_deployable: false,
+              not_validation: true,
+            },
+            { report: "bad", unreadable: "JSONDecodeError" },
+          ],
+        })}
+      />,
+    );
+    const row = screen.getByTestId("research-wf-abcd");
+    expect(within(row).getByText("INVALID_OOS_EVIDENCE")).toBeInTheDocument();
+    expect(within(row).getByText("25 %")).toBeInTheDocument();
+    expect(within(row).getByText("bracket_reference (REFERENCE)")).toBeInTheDocument();
+    expect(screen.getByText(/None of these verdicts is a validation result/)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("research-wf-bad")).getByText("unreadable (JSONDecodeError)"),
+    ).toBeInTheDocument();
+  });
+
+  it("says when no walk-forward report exists", () => {
+    render(<ResearchStatusView status={status()} />);
+    expect(screen.getByTestId("research-walkforwards-empty")).toBeInTheDocument();
+  });
 });
