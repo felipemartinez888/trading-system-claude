@@ -64,7 +64,8 @@ def test_status_from_repo_config_is_off_with_empty_ledger(tmp_path: Path) -> Non
     assert snap["config_ok"] is True
     assert snap["daily_cap_usd"] == "1.00000000"
     assert snap["ledger"]["calls_today"] == 0
-    assert snap["runtime_wired"] is False
+    assert snap["runtime_wired"] is True  # M5-3
+    assert snap["runtime"]["provenance"] == "UNAVAILABLE"  # no paper runtime passed
     assert snap["prompts"]["analyst"].startswith("analyst-v1@")
 
 

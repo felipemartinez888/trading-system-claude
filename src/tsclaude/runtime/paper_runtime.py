@@ -62,6 +62,15 @@ execution, and a restart changes the release time of re-delivered bars, so fills
 baseline included, can differ from an uninterrupted run while paper shows `RUNNING` and labels
 values `SIMULATED` (seed 465923499). A journal that cannot be restored shows `UNAVAILABLE`.
 
+Advisory agents (M5-3). When `configs/agents.yaml` is valid and in mode ``confirmed`` at the time a
+paper session is created, the session gets the ``agent_gated`` book (`sim.paper`,
+`agents.wiring`): the reviewer (`agents.worker.ReviewWorker`, built by `reviewer_factory` at every
+open) reviews each signal the baseline book accepted, on its own thread, never on the event loop.
+Mode ``off`` (the default) builds nothing and changes nothing. Changing the agents mode of an
+existing session changes its configuration description: the restore then fails (`UNAVAILABLE`) and
+the operator records a new session, as for a `risk.yaml` change. The real Anthropic adapter is
+still a stub: in production every review is ``AI_UNAVAILABLE`` and agent_gated takes nothing.
+
 Values are simulated (`Provenance.SIMULATED`); nothing here places orders anywhere.
 """
 
@@ -99,6 +108,7 @@ from tsclaude.sim.paper import (
     ObservationVerdict,
     PaperConfig,
     PaperTradingService,
+    Reviewer,
     ServiceState,
     observation_bound,
 )
@@ -297,7 +307,11 @@ class PaperSettings:
 
 def build_paper_config(settings: PaperSettings, base: Path) -> PaperConfig:
     """Paper books for the live universe: instruments from `backtest.yaml`, risk from
-    `risk.yaml`, pairs from `universe.yaml`. Any missing file or spec raises (fail closed)."""
+    `risk.yaml`, pairs from `universe.yaml`. Any missing file or spec raises (fail closed).
+    The ``agent_gated`` book exists only if `agents.yaml` is valid and in mode ``confirmed``
+    (a missing or invalid file is mode ``off``: no agent book, the session as before)."""
+    from tsclaude.agents.config import load_config as load_agents_config
+    from tsclaude.agents.worker import agent_gated_enabled
     from tsclaude.marketdata.config import load_config
     from tsclaude.research.runner import BacktestConfig
     from tsclaude.risk.config import load_risk_config
@@ -310,6 +324,7 @@ def build_paper_config(settings: PaperSettings, base: Path) -> PaperConfig:
         starting_equity=settings.starting_equity,
         risk=load_risk_config(base / "risk.yaml"),
         decision_latency_ms=backtest.decision_latency_ms,
+        agent_gated=agent_gated_enabled(load_agents_config(base / "agents.yaml")),
     )
 
 
@@ -595,6 +610,7 @@ class PaperRuntime:
         audit_path: Path,
         bars: BarReader | None = None,
         strategy_factory: Callable[[], LiveStrategy | None] | None = None,
+        reviewer_factory: Callable[[], Reviewer | None] | None = None,
     ) -> None:
         self.settings = settings
         self._store = store
@@ -644,6 +660,9 @@ class PaperRuntime:
         self.previous_run: dict[str, Any] | None = None  # kept across a stop (H3)
         self.audit_warnings: list[str] = []
         self.reference: ReferenceLiveStrategy | None = None
+        #: M5-3: builds the agent reviewer of a run (only for an agent_gated session)
+        self._reviewer_factory = reviewer_factory
+        self._reviewer: Reviewer | None = None
         self._publish()
 
     @property
@@ -722,11 +741,13 @@ class PaperRuntime:
     def _open(self) -> bool:
         """Open or restore the session from its journal; False (UNAVAILABLE) on any failure."""
         self.session_end_evidence = None
+        self._close_reviewer()
         try:
             config = self._config_factory()
             session_id = self._resolve_session()
             tracker = self._seeded_tracker(config)
             strategy = self._build_strategy(config)
+            reviewer = self._build_reviewer(config)
             service = PaperTradingService.open(
                 config,
                 self._store,
@@ -735,9 +756,11 @@ class PaperRuntime:
                 settle_ms=self.settings.settle_ms,
                 strategy=strategy,
                 observation_gated=True,
+                reviewer=reviewer,
             )
         except Exception as exc:
             log.exception("paper session could not be opened")
+            self._close_reviewer()
             self._fail_open(f"paper session could not be opened: {type(exc).__name__}: {exc}")
             return False
         self.service = service
@@ -746,6 +769,28 @@ class PaperRuntime:
         self._released_at_open = service.clock.stats.released
         self._set(PaperState.RUNNING, None)
         return True
+
+    def _build_reviewer(self, config: PaperConfig) -> Reviewer | None:
+        """The agent reviewer of this run, for an agent_gated session only. A factory failure
+        leaves none: every review is then AI_UNAVAILABLE (fail closed), the books run as
+        usual."""
+        if not config.agent_gated or self._reviewer_factory is None:
+            return None
+        try:
+            self._reviewer = self._reviewer_factory()
+        except Exception as exc:
+            log.exception("agent reviewer could not be built")
+            self._problem("Agent reviews unavailable", f"{type(exc).__name__}: {exc}")
+            self._reviewer = None
+        return self._reviewer
+
+    def _close_reviewer(self) -> None:
+        reviewer, self._reviewer = self._reviewer, None
+        if reviewer is not None:
+            try:
+                reviewer.close()
+            except Exception:
+                log.exception("agent reviewer could not be closed")
 
     def _fail_open(self, reason: str) -> None:
         if self._sub is not None:
@@ -766,6 +811,7 @@ class PaperRuntime:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
         await self._cancel_resync()
+        self._close_reviewer()  # reviews not journaled by now are interrupted (restore)
         if self._sub is not None:
             self._sub.close()
             self._sub = None
@@ -1479,6 +1525,9 @@ class PaperRuntime:
             snap["values_as_of_ms"] = None if last is None else last + MS_PER_MINUTE - 1
             snap["live_bar_since_start"] = service.clock.stats.released > self._released_at_open
             snap["service"] = service.status()
+            agents = service.agent_status()
+            if agents is not None:  # M5-3: only for an agent_gated session (SYSTEM values)
+                snap["agents"] = {**agents, "session_id": self.session_id}
             snap["books"] = {
                 name: {
                     "equity": book.equity(),
@@ -1553,6 +1602,11 @@ def load_paper_runtime(
     except Exception as exc:
         settings = PaperSettings(source=f"{path} invalid")
         problem = f"{path} is invalid: {type(exc).__name__}: {exc}"
+    from tsclaude.agents.worker import bar_reader_inputs, reviewer_factory
+
+    def no_bars(market: Market, symbol: str, start: int, end: int) -> Sequence[Bar]:
+        return ()
+
     runtime = PaperRuntime(
         settings,
         store,
@@ -1560,6 +1614,15 @@ def load_paper_runtime(
         config_factory=lambda: build_paper_config(settings, config_base),
         audit_path=data_dir / AUDIT_FILE,
         bars=bars,
+        # M5-3: used only for an agent_gated session (agents mode `confirmed`); the client is
+        # the stub of `agents.real_client` (key presence only; every call unavailable)
+        reviewer_factory=reviewer_factory(
+            config_base / "agents.yaml",
+            data_dir / "agents",
+            clock,
+            bar_reader_inputs(bars if bars is not None else no_bars),
+            dotenv=Path.cwd() / ".env",
+        ),
     )
     if problem is not None:
         runtime.state = PaperState.UNAVAILABLE

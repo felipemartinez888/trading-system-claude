@@ -62,7 +62,8 @@ def test_agents_status_reports_the_configured_mode(client_with_config: ClientFac
     assert value["mode"] == "confirmed"
     assert value["config_ok"] is True
     assert value["daily_cap_usd"] == "1.00000000"
-    assert value["runtime_wired"] is False
+    assert value["runtime_wired"] is True  # M5-3: wired; counts need an agent_gated session
+    assert value["runtime"]["provenance"] in ("UNAVAILABLE", "SYSTEM")
 
 
 def test_agents_status_reports_invalid_config_as_off(client_with_config: ClientFactory) -> None:

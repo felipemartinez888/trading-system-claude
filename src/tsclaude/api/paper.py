@@ -108,6 +108,7 @@ def paper_router(
                     "backfill",
                     "reference",
                     "limitations",
+                    "agents",  # M5-3: agent_gated coverage (SYSTEM), None without the book
                 )
             }
             value.update(

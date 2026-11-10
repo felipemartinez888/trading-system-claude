@@ -312,6 +312,11 @@ def create_app(
             Path.cwd() / "configs" / "agents.yaml",
             context.store.path.parent / "agents",
             context.clock,
+            lambda: (
+                context.supervisor.paper.published()
+                if context.supervisor is not None and context.supervisor.paper is not None
+                else None
+            ),
         )
     )
 
