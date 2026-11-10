@@ -1,4 +1,4 @@
-"""`tsclaude backtest run | show | list | trials` (M2-T4).
+"""`tsclaude backtest run | show | list | trials | walkforward` (M2-T4; walk-forward: MVP).
 
 ``run`` reads the lake only through `LakeReader` with the holdout guard backed by the event store
 (a range touching the sealed holdout is refused unless ``--prereg`` names a recorded unlock for
@@ -153,6 +153,110 @@ def _cmd_trials(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_grid(path: Path) -> dict[str, dict[str, Any]]:
+    """A parameter grid: a JSON list of parameter objects (ids are content hashes) or a JSON
+    object ``{config_id: params}``."""
+    from tsclaude.research.walkforward import config_id_of
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):
+        grid = {config_id_of(p): dict(p) for p in raw}
+        if len(grid) != len(raw):
+            raise ValueError("the grid lists the same parameters twice")
+        return grid
+    if isinstance(raw, dict) and all(isinstance(v, dict) for v in raw.values()):
+        return {str(k): dict(v) for k, v in raw.items()}
+    raise ValueError("the grid must be a list of parameter objects or {id: parameters}")
+
+
+def _cmd_walkforward(args: argparse.Namespace) -> int:
+    """Anchored walk-forward on the development segment only (RESEARCH_PROTOCOL §3)."""
+    from tsclaude.contracts.timeutil import MS_PER_MINUTE
+    from tsclaude.research.runner import BacktestConfig, RunEnv, segment_of
+    from tsclaude.research.trials import TrialRegistry
+    from tsclaude.research.walkforward import WalkForwardError, plan_folds, run_walk_forward
+    from tsclaude.store.eventstore import EventStore
+    from tsclaude.store.holdout import EventStoreUnlocks, HoldoutError, HoldoutGuard
+
+    settings = Settings.from_env()
+    try:
+        grid = load_grid(Path(args.grid))
+        from_ms, to_ms = parse_time(args.from_), parse_time(args.to)
+        if segment_of(from_ms, to_ms) != "development":
+            raise WalkForwardError(
+                "walk-forward selection runs on the development segment only "
+                "(2022-01-01 to 2025-01-01); validation and holdout are evaluated once, later"
+            )
+        if len(grid) > args.max_configs:
+            raise WalkForwardError(
+                f"{len(grid)} configurations exceed the trial budget --max-configs "
+                f"{args.max_configs}; shrink the grid (every evaluation is a recorded trial)"
+            )
+        folds = plan_folds(
+            from_ms,
+            to_ms,
+            initial_train_months=args.initial_train_months,
+            test_months=args.test_months,
+            embargo_ms=args.embargo_minutes * MS_PER_MINUTE,
+        )
+        symbols = parse_symbols(args.symbols, args.market)
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"ok": False, "refused": "walkforward", "error": str(exc)}))
+        return 2
+    cfg_path = Path(args.config)
+    cfg = BacktestConfig.load(cfg_path) if cfg_path.is_file() else BacktestConfig()
+    from tsclaude.quality.interruptions import EMPTY_REGISTRY, load_registry
+
+    registry_path = cfg_path.parent / "exchange_interruptions.yaml"
+    interruptions = load_registry(registry_path) if registry_path.is_file() else EMPTY_REGISTRY
+    clock = SystemClock()
+    stamp = clock.now_ms()
+    with EventStore(settings.state_db_path) as store:
+        guard = HoldoutGuard(EventStoreUnlocks(store, Path(args.repo_root)))
+        env = RunEnv(
+            reader=_default_reader(settings.data_dir, guard),
+            trials=TrialRegistry(settings.state_db_path),
+            runs_dir=settings.data_dir / "runs",
+            now_ms=clock.now_ms,
+            repo_root=Path(args.repo_root),
+            exchange_interruptions=interruptions,
+        )
+        try:
+            report = run_walk_forward(
+                env,
+                cfg,
+                strategy_id=args.strategy,
+                grid=grid,
+                symbols=symbols,
+                folds=folds,
+                n_min=args.n_min,
+                hypothesis_id=args.hypothesis,
+                report_dir=settings.data_dir / "walkforward" / f"wf-{stamp}",
+            )
+        except HoldoutError as exc:
+            print(json.dumps({"ok": False, "refused": "holdout", "error": str(exc)}))
+            return 3
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "report": str(
+                    settings.data_dir / "walkforward" / f"wf-{stamp}" / "walkforward.json"
+                ),
+                "strategy_id": report["strategy_id"],
+                "folds": len(report["folds"]),
+                "n_train_evaluations": report["n_train_evaluations"],
+                "n_test_evaluations": report["n_test_evaluations"],
+                "oos": report["oos"],
+                "provenance": "BACKTEST",
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
 def register(sub: Any) -> None:
     bt = sub.add_parser("backtest", help="reproducible backtests with certified reports")
     bsub = bt.add_subparsers(dest="backtest_command", required=True)
@@ -187,3 +291,27 @@ def register(sub: Any) -> None:
     tr = bsub.add_parser("trials", help="list the trial registry")
     tr.add_argument("--strategy", default=None, help="strategy id (family)")
     tr.set_defaults(func=_cmd_trials)
+    wf = bsub.add_parser(
+        "walkforward",
+        help="anchored walk-forward on the development segment (selection on train only)",
+    )
+    wf.add_argument("--strategy", required=True)
+    wf.add_argument("--grid", required=True, help="JSON file: [params, ...] or {id: params}")
+    wf.add_argument("--symbols", required=True, help="e.g. spot:BTCUSDT,spot:ETHUSDT")
+    wf.add_argument("--market", default="spot", help="market for symbols without a prefix")
+    wf.add_argument("--from", dest="from_", default="2022-01-01", help="UTC month start")
+    wf.add_argument("--to", default="2025-01-01", help="UTC month start (exclusive)")
+    wf.add_argument("--initial-train-months", type=int, default=12)
+    wf.add_argument("--test-months", type=int, default=3)
+    wf.add_argument(
+        "--embargo-minutes",
+        type=int,
+        default=1440,
+        help="gap between train end and test start: at least one maximum holding period",
+    )
+    wf.add_argument("--n-min", type=int, default=30, help="trades a configuration needs")
+    wf.add_argument("--max-configs", type=int, default=12, help="trial budget for the grid")
+    wf.add_argument("--hypothesis", required=True, help="label stored with every trial")
+    wf.add_argument("--config", default=str(DEFAULT_CONFIG))
+    wf.add_argument("--repo-root", default=".")
+    wf.set_defaults(func=_cmd_walkforward)
