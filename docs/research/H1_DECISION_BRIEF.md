@@ -120,7 +120,13 @@ from the close just before the executing bar. With `decision_latency_ms` above 0
 set it), that close can differ from the decision close, and a trade near the 2 R margin can then
 be refused at fill. The live engine also uses half the live spread when that is
 larger; wide spreads can still reject a trade, and the ×1.5 and ×2 cost-stress runs carry that risk.
-At 2 R the margin is thin: 1.52 against 1.5.
+At 2 R the margin is thin: 1.52 against 1.5. It holds only because take-profits are modelled as
+maker limit fills without slippage, which is how Paper and the backtests model them today
+(`CostModel.tp_as_taker = False`). If take-profits were filled as taker orders with slippage, 2 R
+would net 1.4995 and be CONDITIONAL; 2.5 R (1.92) and 3 R (2.33) keep a margin. Scaling every
+cost (×1.5, ×3) changes nothing, because H1's cost filter scales the smallest stop with the costs.
+**Option for the owner:** use {2.5, 3.0, 3.5} instead of {2.0, 2.5, 3.0}, to keep a margin even
+if take-profits are filled as taker orders.
 
 **Proposed search space: [H1-v3 draft](H1-v3.preregistration.DRAFT.yaml).** It is H1-v2 with only
 the take-profits changed to {2.0, 2.5, 3.0}. The grid stays 2 × 2 × 2 × 3 = 24, with rank_max

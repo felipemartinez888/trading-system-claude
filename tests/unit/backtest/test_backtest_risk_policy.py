@@ -474,3 +474,63 @@ def test_live_books_get_the_kill_switch_and_the_base_cost_model(lake: Path) -> N
         runner._books(env, req, cfg, names, None)
     allow = runner._books(env, req, TEST_CONFIG, names)
     assert all(b.kill_switch_drawdown is None for b in allow)
+
+
+@pytest.mark.skipif(__import__("shutil").which("git") is None, reason="needs git")
+def test_a_run_of_a_keep_floor_preregistration_rechecks_policy_and_costs(
+    lake: Path, tmp_path: Path
+) -> None:
+    """Run side (closure review F6): a frozen preregistration that keeps the live floor is run only
+    with backtests applying the live policy, and its configurations are re-checked at the run's
+    own cost model, before anything runs."""
+    import subprocess
+    from datetime import UTC, datetime
+
+    from tsclaude.research import preregistration as pr
+    from tsclaude.research import walkforward as wf
+
+    repo = tmp_path / "repo"
+    (repo / "preregistrations").mkdir(parents=True)
+    doc = pr.load(REPO / "preregistrations" / "TEMPLATE.yaml")  # bracket_reference, 2 R and 3 R
+    doc.update(prereg_id="H-FLOOR", holdout_procedure="two-stage-selection-record",
+               risk_compatibility=pr.KEEP_LIVE_FLOOR)  # fmt: skip
+    doc["trial_budget"]["counting"] = "configurations"
+    doc["universe"]["symbols"] = ["BTCUSDT"]
+    doc["walk_forward"].update(anchor="2023-01-01", end="2023-04-01", initial_train_months=1,
+                               test_months=1)  # fmt: skip
+    path = repo / "preregistrations" / "H-FLOOR.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    live = _live_cfg()
+    pr.freeze(path, now_ms=0, code={"commit": "t", "dirty": False},
+              backtest_config_hash=live.config_hash, backtest_risk=live.risk)  # fmt: skip
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t",
+                                                "commit", "-q", "-m", "p"]):  # fmt: skip
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    frozen = pr.load(path)
+    grid = {wf.config_id_of(p): p for p in frozen["search_space"]}
+
+    def ms(y: int, m: int) -> int:
+        return int(datetime(y, m, 1, tzinfo=UTC).timestamp() * 1000)
+
+    folds = wf.plan_folds(ms(2023, 1), ms(2023, 4), initial_train_months=1, test_months=1,
+                          embargo_ms=1440 * MIN)  # fmt: skip
+    env = dataclasses.replace(make_env(lake), repo_root=repo)
+
+    def conform(env: Any, risk: Any) -> Any:
+        return wf._prereg_conformance(
+            env, "H-FLOOR", strategy_id="bracket_reference", grid=grid,
+            symbols=[(Market.SPOT, "BTCUSDT")], folds=folds, n_min=300, min_oos_coverage=1.0,
+            dataset_ids=None, final_selection=True, config_hash=live.config_hash, risk=risk,
+        )  # fmt: skip
+
+    with pytest.raises(wf.WalkForwardError, match="needs backtests with risk_policy live"):
+        conform(env, None)
+    # scaling every cost leaves H1-style geometries unchanged (the cost filter scales the smallest
+    # stop with them); take-profits filled as taker with slippage do not: 2 R falls to 1.4995
+    costly = dataclasses.replace(
+        env, cost_model=dataclasses.replace(env.cost_model, tp_as_taker=True)
+    )
+    with pytest.raises(wf.WalkForwardError, match=r"with the live floor min_rr_net 1\.5"):
+        conform(costly, live.risk)
+    assert conform(env, live.risk) is not None  # the preregistered run itself conforms

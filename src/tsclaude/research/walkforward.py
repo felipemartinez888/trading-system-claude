@@ -989,11 +989,22 @@ def _prereg_conformance(
     dataset_ids: Sequence[str] | None,
     final_selection: bool,
     config_hash: str | None = None,
+    risk: Any | None = None,
 ) -> Mapping[str, Any]:
     """A walk-forward under ``--prereg`` must run exactly what the frozen search preregistration
-    (schema tsc-prereg-v1) fixes; refused otherwise, before anything runs. Returns its budget."""
+    (schema tsc-prereg-v1) fixes; refused otherwise, before anything runs. Returns its budget.
+
+    A preregistration that keeps the live floor (D-E) also needs this run's backtests to apply
+    the live risk policy (``risk``: the backtest config's risk config) and every configuration to
+    be COMPATIBLE with it **at this run's cost model** (`env.cost_model`), re-checked here."""
     from tsclaude.research.prereg import check_preregistration
-    from tsclaude.research.preregistration import SCHEMA, load, walkforward_conformance
+    from tsclaude.research.preregistration import (
+        KEEP_LIVE_FLOOR,
+        SCHEMA,
+        live_floor_problems,
+        load,
+        walkforward_conformance,
+    )
 
     rel = check_preregistration(env.repo_root, prereg_id)
     doc = load(Path(env.repo_root) / rel)
@@ -1017,6 +1028,13 @@ def _prereg_conformance(
         config_hash=config_hash,
         path=str(Path(env.repo_root) / rel),
     )
+    if doc.get("risk_compatibility") == KEEP_LIVE_FLOOR:
+        if risk is None:
+            problems.append(
+                f"risk_compatibility {KEEP_LIVE_FLOOR} needs backtests with risk_policy live"
+            )
+        else:
+            problems += live_floor_problems(doc, risk=risk, cost_model=env.cost_model)
     if problems:
         raise WalkForwardError("not the preregistered walk-forward: " + "; ".join(problems))
     return dict(doc.get("trial_budget") or {})
@@ -1311,7 +1329,7 @@ def run_walk_forward(
         prereg_budget = _prereg_conformance(
             env, prereg_id, strategy_id=strategy_id, grid=grid, symbols=symbols, folds=folds,
             n_min=n_min, min_oos_coverage=min_oos_coverage, dataset_ids=dataset_ids,
-            final_selection=final_selection_enabled, config_hash=cfg.config_hash,
+            final_selection=final_selection_enabled, config_hash=cfg.config_hash, risk=cfg.risk,
         )  # fmt: skip
     if report_dir is None and work_root is not None:
         name = plan["plan_id"] if plan["resumable"] and resume else None

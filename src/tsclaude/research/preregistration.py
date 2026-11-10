@@ -50,6 +50,7 @@ from tsclaude.contracts.events import canonical_json
 
 if TYPE_CHECKING:
     from tsclaude.risk.config import RiskConfig
+    from tsclaude.sim.costs import CostModel
 
 SCHEMA = "tsc-prereg-v1"
 PENDING = "PENDING"
@@ -246,7 +247,11 @@ REPO_RISK_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "risk.yaml"
 
 
 def live_floor_problems(
-    doc: Mapping[str, Any], *, risk_config: Path | None = None, risk: RiskConfig | None = None
+    doc: Mapping[str, Any],
+    *,
+    risk_config: Path | None = None,
+    risk: RiskConfig | None = None,
+    cost_model: CostModel | None = None,
 ) -> list[str]:
     """With ``risk_compatibility: live-floor-kept-geometries-dropped`` (D-E: keep the live floor),
     every configuration must be COMPATIBLE with the live baseline book for every symbol of the
@@ -263,6 +268,7 @@ def live_floor_problems(
             risk = load_risk_config(risk_config or REPO_RISK_CONFIG)
         except RiskConfigError as exc:
             return [f"risk_compatibility {KEEP_LIVE_FLOOR}: cannot load the risk config ({exc})"]
+    costs = cost_model or CostModel()  # the default every run uses (RunEnv.cost_model)
     sid = str(_get(doc, "strategy.strategy_id"))
     build = _builder(sid)
     market = Market(str(_get(doc, "universe.market")))
@@ -271,7 +277,7 @@ def live_floor_problems(
         try:
             strategy = build(sid, params)
             for symbol in _get(doc, "universe.symbols") or []:
-                a = assess(strategy, risk=risk, cost_model=CostModel(), market=market,
+                a = assess(strategy, risk=risk, cost_model=costs, market=market,
                            symbol=str(symbol))  # fmt: skip
                 if a.status != COMPATIBLE:
                     out.append(

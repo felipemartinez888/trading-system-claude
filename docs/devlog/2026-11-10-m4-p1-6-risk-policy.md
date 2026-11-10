@@ -21,7 +21,7 @@ access happened. D-E, ADR-0012 Amendment 6 and the H1 freeze stay the owner's.
 | F3 Halts invisible beyond the base book | FIXED. `halted_books` lists every halted book; the brief states that the control is filtered by the same portfolio rules |
 | F4 "Every confirmable trade passes" holds only at zero decision latency | Wording added to the brief and the draft |
 | F5 Sizing is bounded, not equal | Stated in the brief (both 0.005 today) |
-| F6 The floor check uses `CostModel()`, as `RunEnv` does by default | OPEN (minor). Agrees today; a non-default cost model would need the run's model passed to validate/freeze |
+| F6 The floor check uses `CostModel()`, as `RunEnv` does by default | FIXED on the run side. A walk-forward under a keep-the-floor preregistration re-checks every configuration with the run's own cost model and risk config before anything runs, and is refused without the live policy. Finding: scaling all costs leaves H1-style geometries unchanged, but take-profits filled as taker orders turn 2 R CONDITIONAL (1.4995); this is in the brief |
 | F7 `from_mapping(to_dict())` does not round-trip for live configs (the path is deliberately not in the dict) | OPEN (minor). No caller does this |
 | F8 Stale "Backtests use `allow_all`" text | FIXED in DECISIONS_PENDING and `live_compat.py` |
 | F9 metrics and roadmap not updated in those commits | FIXED in this commit |
