@@ -44,8 +44,8 @@ Last update: 2026-11-10 (overnight session).
 
 | ID | Task | Acceptance | State | Evidence | Owner dependency |
 |---|---|---|---|---|---|
-| H1-a | H1 strategy scaffolding (draft registry, finite 1h trend, time exit, diagnose, live geometry) | causality canary; no trial possible | ACTIVE (agent) | `task/m4-h1-prep` | — |
-| H1-b | Corrected H1-v2 preregistration draft (schema v1) | validates with only open owner decisions | ACTIVE (agent) | same | — |
+| H1-a | H1 strategy scaffolding (draft registry, finite 1h trend, time exit, diagnose, live geometry) | causality canary; no trial possible | IMPLEMENTED, TESTED (45 + 10 + 2); causality audit CONDITIONAL PASS, findings fixed | `0030114` `fec95ba` `ba69590` `78ed753` | promotion to REGISTRY: owner, with the freeze |
+| H1-b | Corrected H1-v2 preregistration draft (schema v1) | validates with only open owner decisions | VERIFIED as a draft: `prereg validate` ok, 24 configurations, open: D-C, D-D, D-E, DRAFT | `docs/research/H1-v2.preregistration.DRAFT.yaml` | every configuration is INCOMPATIBLE with the live floor 1.5 (**D-E**) |
 | H1-c | Owner feasibility count on real data (15m vs 1h) | counts per symbol/year | BLOCKED (owner PC) | MVP_USER_GUIDE §5 | owner runs it |
 | H1-d | H1 freeze | committed frozen file | BLOCKED | — | **D-C, D-E, D-F1**, owner freeze |
 | H1-e | First H1 walk-forward | `--prereg H1-v2 --datasets …` | BLOCKED | — | H1-d |

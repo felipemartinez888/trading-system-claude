@@ -28,7 +28,10 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | Map | `docs/MVP_SEMANTIC_MAP.md` (Sonnet agent, grep-verified symbols) | `f10daad` | — | written |
 | Queue | `docs/MVP_TASK_QUEUE.md` | `f1a604f` | — | written |
 | M6-1 | Evaluation export v1, 11 schemas, verifier, stdlib scorer, CLI | `2d7191c` `088f3a3` `e63743b` | `tests/unit/evaluation` 41 passed, 1 skipped (fastapi), plus the import guard 3 | IMPLEMENTED, TESTED locally; CI pending |
-| P0 | M3 acceptance request | this commit | — | written; **D-A is the owner's** |
+| P0 | M3 acceptance request | `a0e2d76` | — | written; **D-A is the owner's** |
+| Review | Fable review of P1 + M6: CHANGES REQUESTED (2 blocking: a selection record could unlock the holdout; free-text policy values) | fixes `afcd1a2` | prereg 37, evaluation 42 + 1 skipped, resume run-side 2 | fixed |
+| M5-1 | Agent layer, mock client, advise-only, budget, breaker, cache, mode off, status API | `78fdbd2`…`0605795` + review fixes | `tests/unit/agents` 148 passed | IMPLEMENTED, TESTED; Fable review CHANGES REQUESTED (budget not a hard cap) fixed; not wired into the runtime |
+| H1 | Draft H1 strategy (separate DRAFT_REGISTRY: no trial possible), `--draft` feasibility, H1-v2 draft | `0030114` `fec95ba` `ba69590` `a23d0db` | 45 + 10 + 2 | IMPLEMENTED, TESTED; causality audit CONDITIONAL PASS: the embargo was not checked against the holding period, fixed `78ed753` |
 
 ## M0–M6 status (no acceptance is claimed here)
 | Milestone | State |
@@ -37,12 +40,15 @@ Map: [MVP_SEMANTIC_MAP](MVP_SEMANTIC_MAP.md).
 | M2 | **ACCEPTED, limited scope** (D-22) |
 | M3 | Gate VERIFIED technically; formal acceptance open (D-A, [M3_ACCEPTANCE_REQUEST](M3_ACCEPTANCE_REQUEST.md)) |
 | M4 | Tooling IMPLEMENTED and TESTED; no preregistration frozen, no hypothesis implemented as runnable, no real-data research run |
-| M5 | ACTIVE (agent, mock client only); the real-key clause is BLOCKED (paid API, owner) |
+| M5 | Mock-testable part IMPLEMENTED and TESTED (148 passed, reviewed, fixed); runtime wiring, `agent_gated` book and Agent tab DEFERRED; the real-key clause BLOCKED (paid API, owner) |
 | M6 (export) | IMPLEMENTED, TESTED locally; CI pending; real-session export is an owner step |
 
 ## Research readiness
 **No validated strategy** (NO_VALIDATED_STRATEGY). The tooling can run a first preregistered H1
-walk-forward once D-C, D-E and D-F1 are decided and the owner freezes a revised H1.
+walk-forward once D-C, D-E and D-F1 are decided and the owner freezes a revised H1. New finding:
+**every one of the 24 H1-v2 configurations is incompatible with the live risk floor (net reward/risk
+1.5)**, as are all ADR-0012 geometries of the reference (regression tests in `test_live_compat.py` and
+the H1 tests), so D-E decides whether any H1 result could ever trade in the baseline book.
 
 ## Remaining owner decisions
 D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H ([DECISIONS_PENDING](DECISIONS_PENDING.md)).
