@@ -168,6 +168,17 @@ Known limits that do not block the run:
 - Paper has no spread history, so the cost-stress runs carry the spread risk.
 - The lock files are not committed (D-G).
 
+## 7a. Feasibility results (2026-11-10)
+
+Recorded in [H1_FEASIBILITY_FINDINGS](H1_FEASIBILITY_FINDINGS.md):
+- **15m is infeasible** under `n_min` 300. 167 candidates; every training window holds at most
+  109; 42.7 fall out of sample.
+- **1h is measured** and awaits the owner's review. 351 candidates and 146.1 out of sample;
+  thresholds T1 and T2 are not met.
+
+The probed configuration is the most permissive entry setting of the grid. Its count is
+therefore the ceiling for all 24 configurations at that interval.
+
 ## 8. Owner instructions
 
 The exact, tested steps are in [H1_FEASIBILITY_RUN](H1_FEASIBILITY_RUN.md): **NORMAL PowerShell**,

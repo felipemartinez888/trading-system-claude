@@ -1,0 +1,1447 @@
+{
+  "kind": "feasibility_count",
+  "version": "feasibility-v2",
+  "provenance": "BACKTEST",
+  "pnl_free": true,
+  "segment": "development",
+  "strategy": {
+    "strategy_id": "h1_compression_breakout",
+    "version": "0.1.0-draft",
+    "interval": "15m",
+    "params": {
+      "interval": "15m",
+      "atr_n": 14,
+      "rank_m": 96,
+      "rank_max": 0.35,
+      "range_n": 20,
+      "vol_n": 20,
+      "vol_z_min": 1.0,
+      "trend_n": 50,
+      "stop_atr": 1.5,
+      "tp_r": 1.0,
+      "max_cost_r": 0.2,
+      "watch_atr": 0.5,
+      "time_exit_bars": 48
+    },
+    "params_hash": "afd4364b13ac332738ff3f61aa8ce92c2feb68908eb7d72ef87dd2c1dffe43cd",
+    "warmup_bars": 206
+  },
+  "range": {
+    "from_ms": 1646092800000,
+    "to_ms": 1735689600000,
+    "from": "2022-03-01T00:00:00.000Z",
+    "to": "2025-01-01T00:00:00.000Z",
+    "read_from_ms": 1645902900000,
+    "warmup_ms": 189900000
+  },
+  "stages": [
+    "warmup_ready",
+    "features_defined",
+    "compressed",
+    "trend_1h",
+    "breakout",
+    "volume_ok",
+    "stop_valid",
+    "cost_ok"
+  ],
+  "counting": "cumulative in stage order: cumulative[k] counts decision bars passing stages 1..k; the last stage is an upper bound on entries (no overlap, validity or exit simulated)",
+  "planning_costs": {
+    "spot:BTCUSDT": {
+      "round_trip_frac": 0.0026,
+      "basis": "2x(taker 0.001 + slippage 0.0003) [costs-v0-vip0-unverified]"
+    },
+    "spot:DOGEUSDT": {
+      "round_trip_frac": 0.0026,
+      "basis": "2x(taker 0.001 + slippage 0.0003) [costs-v0-vip0-unverified]"
+    },
+    "spot:ETHUSDT": {
+      "round_trip_frac": 0.0026,
+      "basis": "2x(taker 0.001 + slippage 0.0003) [costs-v0-vip0-unverified]"
+    },
+    "spot:XRPUSDT": {
+      "round_trip_frac": 0.0026,
+      "basis": "2x(taker 0.001 + slippage 0.0003) [costs-v0-vip0-unverified]"
+    }
+  },
+  "symbols": {
+    "spot:BTCUSDT": {
+      "years": {
+        "2022": {
+          "decision_bars": 29376,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 29376
+            },
+            {
+              "stage": "features_defined",
+              "bars": 29376
+            },
+            {
+              "stage": "compressed",
+              "bars": 11481
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 5251
+            },
+            {
+              "stage": "breakout",
+              "bars": 223
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 177
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 177
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 8
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        },
+        "2023": {
+          "decision_bars": 35034,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 34829
+            },
+            {
+              "stage": "features_defined",
+              "bars": 34829
+            },
+            {
+              "stage": "compressed",
+              "bars": 13198
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 6842
+            },
+            {
+              "stage": "breakout",
+              "bars": 382
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 270
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 270
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 0
+            }
+          ],
+          "missing_minutes": 81,
+          "history_resets": 1
+        },
+        "2024": {
+          "decision_bars": 35136,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 35136
+            },
+            {
+              "stage": "features_defined",
+              "bars": 35136
+            },
+            {
+              "stage": "compressed",
+              "bars": 13053
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 7494
+            },
+            {
+              "stage": "breakout",
+              "bars": 497
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 353
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 353
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 0
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        }
+      },
+      "total": {
+        "decision_bars": 99546,
+        "cumulative": [
+          {
+            "stage": "warmup_ready",
+            "bars": 99341
+          },
+          {
+            "stage": "features_defined",
+            "bars": 99341
+          },
+          {
+            "stage": "compressed",
+            "bars": 37732
+          },
+          {
+            "stage": "trend_1h",
+            "bars": 19587
+          },
+          {
+            "stage": "breakout",
+            "bars": 1102
+          },
+          {
+            "stage": "volume_ok",
+            "bars": 800
+          },
+          {
+            "stage": "stop_valid",
+            "bars": 800
+          },
+          {
+            "stage": "cost_ok",
+            "bars": 8
+          }
+        ],
+        "missing_minutes": 81,
+        "history_resets": 1
+      },
+      "warmup": {
+        "missing_minutes": 0,
+        "history_resets": 0
+      },
+      "conflicts": 0,
+      "bars_1m": 1496364,
+      "by_utc_hour": {
+        "decision_bars": [
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4146,
+          4144,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148
+        ],
+        "candidates": [
+          0,
+          0,
+          0,
+          1,
+          0,
+          1,
+          0,
+          0,
+          3,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "busiest_hours_candidate_share": 1.0
+      }
+    },
+    "spot:ETHUSDT": {
+      "years": {
+        "2022": {
+          "decision_bars": 29376,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 29376
+            },
+            {
+              "stage": "features_defined",
+              "bars": 29376
+            },
+            {
+              "stage": "compressed",
+              "bars": 11318
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 5718
+            },
+            {
+              "stage": "breakout",
+              "bars": 267
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 211
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 211
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 12
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        },
+        "2023": {
+          "decision_bars": 35034,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 34829
+            },
+            {
+              "stage": "features_defined",
+              "bars": 34829
+            },
+            {
+              "stage": "compressed",
+              "bars": 12815
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 6709
+            },
+            {
+              "stage": "breakout",
+              "bars": 349
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 226
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 226
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 0
+            }
+          ],
+          "missing_minutes": 81,
+          "history_resets": 1
+        },
+        "2024": {
+          "decision_bars": 35136,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 35136
+            },
+            {
+              "stage": "features_defined",
+              "bars": 35136
+            },
+            {
+              "stage": "compressed",
+              "bars": 13109
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 7163
+            },
+            {
+              "stage": "breakout",
+              "bars": 453
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 294
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 294
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 1
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        }
+      },
+      "total": {
+        "decision_bars": 99546,
+        "cumulative": [
+          {
+            "stage": "warmup_ready",
+            "bars": 99341
+          },
+          {
+            "stage": "features_defined",
+            "bars": 99341
+          },
+          {
+            "stage": "compressed",
+            "bars": 37242
+          },
+          {
+            "stage": "trend_1h",
+            "bars": 19590
+          },
+          {
+            "stage": "breakout",
+            "bars": 1069
+          },
+          {
+            "stage": "volume_ok",
+            "bars": 731
+          },
+          {
+            "stage": "stop_valid",
+            "bars": 731
+          },
+          {
+            "stage": "cost_ok",
+            "bars": 13
+          }
+        ],
+        "missing_minutes": 81,
+        "history_resets": 1
+      },
+      "warmup": {
+        "missing_minutes": 0,
+        "history_resets": 0
+      },
+      "conflicts": 0,
+      "bars_1m": 1496364,
+      "by_utc_hour": {
+        "decision_bars": [
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4146,
+          4144,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148
+        ],
+        "candidates": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0,
+          2,
+          1,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        "busiest_hours_candidate_share": 0.6923076923076923
+      }
+    },
+    "spot:DOGEUSDT": {
+      "years": {
+        "2022": {
+          "decision_bars": 29376,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 29376
+            },
+            {
+              "stage": "features_defined",
+              "bars": 29376
+            },
+            {
+              "stage": "compressed",
+              "bars": 11682
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 4919
+            },
+            {
+              "stage": "breakout",
+              "bars": 254
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 178
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 178
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 38
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        },
+        "2023": {
+          "decision_bars": 35034,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 34829
+            },
+            {
+              "stage": "features_defined",
+              "bars": 34829
+            },
+            {
+              "stage": "compressed",
+              "bars": 13198
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 6513
+            },
+            {
+              "stage": "breakout",
+              "bars": 404
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 221
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 221
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 8
+            }
+          ],
+          "missing_minutes": 81,
+          "history_resets": 1
+        },
+        "2024": {
+          "decision_bars": 35136,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 35136
+            },
+            {
+              "stage": "features_defined",
+              "bars": 35136
+            },
+            {
+              "stage": "compressed",
+              "bars": 13260
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 6448
+            },
+            {
+              "stage": "breakout",
+              "bars": 438
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 265
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 265
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 48
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        }
+      },
+      "total": {
+        "decision_bars": 99546,
+        "cumulative": [
+          {
+            "stage": "warmup_ready",
+            "bars": 99341
+          },
+          {
+            "stage": "features_defined",
+            "bars": 99341
+          },
+          {
+            "stage": "compressed",
+            "bars": 38140
+          },
+          {
+            "stage": "trend_1h",
+            "bars": 17880
+          },
+          {
+            "stage": "breakout",
+            "bars": 1096
+          },
+          {
+            "stage": "volume_ok",
+            "bars": 664
+          },
+          {
+            "stage": "stop_valid",
+            "bars": 664
+          },
+          {
+            "stage": "cost_ok",
+            "bars": 94
+          }
+        ],
+        "missing_minutes": 81,
+        "history_resets": 1
+      },
+      "warmup": {
+        "missing_minutes": 0,
+        "history_resets": 0
+      },
+      "conflicts": 0,
+      "bars_1m": 1496364,
+      "by_utc_hour": {
+        "decision_bars": [
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4146,
+          4144,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148
+        ],
+        "candidates": [
+          5,
+          8,
+          0,
+          4,
+          5,
+          8,
+          7,
+          3,
+          6,
+          3,
+          4,
+          3,
+          3,
+          6,
+          7,
+          4,
+          3,
+          0,
+          3,
+          3,
+          1,
+          1,
+          3,
+          4
+        ],
+        "busiest_hours_candidate_share": 0.44680851063829785
+      }
+    },
+    "spot:XRPUSDT": {
+      "years": {
+        "2022": {
+          "decision_bars": 29376,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 29376
+            },
+            {
+              "stage": "features_defined",
+              "bars": 29376
+            },
+            {
+              "stage": "compressed",
+              "bars": 11340
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 5355
+            },
+            {
+              "stage": "breakout",
+              "bars": 355
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 195
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 195
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 10
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        },
+        "2023": {
+          "decision_bars": 35034,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 34829
+            },
+            {
+              "stage": "features_defined",
+              "bars": 34829
+            },
+            {
+              "stage": "compressed",
+              "bars": 13317
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 6317
+            },
+            {
+              "stage": "breakout",
+              "bars": 410
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 200
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 200
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 6
+            }
+          ],
+          "missing_minutes": 81,
+          "history_resets": 1
+        },
+        "2024": {
+          "decision_bars": 35136,
+          "cumulative": [
+            {
+              "stage": "warmup_ready",
+              "bars": 35136
+            },
+            {
+              "stage": "features_defined",
+              "bars": 35136
+            },
+            {
+              "stage": "compressed",
+              "bars": 13431
+            },
+            {
+              "stage": "trend_1h",
+              "bars": 6901
+            },
+            {
+              "stage": "breakout",
+              "bars": 429
+            },
+            {
+              "stage": "volume_ok",
+              "bars": 236
+            },
+            {
+              "stage": "stop_valid",
+              "bars": 236
+            },
+            {
+              "stage": "cost_ok",
+              "bars": 36
+            }
+          ],
+          "missing_minutes": 0,
+          "history_resets": 0
+        }
+      },
+      "total": {
+        "decision_bars": 99546,
+        "cumulative": [
+          {
+            "stage": "warmup_ready",
+            "bars": 99341
+          },
+          {
+            "stage": "features_defined",
+            "bars": 99341
+          },
+          {
+            "stage": "compressed",
+            "bars": 38088
+          },
+          {
+            "stage": "trend_1h",
+            "bars": 18573
+          },
+          {
+            "stage": "breakout",
+            "bars": 1194
+          },
+          {
+            "stage": "volume_ok",
+            "bars": 631
+          },
+          {
+            "stage": "stop_valid",
+            "bars": 631
+          },
+          {
+            "stage": "cost_ok",
+            "bars": 52
+          }
+        ],
+        "missing_minutes": 81,
+        "history_resets": 1
+      },
+      "warmup": {
+        "missing_minutes": 0,
+        "history_resets": 0
+      },
+      "conflicts": 0,
+      "bars_1m": 1496364,
+      "by_utc_hour": {
+        "decision_bars": [
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4146,
+          4144,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148,
+          4148
+        ],
+        "candidates": [
+          5,
+          3,
+          2,
+          1,
+          2,
+          2,
+          1,
+          0,
+          2,
+          1,
+          3,
+          6,
+          3,
+          3,
+          0,
+          3,
+          0,
+          3,
+          1,
+          0,
+          4,
+          5,
+          2,
+          0
+        ],
+        "busiest_hours_candidate_share": 0.5
+      }
+    }
+  },
+  "diagnostics": {
+    "decision_bars": 398184,
+    "stage_filter": [
+      {
+        "stage": "warmup_ready",
+        "structural": true,
+        "cumulative": 397364,
+        "pass_rate_from_previous": 0.997940650553513,
+        "marginal": 43119,
+        "leave_one_out": 167
+      },
+      {
+        "stage": "features_defined",
+        "structural": true,
+        "cumulative": 397364,
+        "pass_rate_from_previous": 1.0,
+        "marginal": 43119,
+        "leave_one_out": 167
+      },
+      {
+        "stage": "compressed",
+        "structural": false,
+        "cumulative": 151202,
+        "pass_rate_from_previous": 0.3805125778882838,
+        "marginal": 6780,
+        "leave_one_out": 938
+      },
+      {
+        "stage": "trend_1h",
+        "structural": false,
+        "cumulative": 75630,
+        "pass_rate_from_previous": 0.5001917964048095,
+        "marginal": 21797,
+        "leave_one_out": 255
+      },
+      {
+        "stage": "breakout",
+        "structural": false,
+        "cumulative": 4461,
+        "pass_rate_from_previous": 0.05898452994843316,
+        "marginal": 1772,
+        "leave_one_out": 611
+      },
+      {
+        "stage": "volume_ok",
+        "structural": false,
+        "cumulative": 2826,
+        "pass_rate_from_previous": 0.6334902488231339,
+        "marginal": 6185,
+        "leave_one_out": 217
+      },
+      {
+        "stage": "stop_valid",
+        "structural": true,
+        "cumulative": 2826,
+        "pass_rate_from_previous": 1.0,
+        "marginal": 43119,
+        "leave_one_out": 167
+      },
+      {
+        "stage": "cost_ok",
+        "structural": true,
+        "cumulative": 167,
+        "pass_rate_from_previous": 0.05909412597310686,
+        "marginal": 43119,
+        "leave_one_out": 2826
+      }
+    ],
+    "by_utc_hour": {
+      "decision_bars": [
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16584,
+        16576,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592,
+        16592
+      ],
+      "cumulative": {
+        "warmup_ready": [
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16552,
+          16544,
+          16544,
+          16544,
+          16544,
+          16556,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560
+        ],
+        "features_defined": [
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16552,
+          16544,
+          16544,
+          16544,
+          16544,
+          16556,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560,
+          16560
+        ],
+        "compressed": [
+          6760,
+          5704,
+          5280,
+          5735,
+          7868,
+          9853,
+          10695,
+          10342,
+          9432,
+          8827,
+          8593,
+          8694,
+          8429,
+          6349,
+          3526,
+          1930,
+          1584,
+          1756,
+          2658,
+          3659,
+          4853,
+          5766,
+          6253,
+          6656
+        ],
+        "trend_1h": [
+          3425,
+          2776,
+          2588,
+          2807,
+          3911,
+          4917,
+          5206,
+          5098,
+          4701,
+          4497,
+          4450,
+          4452,
+          4280,
+          3141,
+          1720,
+          957,
+          781,
+          819,
+          1262,
+          1812,
+          2480,
+          2971,
+          3210,
+          3369
+        ],
+        "breakout": [
+          202,
+          211,
+          155,
+          119,
+          160,
+          248,
+          295,
+          308,
+          272,
+          242,
+          243,
+          213,
+          282,
+          203,
+          120,
+          69,
+          41,
+          62,
+          114,
+          148,
+          183,
+          190,
+          220,
+          161
+        ],
+        "volume_ok": [
+          154,
+          148,
+          102,
+          71,
+          89,
+          139,
+          195,
+          210,
+          181,
+          161,
+          160,
+          144,
+          194,
+          166,
+          90,
+          56,
+          27,
+          36,
+          56,
+          57,
+          102,
+          88,
+          114,
+          86
+        ],
+        "stop_valid": [
+          154,
+          148,
+          102,
+          71,
+          89,
+          139,
+          195,
+          210,
+          181,
+          161,
+          160,
+          144,
+          194,
+          166,
+          90,
+          56,
+          27,
+          36,
+          56,
+          57,
+          102,
+          88,
+          114,
+          86
+        ],
+        "cost_ok": [
+          10,
+          12,
+          2,
+          6,
+          7,
+          12,
+          9,
+          4,
+          12,
+          5,
+          9,
+          10,
+          6,
+          12,
+          7,
+          7,
+          3,
+          3,
+          6,
+          3,
+          6,
+          6,
+          5,
+          5
+        ]
+      },
+      "busiest_hours": 6,
+      "busiest_hours_candidate_share": 0.40718562874251496,
+      "busiest_hours_decision_share": 0.2500150684105841
+    },
+    "candidates_by_utc_month": {
+      "2022-03": 1,
+      "2022-04": 1,
+      "2022-05": 6,
+      "2022-06": 21,
+      "2022-07": 3,
+      "2022-08": 1,
+      "2022-09": 8,
+      "2022-10": 13,
+      "2022-11": 14,
+      "2023-01": 2,
+      "2023-03": 4,
+      "2023-04": 2,
+      "2023-07": 2,
+      "2023-11": 4,
+      "2024-02": 1,
+      "2024-03": 23,
+      "2024-04": 2,
+      "2024-05": 1,
+      "2024-08": 4,
+      "2024-11": 45,
+      "2024-12": 9
+    },
+    "structural_stages": [
+      "warmup_ready",
+      "features_defined",
+      "stop_valid",
+      "cost_ok"
+    ],
+    "notes": "P&L-free counts from the stage flags; marginal = structural stages and that stage pass; leave_one_out = every stage except that one passes. A stage whose failure makes the strategy mark every later stage False (H1: warmup_ready, features_defined, stop_valid) has leave_one_out equal to the candidate count, which carries no information. by_utc_hour.cumulative is per stage in stage order; ablation_ladder[].by_utc_hour is per rung. Not used by selection or certification",
+    "ablation_ladder": [
+      {
+        "rung": "trend",
+        "conditions": [
+          "trend_1h"
+        ],
+        "candidates": 21797,
+        "by_utc_hour": [
+          914,
+          962,
+          971,
+          954,
+          748,
+          638,
+          616,
+          612,
+          679,
+          698,
+          680,
+          718,
+          727,
+          863,
+          1107,
+          1328,
+          1421,
+          1312,
+          1172,
+          1043,
+          983,
+          928,
+          863,
+          860
+        ],
+        "busiest_hours_share": 0.33871633711061155
+      },
+      {
+        "rung": "trend+breakout",
+        "conditions": [
+          "trend_1h",
+          "breakout"
+        ],
+        "candidates": 1247,
+        "by_utc_hour": [
+          71,
+          65,
+          54,
+          40,
+          35,
+          45,
+          34,
+          31,
+          53,
+          33,
+          39,
+          42,
+          33,
+          47,
+          65,
+          81,
+          79,
+          46,
+          67,
+          64,
+          72,
+          56,
+          49,
+          46
+        ],
+        "busiest_hours_share": 0.3488372093023256
+      },
+      {
+        "rung": "trend+breakout+compression",
+        "conditions": [
+          "trend_1h",
+          "breakout",
+          "compressed"
+        ],
+        "candidates": 217,
+        "by_utc_hour": [
+          11,
+          15,
+          3,
+          6,
+          8,
+          17,
+          13,
+          5,
+          15,
+          7,
+          10,
+          14,
+          8,
+          12,
+          7,
+          8,
+          3,
+          3,
+          8,
+          4,
+          13,
+          11,
+          10,
+          6
+        ],
+        "busiest_hours_share": 0.4009216589861751
+      },
+      {
+        "rung": "trend+breakout+compression+volume",
+        "conditions": [
+          "trend_1h",
+          "breakout",
+          "compressed",
+          "volume_ok"
+        ],
+        "candidates": 167,
+        "by_utc_hour": [
+          10,
+          12,
+          2,
+          6,
+          7,
+          12,
+          9,
+          4,
+          12,
+          5,
+          9,
+          10,
+          6,
+          12,
+          7,
+          7,
+          3,
+          3,
+          6,
+          3,
+          6,
+          6,
+          5,
+          5
+        ],
+        "busiest_hours_share": 0.40718562874251496
+      }
+    ]
+  },
+  "dataset_ids": [
+    "2db404494c6d66e8d3c70f745504d828f39be3e9ff4af03bbae184a23509ccd1",
+    "629c732853c8ba90fbb3bc2f083f46f490bc29fe202dc72f4491ccd0f6c9f9f5",
+    "c600474e924b9df9823221dc837d3704c96a0e62cfed01f5bf3e34fc73d11889",
+    "cf1f67e941c0eb8b7ec7e99b11608667ff650fcf1982eff101963030a1159acc",
+    "e4be62f28725c5aaa896b7569744f3e6531fe41a465b6f89fecd72edfc637e3c"
+  ],
+  "content_hash": "7b59bd4cee566c833cdd0ec12f3390ee5df4b6465f1e87a768ece71592b0558d",
+  "config_id": "44136fa355b3",
+  "draft": true,
+  "backtest_config_hash": "1b67ca1a8d29a4d1efe23d9791f5ae08b8ed1f7aeb79ebabdb2a14a0b89d9eb7"
+}

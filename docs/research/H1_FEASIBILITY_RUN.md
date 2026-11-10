@@ -1,7 +1,13 @@
 # H1-1 feasibility run on the owner PC: exact steps
 
 **What this is:** the P&L-free count that chooses H1's decision interval (15m or 1h) and gives the
-power plan its candidate numbers. Development segment only (2022-03-01 → 2025-01-01).
+power plan its candidate numbers. Development segment only (2022-02-01 → 2025-01-01: from the
+planned anchor, so every training window is counted. Counts made before this change started on
+2022-03-01; see [H1_FEASIBILITY_FINDINGS](H1_FEASIBILITY_FINDINGS.md) §6).
+
+**Results so far:** the 15m and 1h counts at `0955749` are recorded in
+[H1_FEASIBILITY_FINDINGS](H1_FEASIBILITY_FINDINGS.md). This sheet stays the procedure for any
+further count.
 
 **What it does not do:**
 - no backtest, no trial registry row, no outcome field, no holdout read;
@@ -62,7 +68,7 @@ unlocks; it appends no event.
 ## 3. Count both intervals (one run)
 
 ```powershell
-uv run tsclaude backtest feasibility --draft --strategy h1_compression_breakout --grid docs\research\grids\feasibility_h1_draft_probe.json --symbols 'spot:BTCUSDT,spot:ETHUSDT,spot:DOGEUSDT,spot:XRPUSDT' --from 2022-03-01 --to 2025-01-01 | Out-File -Encoding utf8 "$ev\feasibility_summary.json"
+uv run tsclaude backtest feasibility --draft --strategy h1_compression_breakout --grid docs\research\grids\feasibility_h1_draft_probe.json --symbols 'spot:BTCUSDT,spot:ETHUSDT,spot:DOGEUSDT,spot:XRPUSDT' --from 2022-02-01 --to 2025-01-01 | Out-File -Encoding utf8 "$ev\feasibility_summary.json"
 $summary = Get-Content "$ev\feasibility_summary.json" -Raw | ConvertFrom-Json
 $summary.ok
 foreach ($r in $summary.results) { $interval = (Get-Content $r.path -Raw | ConvertFrom-Json).strategy.interval; Copy-Item $r.path "$ev\feasibility_$interval.json" }
@@ -71,7 +77,7 @@ Get-ChildItem $ev | Select-Object Name, Length
 
 Expected: `True`, then `feasibility_15m.json` and `feasibility_1h.json` in the folder. If it
 prints `False`, send `feasibility_summary.json`, which holds the reason. The run time on the full
-lake has not been measured: it reads 34 months of 1m bars for 4 symbols, once per interval.
+lake has not been measured. It reads 35 months of 1m bars for 4 symbols, once per interval.
 
 ## 4. Dataset identity
 
