@@ -8,16 +8,18 @@
   - The walk-forward driver exists and is tested on synthetic data only.
   - Real data must be run on the owner PC (the lake lives there).
   - The expected outcome of the first real runs is `NO_EDGE_DEMONSTRATED`, and that is a valid result.
-- **The walk-forward tool is not safe on real data yet** ([MVP_CLOSURE_HANDOFF](MVP_CLOSURE_HANDOFF.md) §4): it uses runs graded X, and its default start (2022-01-01) leaves no warm-up, which makes every training run grade X. Fix both before any real-data walk-forward.
+- **The walk-forward tool's two real-data blockers are fixed (WF-1, WF-2), on synthetic tests and CI only.** Runs graded X are never used, a failed test run voids the verdict, and the anchor must leave the warm-up inside gap-free data. It is now resumable (verified reuse), caches the max-loss measurement, pins datasets and checks validity from the runs' manifests. **No real-data walk-forward has run yet**, and research-policy decisions (D-C, D-E, D-F1) are open.
+- **Out-of-sample coverage.** With anchored train windows and zero gap tolerance, one data gap in a train window removes every later fold. The default coverage floor then reports `INSUFFICIENT_OOS_EVIDENCE`, so a symbol with a permanent source gap (SOLUSDT, 2023-02-14) needs an owner decision (D-F1).
+- **The max-loss bound (L-10) is measured on the whole development segment,** test windows included. It feeds only the expectancy bound and grade D, never selection: conservative, not causal.
 - **Backtests apply no risk gate** (`allow_all`), while the live baseline book requires net reward/risk ≥ 1.5. Research can validate trades that live would reject (handoff §6, I-1).
-- **Trial accounting is conservative.** The registry counts every (configuration, window) evaluated, so walk-forward certifications use a larger trial count than the grid size.
+- **Trial accounting is conservative.** The registry counts every (configuration, window) evaluated, so walk-forward certifications use a larger trial count than the grid size. What counts toward a budget is owner decision D-C (open).
 - **Data scope** follows the M2 limited acceptance (D-22):
   - Spot 1m for 5 symbols, 2022–2025;
   - USD-M history and funding not imported;
   - Top-10 coverage incomplete;
   - B01–B12 deferred (D-15).
 - **Costs** are the configured VIP0 model with fixed slippage; spreads before live capture are modeled, not observed.
-- **Trial registry run ids** do not match run directories (pre-existing, `research/runner.py:903` vs `:1020`). Counting is unaffected; the fix is in MVP_VALIDATION_REPORT §9.
+- **Trial registry run ids** now name the run directory for new runs (`attach_run`, 2026-11-10). Rows recorded earlier, such as the owner's 2026-11-09 backtest, keep their old provisional id; counting was never affected.
 - **The reference strategy traded 0 times** in real-data BTC 2024-Q1 with default parameters. It is a pipeline reference, not a research subject.
 
 ## Paper runtime and recovery

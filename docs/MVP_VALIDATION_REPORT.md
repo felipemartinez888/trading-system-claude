@@ -209,3 +209,20 @@ acceptance or formal (Target C) MVP acceptance.
   grade-X runs and its default start has no warm-up (both reproduced on a synthetic lake), and the
   H1-v1 draft is not ready to freeze.
 - The status in §10 is unchanged.
+
+## 12. Track A closure and M4 infrastructure (2026-11-10)
+Details: [devlog](devlog/2026-11-10-track-a-and-m4-walkforward-infrastructure.md).
+
+| Item | Evidence | State |
+|---|---|---|
+| A1 WF-1, A2 WF-2, A3 trial run ids, A4 README/link, A5 D-A/D-B | Commits `67bb18e`, `6f9ee18`, `04307f5`. **CI `42766333677` 7/7 green** (python ubuntu **1902 passed**, windows **1900 passed**; frontend, M2 cross-OS and safety guards green) | ✅ done in code; D-A and D-B are open proposals |
+| A7 reviews | Independent reviewer (Fable): APPROVE WITH NOTES, 0 blocking. Causality auditor: CONDITIONAL PASS, 0 blocking, 1 major (coverage) | ✅ every finding fixed or recorded (devlog table) |
+| M4 infrastructure | Max-loss cache, resumable walk-forward, pins, `--prereg`, validity checks, budget projection, coverage floor, final selection pending governance, feasibility count; local tests in the devlog; CI on the later commits: see §12.1 | ✅ code and synthetic tests; **no real-data run** |
+| A6 owner dashboard smoke check | `scripts/owner_checks/dashboard_smoke.ps1` (MVP_USER_GUIDE §1) | ⏳ owner |
+
+**Status unchanged: MVP FUNCTIONAL — VALIDATION INCOMPLETE.** Kept apart: the engineering MVP
+(functional; validation incomplete), M3 formal acceptance (open, D-A), quantitative research readiness
+(tooling ready for a first run once D-C, D-E, D-F1 and the H1 freeze are done; no research run yet),
+strategy effectiveness (none demonstrated), live trading (none; not planned before a separate owner
+decision).
+

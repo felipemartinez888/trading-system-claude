@@ -39,6 +39,14 @@ both halves (three real sessions replayed identically on Linux; fault-injection 
 `42761802261`); **formal acceptance is still the owner's and is not given here**. The walk-forward driver must not be used on real data before
 the two fixes in the handoff §4; the H1-v1 draft is not ready to freeze (§5). No gate changed.
 
+**Track A closed in code, M4 infrastructure (2026-11-10):** WF-1 and WF-2 fixed, trial-registry run ids, README,
+proposals D-A/D-B (open); independent review APPROVE WITH NOTES and causality audit CONDITIONAL PASS, findings fixed; CI
+`42766333677` 7/7 on `04307f5` (later commits: see the devlog). M4 tooling with no policy decision: verified max-loss cache,
+resumable walk-forward, dataset pins, `--prereg`, validity checks, trial-budget projection, coverage floor, final selection
+pending governance, P&L-free feasibility count. Synthetic tests only; **no real-data walk-forward, no H1 run**; M4 not
+started formally. Open owner decisions: D-A, D-B, D-C, D-D, D-E, D-F1, D-F2, D-G, D-H
+([DECISIONS_PENDING](DECISIONS_PENDING.md)). Evidence: [devlog](devlog/2026-11-10-track-a-and-m4-walkforward-infrastructure.md).
+
 ### Shortest-safe-path MVP track (owner direction, 2026-10-27; local branches, not pushed)
 A demonstrable local Windows app, strictly paper-only, built in small approved steps. Every step is **MVP
 readiness only**: none of these items is M1–M4 acceptance, and none is evidence of strategy performance.

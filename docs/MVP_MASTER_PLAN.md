@@ -76,15 +76,16 @@ Companion documents:
 | F3 | F | Final independent acceptance review | **Fable** subagent | ✅ APPROVE WITH NOTES; findings fixed | MVP_VALIDATION_REPORT §8 |
 | F4 | F | Native crash (0xC0000005) when recovering the PC-restart session on Windows | Owner retry with faulthandler + Opus | ✅ not reproduced (non-deterministic); recovery PASS on retry (3,498 batches, identical hashes) | MVP_VALIDATION_REPORT §7 |
 | F5 | F | Real-data reference backtest run twice (reproducibility) | Owner (step 4 of the script) | ✅ identical metrics hashes (0 trades); found a pre-existing trial-registry run-id defect | MVP_VALIDATION_REPORT §9 |
+| T-A | Closure | Track A of the closure handoff: WF-1, WF-2, trial run ids, README/link, D-A/D-B proposals, independent + causality review | Opus (lead), Fable reviewer, causality auditor | ✅ CI `42766333677` 7/7; review findings fixed | MVP_VALIDATION_REPORT §12 |
+| M4-I | M4 prep | Walk-forward infrastructure needing no policy decision (cache, resume, pins, prereg, validity, budget, coverage floor, final selection pending governance, feasibility count) | Opus (lead) + quant-engineer agent (feasibility) | ✅ synthetic tests; no real-data run | devlog 2026-11-10 |
 
-**Next engineering actions**, in order:
-1. Owner review: merge `task/mvp-integration`; the H1-v1 preregistration draft; formal decision on the M3 literal gates.
-2. Fix the trial-registry run-id traceability defect (MVP_VALIDATION_REPORT §9).
-3. Implement H1 after the freeze, then the first real-data walk-forward.
-4. A longer supervised paper session, to give the strategy books a chance to trade.
-4. Next research step: H1 (compression → expansion breakout) preregistration and strategy, then the first real-data walk-forward.
-   - Owner-run, minutes to hours.
-   - The expected and reportable outcome is `NO_EDGE_DEMONSTRATED`.
+**Next actions (2026-11-10)**, in order:
+1. Owner, on the PC (NORMAL PowerShell, MVP_USER_GUIDE §1 and §5): the dashboard smoke check (A6); the P&L-free
+   feasibility count on development data (H1-1); the `bracket_reference` mechanics dry run (handoff B2).
+2. Owner decisions D-C, D-E, D-F1 (D-G recommended); D-A, D-B and D-H independently ([DECISIONS_PENDING](DECISIONS_PENDING.md)).
+3. Revise H1 (handoff §5, H1-1 to H1-12) from the feasibility count; implement it with causality canaries; owner
+   review and freeze; then the first H1 walk-forward with `--prereg` and `--datasets`. The expected and reportable
+   outcome is `NO_EDGE_DEMONSTRATED`.
 
 ## 5. Decisions and findings that need the owner
 - **Clock.**

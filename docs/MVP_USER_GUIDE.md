@@ -21,6 +21,21 @@ pnpm --dir frontend install; pnpm --dir frontend build      # the dashboard bund
 ```
 An existing checkout keeps its old dashboard bundle until you run `pnpm --dir frontend build` again.
 
+### Dashboard smoke check (5 minutes, NORMAL PowerShell)
+Rebuilds the dashboard from this checkout, starts the app on an empty, separate data folder (your real
+data is not touched, and nothing connects to Binance unless you press Start), checks the research and
+paper status APIs and opens the dashboard. Look at the Backtests page ("No validated strategy" panel)
+and the Paper page, then press Quit in the dashboard.
+```powershell
+cd C:\Users\felip\Projects\trading-system-claude
+git fetch origin task/mvp-integration
+if (Test-Path ..\tsc-mvp) { git -C ..\tsc-mvp checkout --detach origin/task/mvp-integration } else { git worktree add --detach ..\tsc-mvp origin/task/mvp-integration }
+cd ..\tsc-mvp
+powershell -ExecutionPolicy Bypass -File scripts\owner_checks\dashboard_smoke.ps1
+```
+Result: `C:\Users\felip\tsc_runs\smoke-<stamp>\summary.json`. The Paper page's "What to do" hint appears
+only when paper is blocked or waiting (paper is off in this check); its rendering is covered by tests.
+
 ## 2. Before every paper session: the clock
 The paper runtime refuses to observe live bars when your PC clock is more than 1 s off Binance.
 It fails closed: bars are processed unobserved, and no entry is created or filled.
@@ -72,16 +87,23 @@ Options: `-SkipRecovery -SkipPaper -SkipBacktest -PaperHours 0.5`.
   uv run tsclaude backtest list
   ```
 - **Walk-forward on the development segment.**
-  - Selection uses train windows only; only the winner runs on each test window.
+  - Selection uses train windows only; only the winner runs on each test window. Runs graded X are never used.
   - `--grid` is a JSON list of parameter objects.
-  - The run is refused outside 2022-01-01 → 2025-01-01, and above `--max-configs`.
+  - Without `--from`, the anchor is the first month start whose warm-up is inside your data; an earlier `--from` is refused.
+  - Refused before anything runs: outside 2022-01-01 → 2025-01-01, above `--max-configs` (configurations) or `--max-new-trials` (registry trials), unknown `--datasets` ids, an uncommitted `--prereg`.
   ```powershell
   uv run tsclaude backtest walkforward --strategy bracket_reference --grid grid.json `
     --symbols spot:BTCUSDT --hypothesis WF-EXAMPLE --initial-train-months 12 --test-months 3
   ```
-  - **Verdicts:** `NO_EDGE_DEMONSTRATED`, `INSUFFICIENT_OOS_EVIDENCE`, `OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY`.
-  - None of them is "validated": validation (2025) and the sealed holdout come after, once, preregistered.
-  - The report is written to `data\walkforward\wf-<ms>\walkforward.json`.
+  - **If the PC restarts, run the same command again.** It resumes: completed runs are verified and reused, nothing is counted twice. A record that does not verify stops it (exit 6) rather than being trusted. `--no-resume` starts over in a new folder. Resume needs a clean checkout (no uncommitted changes).
+  - **Verdicts:** `NO_EDGE_DEMONSTRATED`, `INSUFFICIENT_OOS_EVIDENCE` (also when less than `--min-oos-coverage` of the planned test period was tested; default all of it), `INVALID_OOS_EVIDENCE` (a test run failed integrity), `OOS_MARGIN_CERTIFIED_DEVELOPMENT_ONLY`.
+  - None of them is "validated": validation (2025) and the sealed holdout come after, once, preregistered. `--final-selection` only proposes a candidate marked PENDING GOVERNANCE.
+  - The report and progress are in `data\walkforward\<plan id>\` (`walkforward.json`, `progress.jsonl`).
+- **Feasibility count (no P&L).** Counts, per symbol and year, the decision bars that pass each entry stage of a strategy, before any outcome exists. Development segment only; it records no trial.
+  ```powershell
+  uv run tsclaude backtest feasibility --strategy bracket_reference --symbols spot:BTCUSDT,spot:ETHUSDT `
+    --from 2022-02-01 --to 2025-01-01
+  ```
 - **Replay a recorded paper session** (read-only; it copies the store):
   ```powershell
   uv run tsclaude verify-replay --data-dir <run>\data --config-dir <run>\configs
