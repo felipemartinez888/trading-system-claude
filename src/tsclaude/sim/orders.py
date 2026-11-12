@@ -179,8 +179,19 @@ class EntryRequest:
         time_exit_bars: int | None = None,
         books: tuple[str, ...] | None = None,
     ) -> EntryRequest:
-        """Translate a contract `SignalRecord` (floats) into an exact request (Decimals)."""
+        """Translate a contract `SignalRecord` (floats) into an exact request (Decimals).
+
+        The time exit comes from the record (`SignalRecord.time_exit_bars`); an explicit
+        argument is the backtest call style and must agree with the record when both are set.
+        """
         rule = record.entry_rule
+        if time_exit_bars is None:
+            time_exit_bars = record.time_exit_bars
+        elif record.time_exit_bars is not None and record.time_exit_bars != time_exit_bars:
+            raise ValueError(
+                f"time_exit_bars {time_exit_bars} conflicts with the record's "
+                f"{record.time_exit_bars}"
+            )
         return cls(
             request_id=record.signal_id,
             market=record.market,

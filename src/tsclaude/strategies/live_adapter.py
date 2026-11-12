@@ -26,8 +26,8 @@ Causality:
 
 Fail closed: the paper runtime builds it only through `create()`, which uses the default
 `BracketReferenceParams` (no configuration path exists for other params). The constructor, used by
-the parity tests with small-window params, still refuses any time exit, which the paper engine
-cannot carry.
+the parity tests with small-window params, accepts a time exit since PT-1: the signal record
+carries `time_exit_bars` into the paper engine.
 """
 
 from __future__ import annotations
@@ -98,9 +98,6 @@ class ReferenceLiveStrategy:
         *,
         trade_from_ms: int,
     ) -> None:
-        if strategy.params.time_exit_bars is not None:
-            # EntryRequest.from_signal cannot carry a time exit: live and backtest would differ
-            raise ValueError("paper reference strategy: time exits are not supported")
         self.strategy = strategy
         self.trade_from_ms = trade_from_ms
         self._source = StrategySource(
@@ -227,6 +224,8 @@ class ReferenceLiveStrategy:
             stop_price=prop.stop_price,
             stop_basis=f"bracket_reference: {self.strategy.params.stop_atr} x ATR below close",
             take_profit_price=prop.take_profit_price,
+            # the same value the backtest request carries (`StrategySource._entry`)
+            time_exit_bars=prop.time_exit_bars,
             exit_policy=prop.exit_policy,
             rr_gross=rr_gross,
             rr_net=rr_net,

@@ -10,8 +10,6 @@ import random
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from tsclaude.contracts.market import Bar, BarSource, Interval, Market
 from tsclaude.contracts.signals import SignalStatus
 from tsclaude.research.source import StrategySource
@@ -202,11 +200,9 @@ def test_reference_labels_and_deterministic_ids() -> None:
         assert intent.strategy_id == "bracket_reference"
 
 
-def test_time_exits_and_non_default_runtime_params_are_refused() -> None:
-    with pytest.raises(ValueError, match="time exits"):
-        ReferenceLiveStrategy(
-            BracketReference(dataclasses.replace(PARAMS, time_exit_bars=4)), COSTS, trade_from_ms=0
-        )
+def test_runtime_path_uses_default_params_only() -> None:
+    # PT-1: a time exit is no longer refused (see test_pt1_time_exit_plumbing); the runtime
+    # factory still only builds the default strategy
     adapter = ReferenceLiveStrategy.create(CostModel(), KEYS, trade_from_ms=TRADE_FROM)
     assert adapter.strategy.params == BracketReferenceParams()  # the runtime path: defaults only
 

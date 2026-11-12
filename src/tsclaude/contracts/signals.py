@@ -7,9 +7,16 @@ from __future__ import annotations
 
 import math
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from tsclaude.contracts.market import Interval, Market
 
@@ -136,6 +143,11 @@ class SignalRecord(BaseModel):
     stop_basis: str
     take_profit_price: float | None
     exit_policy: str
+    #: PT-1: bars (of `timeframe`) after the entry bar at which the position is closed at the next
+    #: open if it is still open. Additive: None = no time exit, and then the field is OMITTED from
+    #: the serialized record so every signal without one keeps its previous bytes (event payloads
+    #: are hash-chained; old journals must replay unchanged).
+    time_exit_bars: int | None = None
     rr_gross: float
     rr_net: float
     est_cost_bps: float
@@ -143,8 +155,17 @@ class SignalRecord(BaseModel):
     rationale: str
     market_conditions: dict[str, float | str | bool]
 
+    @model_serializer(mode="wrap")
+    def _omit_absent_time_exit(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if data.get("time_exit_bars") is None:
+            data.pop("time_exit_bars", None)
+        return data
+
     @model_validator(mode="after")
     def _check(self) -> Self:
+        if self.time_exit_bars is not None and self.time_exit_bars < 1:
+            raise ValueError("time_exit_bars must be >= 1")
         if self.stage not in (SignalStatus.WATCH, SignalStatus.CONFIRMED):
             raise ValueError("signals are created as WATCH or CONFIRMED")
         if self.created_at_ms < self.decision_time_ms:
